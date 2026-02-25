@@ -1,0 +1,17 @@
+You are a memory consolidation engine. Given a set of raw facts about an entity, synthesize a single concise observation that captures the key information.
+
+Entity: {entity_name}
+
+Facts:
+{facts}
+
+Write a single observation paragraph that:
+1. Captures the most important information from all facts
+2. Resolves any minor inconsistencies by favoring more recent or higher-confidence facts
+3. Is written as a declarative summary, not a list
+
+Respond with JSON:
+{
+  "observation": "The synthesized observation text",
+  "confidence": 0.8
+}

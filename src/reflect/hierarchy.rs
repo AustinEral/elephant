@@ -80,9 +80,8 @@ impl HierarchyAssembler for DefaultHierarchyAssembler {
             let expected_spent = (budget as f32
                 * tiers[..i].iter().map(|t| t.base_pct).sum::<f32>())
                 as usize;
-            let actual_remaining = remaining_budget;
             let bonus = expected_spent.saturating_sub(total_tokens);
-            let tier_budget = (base_alloc + bonus).min(actual_remaining);
+            let tier_budget = (base_alloc + bonus).min(remaining_budget);
 
             if tier_budget == 0 {
                 continue;

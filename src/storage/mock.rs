@@ -83,6 +83,11 @@ impl MemoryStore for MockMemoryStore {
                 {
                     return false;
                 }
+                if let Some(since) = filter.created_since
+                    && f.created_at < since
+                {
+                    return false;
+                }
                 true
             })
             .cloned()

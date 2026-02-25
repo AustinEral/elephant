@@ -262,6 +262,11 @@ impl MemoryStore for PgMemoryStore {
             }
         }
 
+        if let Some(since) = filter.created_since {
+            qb.push(" AND created_at >= ");
+            qb.push_bind(since);
+        }
+
         if let Some(ref eids) = filter.entity_ids
             && !eids.is_empty()
         {

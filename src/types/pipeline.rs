@@ -152,6 +152,9 @@ pub struct FactFilter {
     pub temporal_range: Option<TemporalRange>,
     /// Filter by entity IDs (facts must reference at least one).
     pub entity_ids: Option<Vec<EntityId>>,
+    /// Only return facts created at or after this timestamp.
+    #[serde(default)]
+    pub created_since: Option<DateTime<Utc>>,
 }
 
 // --- Entity resolution ---
@@ -229,6 +232,41 @@ pub struct BankPromptContext {
     pub directives_prompt: String,
     /// Bank mission statement.
     pub mission_prompt: String,
+}
+
+// --- Consolidation reports ---
+
+/// Report from observation consolidation.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConsolidationReport {
+    /// Number of new observations created.
+    pub observations_created: usize,
+    /// Number of existing observations updated with new evidence.
+    pub observations_updated: usize,
+    /// Number of existing observations left unchanged.
+    pub observations_unchanged: usize,
+}
+
+/// Report from opinion merging.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OpinionMergeReport {
+    /// Number of opinion clusters that were merged into a single opinion.
+    pub opinions_merged: usize,
+    /// Number of opinions superseded (older opinion weakened).
+    pub opinions_superseded: usize,
+    /// Number of opinions found to be conflicting (both weakened).
+    pub opinions_conflicting: usize,
+}
+
+/// Report from mental model generation.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MentalModelReport {
+    /// Number of new mental models created.
+    pub models_created: usize,
+    /// Number of existing mental models updated.
+    pub models_updated: usize,
+    /// Number of existing mental models left unchanged.
+    pub models_unchanged: usize,
 }
 
 #[cfg(test)]

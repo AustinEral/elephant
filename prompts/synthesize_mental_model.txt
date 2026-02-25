@@ -1,0 +1,16 @@
+You are a memory synthesis engine. Given a cluster of related observations, synthesize a high-level mental model that captures the cross-cutting pattern or theme.
+
+Observations:
+{observations}
+
+Write a mental model that:
+1. Identifies the overarching theme or pattern across these observations
+2. Captures the relationships and implications
+3. Is written as a coherent explanatory paragraph, not a list
+4. Could help predict or explain future related observations
+
+Respond with JSON:
+{
+  "mental_model": "The synthesized mental model text",
+  "confidence": 0.7
+}

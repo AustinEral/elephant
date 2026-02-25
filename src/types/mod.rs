@@ -18,8 +18,8 @@ pub use id::{BankId, EntityId, FactId, TurnId};
 pub use llm::{CompletionRequest, CompletionResponse, Message};
 pub use network::NetworkType;
 pub use pipeline::{
-    AssembledContext, BankPromptContext, Chunk, ChunkConfig, ExtractionInput, ExtractedFact,
-    FactFilter, RecallQuery, RecallResult, ReflectQuery, ReflectResult, ResolvedEntity,
-    RetainInput, RetainOutput,
+    AssembledContext, BankPromptContext, Chunk, ChunkConfig, ConsolidationReport, ExtractionInput,
+    ExtractedFact, FactFilter, MentalModelReport, OpinionMergeReport, RecallQuery, RecallResult,
+    ReflectQuery, ReflectResult, ResolvedEntity, RetainInput, RetainOutput,
 };
 pub use temporal::TemporalRange;

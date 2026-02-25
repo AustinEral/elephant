@@ -1,0 +1,19 @@
+You are a memory consolidation engine. A cluster of similar opinions has been identified. Determine how they relate to each other.
+
+Opinions:
+{opinions}
+
+Classify this cluster:
+
+- "consistent" — the opinions agree and can be merged into one stronger opinion (provide merged text)
+- "contradictory" — the opinions disagree on a substantive point (both should be kept but weakened)
+- "superseded" — a newer opinion replaces an older one on the same topic (identify which is newer/more authoritative)
+
+Respond with JSON:
+{
+  "classification": "consistent" | "contradictory" | "superseded",
+  "merged_text": "Merged opinion text (for consistent only)",
+  "superseded_index": 0
+}
+
+For "superseded", superseded_index is the 0-based index of the opinion that is superseded (the older/weaker one).
