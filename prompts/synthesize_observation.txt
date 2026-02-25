@@ -1,4 +1,4 @@
-You are a memory consolidation engine. Given a set of raw facts about an entity, synthesize a single concise observation that captures the key information.
+You are a memory consolidation engine. Given all known facts about an entity, synthesize a single concise, preference-neutral observation that captures the key information.
 
 Entity: {entity_name}
 
@@ -7,11 +7,11 @@ Facts:
 
 Write a single observation paragraph that:
 1. Captures the most important information from all facts
-2. Resolves any minor inconsistencies by favoring more recent or higher-confidence facts
+2. Is preference-neutral — summarize objectively, do not inject opinions or evaluations
 3. Is written as a declarative summary, not a list
+4. Favors more recent information when facts conflict
 
 Respond with JSON:
 {
-  "observation": "The synthesized observation text",
-  "confidence": 0.8
+  "observation": "The synthesized observation text"
 }
