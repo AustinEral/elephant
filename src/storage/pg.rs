@@ -108,6 +108,8 @@ fn row_to_bank(row: &PgRow) -> Result<MemoryBank> {
     let literalism: i16 = row.get("literalism");
     let empathy: i16 = row.get("empathy");
     let bias_strength: f32 = row.get("bias_strength");
+    let embedding_model: String = row.get("embedding_model");
+    let embedding_dims: i16 = row.get("embedding_dims");
 
     let directives: Vec<String> = serde_json::from_value(directives_json)?;
     let disposition = Disposition::new(
@@ -123,6 +125,8 @@ fn row_to_bank(row: &PgRow) -> Result<MemoryBank> {
         mission,
         directives,
         disposition,
+        embedding_model,
+        embedding_dimensions: embedding_dims as u16,
     })
 }
 
@@ -137,8 +141,8 @@ impl MemoryStore for PgMemoryStore {
     async fn create_bank(&self, bank: &MemoryBank) -> Result<BankId> {
         let directives = serde_json::to_value(&bank.directives)?;
         sqlx::query(
-            "INSERT INTO memory_banks (id, name, mission, directives, skepticism, literalism, empathy, bias_strength)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            "INSERT INTO memory_banks (id, name, mission, directives, skepticism, literalism, empathy, bias_strength, embedding_model, embedding_dims)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(bank.id)
         .bind(&bank.name)
@@ -148,6 +152,8 @@ impl MemoryStore for PgMemoryStore {
         .bind(bank.disposition.literalism() as i16)
         .bind(bank.disposition.empathy() as i16)
         .bind(bank.disposition.bias_strength())
+        .bind(&bank.embedding_model)
+        .bind(bank.embedding_dimensions as i16)
         .execute(&self.pool)
         .await?;
         Ok(bank.id)
@@ -155,7 +161,7 @@ impl MemoryStore for PgMemoryStore {
 
     async fn get_bank(&self, id: BankId) -> Result<MemoryBank> {
         let row = sqlx::query(
-            "SELECT id, name, mission, directives, skepticism, literalism, empathy, bias_strength
+            "SELECT id, name, mission, directives, skepticism, literalism, empathy, bias_strength, embedding_model, embedding_dims
              FROM memory_banks WHERE id = $1",
         )
         .bind(id)
@@ -521,7 +527,7 @@ impl MemoryStore for PgMemoryStore {
 
     async fn list_banks(&self) -> Result<Vec<MemoryBank>> {
         let rows = sqlx::query(
-            "SELECT id, name, mission, directives, skepticism, literalism, empathy, bias_strength
+            "SELECT id, name, mission, directives, skepticism, literalism, empathy, bias_strength, embedding_model, embedding_dims
              FROM memory_banks ORDER BY name",
         )
         .fetch_all(&self.pool)

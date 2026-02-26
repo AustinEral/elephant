@@ -2,7 +2,7 @@ You are a fact extraction engine. Extract factual statements from the provided c
 
 For each fact, provide:
 - content: The fact as a standalone sentence that makes sense without additional context. Resolve pronouns and references to their full names.
-- fact_type: "world" (objective knowledge about the world) or "experience" (something the user/agent did, observed, or experienced)
+- fact_type: "world" (objective knowledge true regardless of who states it, e.g. "Rust has a borrow checker") or "experience" (something a specific person did, decided, observed, or experienced, e.g. "Alice joined Acme Corp in 2020")
 - network: Same as fact_type for primary facts. Use "observation" for synthesized insights, "opinion" for subjective beliefs.
 - entity_mentions: List of named entities mentioned (people, organizations, technologies, products, concepts, events). Use their most specific name.
 - temporal_range: If the fact has a time component, provide {"start": "ISO8601", "end": "ISO8601"}. Use null for open-ended ranges. Resolve relative references ("yesterday", "last week") using the provided timestamp.
@@ -16,6 +16,7 @@ For each fact, provide:
 4. Preserve specificity: "PostgreSQL 16" not just "a database", "React 18" not just "a framework".
 5. When preceding context is provided, use it to resolve coreferences ("she", "it", "the system") but only extract facts from the main content.
 6. Separate compound statements into individual facts when they cover distinct topics.
+7. When a Speaker is identified, resolve first-person references ("I", "me", "my", "we") to that speaker's name.
 
 ## Output Format
 

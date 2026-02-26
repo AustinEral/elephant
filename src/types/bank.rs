@@ -18,6 +18,12 @@ pub struct MemoryBank {
     pub directives: Vec<String>,
     /// Personality parameters that influence recall and reflection.
     pub disposition: Disposition,
+    /// The embedding model used when this bank was created (e.g. "bge-small-en-v1.5").
+    #[serde(default)]
+    pub embedding_model: String,
+    /// The dimensionality of embeddings for this bank (e.g. 384 or 1536).
+    #[serde(default)]
+    pub embedding_dimensions: u16,
 }
 
 /// Raw disposition data used for deserialization before validation.
@@ -223,6 +229,8 @@ mod tests {
             mission: "remember everything".into(),
             directives: vec!["be helpful".into()],
             disposition: Disposition::default(),
+            embedding_model: "mock".into(),
+            embedding_dimensions: 384,
         };
         let json = serde_json::to_string(&bank).unwrap();
         let back: MemoryBank = serde_json::from_str(&json).unwrap();

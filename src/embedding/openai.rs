@@ -83,6 +83,10 @@ impl EmbeddingClient for OpenAiEmbeddings {
     fn dimensions(&self) -> usize {
         self.dims
     }
+
+    fn model_name(&self) -> &str {
+        &self.model
+    }
 }
 
 #[cfg(test)]

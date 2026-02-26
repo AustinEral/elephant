@@ -143,6 +143,7 @@ impl ElephantMcp {
             turn_id: None,
             context: params.context,
             custom_instructions: None,
+            speaker: None,
         };
 
         let output = self.state.retain.retain(&input).await.map_err(|e| e.to_string())?;
@@ -225,6 +226,8 @@ impl ElephantMcp {
             mission: params.mission.unwrap_or_default(),
             directives: vec![],
             disposition: Disposition::default(),
+            embedding_model: self.state.embeddings.model_name().to_string(),
+            embedding_dimensions: self.state.embeddings.dimensions() as u16,
         };
 
         self.state

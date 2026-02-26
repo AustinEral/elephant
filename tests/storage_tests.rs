@@ -49,6 +49,8 @@ fn make_bank() -> MemoryBank {
         mission: "testing".into(),
         directives: vec!["be accurate".into()],
         disposition: Disposition::new(2, 4, 3, 0.7).unwrap(),
+        embedding_model: String::new(),
+        embedding_dimensions: 0,
     }
 }
 
@@ -285,6 +287,8 @@ async fn bank_isolation() {
         mission: "A".into(),
         directives: vec![],
         disposition: Disposition::default(),
+        embedding_model: String::new(),
+        embedding_dimensions: 0,
     };
     let bank_b = MemoryBank {
         id: BankId::new(),
@@ -292,6 +296,8 @@ async fn bank_isolation() {
         mission: "B".into(),
         directives: vec![],
         disposition: Disposition::default(),
+        embedding_model: String::new(),
+        embedding_dimensions: 0,
     };
     store.create_bank(&bank_a).await.unwrap();
     store.create_bank(&bank_b).await.unwrap();

@@ -1,7 +1,7 @@
 //! Temporal range for time-bounded facts.
 
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use chrono::{DateTime, NaiveDate, Utc};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// A time range with optional start and end bounds.
 ///
@@ -10,9 +10,36 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TemporalRange {
     /// Start of the range (inclusive). `None` means unbounded past.
+    #[serde(default, deserialize_with = "deserialize_flexible_datetime")]
     pub start: Option<DateTime<Utc>>,
     /// End of the range (inclusive). `None` means unbounded future.
+    #[serde(default, deserialize_with = "deserialize_flexible_datetime")]
     pub end: Option<DateTime<Utc>>,
+}
+
+/// Deserialize a DateTime<Utc> accepting both full ISO8601 ("2015-01-01T00:00:00Z")
+/// and date-only ("2015-01-01") formats. LLMs commonly produce date-only strings.
+fn deserialize_flexible_datetime<'de, D>(deserializer: D) -> std::result::Result<Option<DateTime<Utc>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt: Option<String> = Option::deserialize(deserializer)?;
+    match opt {
+        None => Ok(None),
+        Some(s) => {
+            // Try full datetime first
+            if let Ok(dt) = s.parse::<DateTime<Utc>>() {
+                return Ok(Some(dt));
+            }
+            // Try date-only (e.g. "2015-01-01")
+            if let Ok(date) = NaiveDate::parse_from_str(&s, "%Y-%m-%d") {
+                return Ok(Some(date.and_hms_opt(0, 0, 0).unwrap().and_utc()));
+            }
+            Err(serde::de::Error::custom(format!(
+                "cannot parse '{s}' as datetime or date"
+            )))
+        }
+    }
 }
 
 impl TemporalRange {

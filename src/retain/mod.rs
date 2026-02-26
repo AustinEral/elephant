@@ -164,6 +164,19 @@ impl DefaultRetainPipeline {
 #[async_trait]
 impl RetainPipeline for DefaultRetainPipeline {
     async fn retain(&self, input: &RetainInput) -> Result<RetainOutput> {
+        // 0. Validate embedding dimensions match the bank's config
+        let bank = self.store.get_bank(input.bank_id).await?;
+        if bank.embedding_dimensions > 0 {
+            let client_dims = self.embeddings.dimensions() as u16;
+            if client_dims != bank.embedding_dimensions {
+                return Err(crate::error::Error::EmbeddingDimensionMismatch {
+                    model: bank.embedding_model.clone(),
+                    expected: bank.embedding_dimensions,
+                    actual: client_dims,
+                });
+            }
+        }
+
         // 1. Chunk the input
         let chunks = self.chunker.chunk(&input.content, &self.chunk_config);
 
@@ -183,6 +196,7 @@ impl RetainPipeline for DefaultRetainPipeline {
                 timestamp: input.timestamp,
                 turn_id: input.turn_id,
                 custom_instructions: input.custom_instructions.clone(),
+                speaker: input.speaker.clone(),
             };
             let extracted = self.extractor.extract(&extraction_input).await?;
 

@@ -60,6 +60,10 @@ impl EmbeddingClient for LocalEmbeddings {
     fn dimensions(&self) -> usize {
         384
     }
+
+    fn model_name(&self) -> &str {
+        "bge-small-en-v1.5"
+    }
 }
 
 fn embed_sync(

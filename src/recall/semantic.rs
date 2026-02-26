@@ -36,6 +36,19 @@ impl SemanticRetriever {
 #[async_trait]
 impl Retriever for SemanticRetriever {
     async fn retrieve(&self, query: &RecallQuery) -> Result<Vec<ScoredFact>> {
+        // Validate embedding dimensions match the bank's config
+        let bank = self.store.get_bank(query.bank_id).await?;
+        if bank.embedding_dimensions > 0 {
+            let client_dims = self.embeddings.dimensions() as u16;
+            if client_dims != bank.embedding_dimensions {
+                return Err(crate::error::Error::EmbeddingDimensionMismatch {
+                    model: bank.embedding_model.clone(),
+                    expected: bank.embedding_dimensions,
+                    actual: client_dims,
+                });
+            }
+        }
+
         let vecs = self.embeddings.embed(&[&query.query]).await?;
         let embedding = &vecs[0];
         let mut results = self
@@ -62,8 +75,19 @@ mod tests {
         let store = Arc::new(MockMemoryStore::new());
         let embeddings = Arc::new(MockEmbeddings::new(8));
 
-        // Insert facts with embeddings from MockEmbeddings
-        let bank = BankId::new();
+        // Create a bank so get_bank() works during dimension validation
+        let bank_id = BankId::new();
+        let bank_obj = MemoryBank {
+            id: bank_id,
+            name: "test".into(),
+            mission: String::new(),
+            directives: vec![],
+            disposition: Disposition::default(),
+            embedding_model: "mock".into(),
+            embedding_dimensions: 8,
+        };
+        store.create_bank(&bank_obj).await.unwrap();
+        let bank = bank_id;
         let emb1 = embeddings.embed(&["rust programming"]).await.unwrap();
         let emb2 = embeddings.embed(&["cooking recipes"]).await.unwrap();
 

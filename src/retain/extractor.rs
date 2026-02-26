@@ -38,6 +38,10 @@ impl LlmFactExtractor {
     fn build_user_message(input: &ExtractionInput) -> String {
         let mut msg = String::new();
 
+        if let Some(ref speaker) = input.speaker {
+            msg.push_str(&format!("Speaker: {speaker}\n\n"));
+        }
+
         if let Some(ref ctx) = input.context {
             msg.push_str("## Preceding Context\n\n");
             msg.push_str(ctx);
@@ -113,6 +117,7 @@ mod tests {
             timestamp: chrono::Utc::now(),
             turn_id: None,
             custom_instructions: None,
+            speaker: None,
         };
 
         let facts = extractor.extract(&input).await.unwrap();
@@ -144,6 +149,7 @@ mod tests {
             timestamp: chrono::Utc::now(),
             turn_id: None,
             custom_instructions: None,
+            speaker: None,
         };
 
         let facts = extractor.extract(&input).await.unwrap();
@@ -165,6 +171,7 @@ mod tests {
             timestamp: chrono::Utc::now(),
             turn_id: None,
             custom_instructions: Some("Focus on technical decisions.".into()),
+            speaker: None,
         };
 
         let facts = extractor.extract(&input).await.unwrap();

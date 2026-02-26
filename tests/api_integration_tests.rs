@@ -183,6 +183,7 @@ impl TestHarness {
             opinion_merger,
             model_generator,
             store: self.store.clone(),
+            embeddings: self.embeddings.clone(),
         };
 
         router(state)

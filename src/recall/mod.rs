@@ -117,9 +117,24 @@ mod tests {
     use crate::embedding::EmbeddingClient;
     use crate::storage::mock::MockMemoryStore;
     use crate::storage::MemoryStore;
-    use crate::types::{BankId, Fact, FactId, FactType, NetworkType, RecallQuery};
+    use crate::types::{BankId, Disposition, Fact, FactId, FactType, MemoryBank, NetworkType, RecallQuery};
     use chrono::Utc;
     use std::sync::Arc;
+
+    async fn create_test_bank(store: &MockMemoryStore, dims: u16) -> BankId {
+        let id = BankId::new();
+        let bank = MemoryBank {
+            id,
+            name: "test".into(),
+            mission: String::new(),
+            directives: vec![],
+            disposition: Disposition::default(),
+            embedding_model: "mock".into(),
+            embedding_dimensions: dims,
+        };
+        store.create_bank(&bank).await.unwrap();
+        id
+    }
 
     fn make_fact_with_embedding(
         bank: BankId,
@@ -147,7 +162,7 @@ mod tests {
     async fn full_pipeline_returns_results() {
         let store = Arc::new(MockMemoryStore::new());
         let embeddings = Arc::new(MockEmbeddings::new(8));
-        let bank = BankId::new();
+        let bank = create_test_bank(&store, 8).await;
 
         // Insert facts with embeddings
         let emb1 = embeddings.embed(&["Rust programming"]).await.unwrap();
@@ -192,7 +207,7 @@ mod tests {
     async fn pipeline_respects_budget() {
         let store = Arc::new(MockMemoryStore::new());
         let embeddings = Arc::new(MockEmbeddings::new(8));
-        let bank = BankId::new();
+        let bank = create_test_bank(&store, 8).await;
 
         // Insert many facts
         let mut facts = Vec::new();
@@ -236,7 +251,7 @@ mod tests {
     async fn mock_reranker_reverses_order() {
         let store = Arc::new(MockMemoryStore::new());
         let embeddings = Arc::new(MockEmbeddings::new(8));
-        let bank = BankId::new();
+        let bank = create_test_bank(&store, 8).await;
 
         let emb1 = embeddings.embed(&["alpha"]).await.unwrap();
         let emb2 = embeddings.embed(&["beta"]).await.unwrap();
@@ -280,6 +295,7 @@ mod tests {
     async fn empty_store_returns_empty_result() {
         let store = Arc::new(MockMemoryStore::new());
         let embeddings = Arc::new(MockEmbeddings::new(8));
+        let bank = create_test_bank(&store, 8).await;
 
         let pipeline = DefaultRecallPipeline::new(
             Box::new(SemanticRetriever::new(store.clone(), embeddings.clone(), 10)),
@@ -297,7 +313,7 @@ mod tests {
         );
 
         let query = RecallQuery {
-            bank_id: BankId::new(),
+            bank_id: bank,
             query: "anything".into(),
             budget_tokens: 1000,
             network_filter: None,

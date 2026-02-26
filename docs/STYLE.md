@@ -1,6 +1,6 @@
-# Bosun — Rust Style Guide
+# Rust Style Guide
 
-A practical style guide for Bosun development. Combines official Rust guidelines with lessons from excellent projects.
+A practical style guide for Rust development. Combines official Rust guidelines with lessons from excellent projects.
 
 ---
 
@@ -50,7 +50,7 @@ Build only what's required now. Don't add functionality based on speculation.
 
 ### All Side Effects Require Explicit Capability
 
-This is Bosun's core principle. It applies to code design too — make side effects visible and intentional.
+This is a core principle. It applies to code design too — make side effects visible and intentional.
 
 ---
 
@@ -68,7 +68,7 @@ Follow `rustfmt` defaults. Don't fight the formatter.
 ```rust
 // Good: trailing commas, block indent
 let config = Config {
-    name: "bosun".to_string(),
+    name: "elephant".to_string(),
     version: Version::new(0, 1, 0),
     debug: true,
 };
@@ -106,7 +106,7 @@ Use inline variable capture in format strings. Don't use positional placeholders
 
 ```rust
 // Good: inline variables, readable
-let name = "bosun";
+let name = "elephant";
 let version = "0.1.0";
 println!("{name} v{version}");
 
@@ -142,7 +142,7 @@ Follow [RFC 430](https://rust-lang.github.io/rfcs/0430-finalizing-naming-convent
 
 | Item | Convention | Example |
 |------|------------|---------|
-| Crates | `snake_case` | `bosun_runtime` |
+| Crates | `snake_case` | `elephant_runtime` |
 | Modules | `snake_case` | `event_store` |
 | Types | `UpperCamelCase` | `SessionManager` |
 | Functions, methods | `snake_case` | `run_session` |

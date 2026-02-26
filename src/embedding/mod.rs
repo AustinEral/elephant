@@ -20,6 +20,9 @@ pub trait EmbeddingClient: Send + Sync {
 
     /// The dimensionality of the embedding vectors.
     fn dimensions(&self) -> usize;
+
+    /// The model name used for embeddings (e.g. "bge-small-en-v1.5").
+    fn model_name(&self) -> &str;
 }
 
 /// Embedding provider selection.

@@ -10,6 +10,7 @@ use axum::Router;
 use tower_http::cors::CorsLayer;
 
 use crate::consolidation::{Consolidator, MentalModelGenerator, OpinionMerger};
+use crate::embedding::EmbeddingClient;
 use crate::recall::RecallPipeline;
 use crate::reflect::ReflectPipeline;
 use crate::retain::RetainPipeline;
@@ -32,6 +33,8 @@ pub struct AppState {
     pub model_generator: Arc<dyn MentalModelGenerator>,
     /// The backing memory store.
     pub store: Arc<dyn MemoryStore>,
+    /// The embedding client (for reading model info at bank creation).
+    pub embeddings: Arc<dyn EmbeddingClient>,
 }
 
 /// Build the Axum router with all routes.
@@ -68,6 +71,7 @@ pub fn router(state: AppState) -> Router {
 mod tests {
     use super::*;
     use crate::consolidation::{Consolidator, MentalModelGenerator, OpinionMerger};
+    use crate::embedding::mock::MockEmbeddings;
     use crate::error::Result;
     use crate::recall::RecallPipeline;
     use crate::reflect::ReflectPipeline;
@@ -189,6 +193,7 @@ mod tests {
             opinion_merger: Arc::new(MockOpinionMerger),
             model_generator: Arc::new(MockModelGenerator),
             store: store.clone(),
+            embeddings: Arc::new(MockEmbeddings::new(384)),
         };
         (router(state), store)
     }
@@ -248,6 +253,8 @@ mod tests {
             mission: "test".into(),
             directives: vec![],
             disposition: Disposition::default(),
+            embedding_model: String::new(),
+            embedding_dimensions: 0,
         };
         store.create_bank(&bank).await.unwrap();
         let bank_id = bank.id.to_string();
@@ -273,6 +280,7 @@ mod tests {
             opinion_merger: Arc::new(MockOpinionMerger),
             model_generator: Arc::new(MockModelGenerator),
             store: store.clone(),
+            embeddings: Arc::new(MockEmbeddings::new(384)),
         });
 
         let resp = app.oneshot(req).await.unwrap();
@@ -306,6 +314,8 @@ mod tests {
             mission: "test".into(),
             directives: vec![],
             disposition: Disposition::default(),
+            embedding_model: String::new(),
+            embedding_dimensions: 0,
         };
         store.create_bank(&bank).await.unwrap();
         let bank_id = bank.id.to_string();
@@ -337,6 +347,8 @@ mod tests {
             mission: "test".into(),
             directives: vec![],
             disposition: Disposition::default(),
+            embedding_model: String::new(),
+            embedding_dimensions: 0,
         };
         store.create_bank(&bank).await.unwrap();
         let bank_id = bank.id.to_string();
@@ -371,6 +383,8 @@ mod tests {
             mission: "test".into(),
             directives: vec![],
             disposition: Disposition::default(),
+            embedding_model: String::new(),
+            embedding_dimensions: 0,
         };
         store.create_bank(&bank).await.unwrap();
 
@@ -444,6 +458,8 @@ mod tests {
             mission: "test".into(),
             directives: vec![],
             disposition: Disposition::default(),
+            embedding_model: String::new(),
+            embedding_dimensions: 0,
         };
         store.create_bank(&bank).await.unwrap();
         let bank_id = bank.id.to_string();
@@ -460,6 +476,7 @@ mod tests {
                 opinion_merger: Arc::new(MockOpinionMerger),
                 model_generator: Arc::new(MockModelGenerator),
                 store: store.clone(),
+                embeddings: Arc::new(MockEmbeddings::new(384)),
             })
         };
 

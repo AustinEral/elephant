@@ -1,1 +1,4 @@
 /target
+/models/
+/lib/
+.env

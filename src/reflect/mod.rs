@@ -242,12 +242,24 @@ mod tests {
     }
 
     impl TestHarness {
-        fn new() -> Self {
+        async fn new() -> Self {
+            let store = Arc::new(MockMemoryStore::new());
+            let bank_id = BankId::new();
+            let bank = MemoryBank {
+                id: bank_id,
+                name: "test".into(),
+                mission: String::new(),
+                directives: vec![],
+                disposition: Disposition::default(),
+                embedding_model: "mock".into(),
+                embedding_dimensions: 8,
+            };
+            store.create_bank(&bank).await.unwrap();
             Self {
-                store: Arc::new(MockMemoryStore::new()),
+                store,
                 embeddings: Arc::new(MockEmbeddings::new(8)),
                 llm: Arc::new(MockLlmClient::new()),
-                bank_id: BankId::new(),
+                bank_id,
             }
         }
 
@@ -289,7 +301,7 @@ mod tests {
 
     #[tokio::test]
     async fn reflect_with_stored_facts() {
-        let h = TestHarness::new();
+        let h = TestHarness::new().await;
         let emb = h.embeddings.embed(&["Rust programming"]).await.unwrap();
 
         let fact = make_fact_with_embedding(
@@ -328,7 +340,7 @@ mod tests {
 
     #[tokio::test]
     async fn reflect_triggers_opinion_formation() {
-        let h = TestHarness::new();
+        let h = TestHarness::new().await;
         let emb = h.embeddings.embed(&["testing"]).await.unwrap();
 
         let fact = make_fact_with_embedding(
@@ -375,7 +387,7 @@ mod tests {
 
     #[tokio::test]
     async fn source_attribution_extracts_fact_ids() {
-        let h = TestHarness::new();
+        let h = TestHarness::new().await;
         let emb = h.embeddings.embed(&["data"]).await.unwrap();
 
         let fact1 = make_fact_with_embedding(
@@ -420,7 +432,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_memory_graceful_response() {
-        let h = TestHarness::new();
+        let h = TestHarness::new().await;
 
         h.llm.push_response(
             r#"{
@@ -448,7 +460,7 @@ mod tests {
 
     #[tokio::test]
     async fn disposition_influence_in_system_prompt() {
-        let h = TestHarness::new();
+        let h = TestHarness::new().await;
 
         // Create a bank with a strong disposition
         let bank = MemoryBank {
@@ -457,6 +469,8 @@ mod tests {
             mission: "Remember developer context".into(),
             directives: vec!["Never share secrets".into()],
             disposition: Disposition::new(5, 1, 4, 0.9).unwrap(),
+            embedding_model: String::new(),
+            embedding_dimensions: 0,
         };
         h.store.create_bank(&bank).await.unwrap();
 

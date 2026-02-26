@@ -189,6 +189,21 @@ mod tests {
     use crate::types::*;
     use chrono::Utc;
 
+    async fn create_test_bank(store: &MockMemoryStore, dims: u16) -> BankId {
+        let id = BankId::new();
+        let bank = MemoryBank {
+            id,
+            name: "test".into(),
+            mission: String::new(),
+            directives: vec![],
+            disposition: Disposition::default(),
+            embedding_model: "mock".into(),
+            embedding_dimensions: dims,
+        };
+        store.create_bank(&bank).await.unwrap();
+        id
+    }
+
     fn make_fact(bank: BankId, content: &str, network: NetworkType, embedding: Vec<f32>) -> Fact {
         Fact {
             id: FactId::new(),
@@ -235,7 +250,7 @@ mod tests {
     async fn tier_ordering_in_output() {
         let store = Arc::new(MockMemoryStore::new());
         let embeddings = Arc::new(MockEmbeddings::new(8));
-        let bank = BankId::new();
+        let bank = create_test_bank(&store, 8).await;
 
         let emb = embeddings.embed(&["test"]).await.unwrap();
 
@@ -272,7 +287,7 @@ mod tests {
     async fn formatted_includes_fact_ids() {
         let store = Arc::new(MockMemoryStore::new());
         let embeddings = Arc::new(MockEmbeddings::new(8));
-        let bank = BankId::new();
+        let bank = create_test_bank(&store, 8).await;
 
         let emb = embeddings.embed(&["data"]).await.unwrap();
         let fact = make_fact(bank, "A world fact", NetworkType::World, emb[0].clone());
@@ -290,7 +305,7 @@ mod tests {
     async fn opinions_show_confidence() {
         let store = Arc::new(MockMemoryStore::new());
         let embeddings = Arc::new(MockEmbeddings::new(8));
-        let bank = BankId::new();
+        let bank = create_test_bank(&store, 8).await;
 
         let emb = embeddings.embed(&["opinion"]).await.unwrap();
         let fact = make_fact(bank, "Strong opinion here", NetworkType::Opinion, emb[0].clone());
@@ -307,7 +322,7 @@ mod tests {
     async fn empty_tiers_produce_empty_sections() {
         let store = Arc::new(MockMemoryStore::new());
         let embeddings = Arc::new(MockEmbeddings::new(8));
-        let bank = BankId::new();
+        let bank = create_test_bank(&store, 8).await;
 
         let pipeline = build_pipeline(store, embeddings);
         let assembler = DefaultHierarchyAssembler::new(pipeline);
@@ -325,7 +340,7 @@ mod tests {
     async fn budget_redistribution_on_empty_tiers() {
         let store = Arc::new(MockMemoryStore::new());
         let embeddings = Arc::new(MockEmbeddings::new(8));
-        let bank = BankId::new();
+        let bank = create_test_bank(&store, 8).await;
 
         // Only insert World facts — MentalModel and Observation tiers will be empty
         let emb = embeddings.embed(&["world data"]).await.unwrap();

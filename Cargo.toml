@@ -5,6 +5,7 @@ edition = "2024"
 
 [dev-dependencies]
 anyhow = "1.0.102"
+dotenvy = "0.15"
 proptest = "1"
 testcontainers = { version = "0.27.1", features = ["watchdog"] }
 testcontainers-modules = { version = "0.15.0", features = ["postgres"] }

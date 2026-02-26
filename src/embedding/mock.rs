@@ -29,6 +29,10 @@ impl EmbeddingClient for MockEmbeddings {
     fn dimensions(&self) -> usize {
         self.dims
     }
+
+    fn model_name(&self) -> &str {
+        "mock"
+    }
 }
 
 /// Generate a deterministic, L2-normalized vector from text.

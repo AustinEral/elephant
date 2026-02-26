@@ -89,6 +89,8 @@ pub async fn create_bank(
         mission: body.mission,
         directives: body.directives,
         disposition,
+        embedding_model: state.embeddings.model_name().to_string(),
+        embedding_dimensions: state.embeddings.dimensions() as u16,
     };
 
     state.store.create_bank(&bank).await?;

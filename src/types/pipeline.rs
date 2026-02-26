@@ -26,6 +26,9 @@ pub struct RetainInput {
     pub context: Option<String>,
     /// Domain-specific extraction guidelines injected into the extraction prompt.
     pub custom_instructions: Option<String>,
+    /// Name of the speaker/author for resolving first-person references ("I", "me", "my").
+    #[serde(default)]
+    pub speaker: Option<String>,
 }
 
 /// Output from the retain pipeline.
@@ -96,6 +99,8 @@ pub struct ExtractionInput {
     pub turn_id: Option<TurnId>,
     /// Domain-specific extraction guidelines.
     pub custom_instructions: Option<String>,
+    /// Name of the speaker/author for resolving first-person references.
+    pub speaker: Option<String>,
 }
 
 /// A fact extracted by the LLM before storage.
@@ -282,6 +287,7 @@ mod tests {
             turn_id: None,
             context: Some("previous context".into()),
             custom_instructions: None,
+            speaker: None,
         };
         let json = serde_json::to_string(&input).unwrap();
         let back: RetainInput = serde_json::from_str(&json).unwrap();

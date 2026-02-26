@@ -150,6 +150,7 @@ async fn main() {
         opinion_merger,
         model_generator,
         store,
+        embeddings,
     };
 
     // 8. MCP server at /mcp

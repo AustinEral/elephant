@@ -21,6 +21,7 @@ impl IntoResponse for Error {
                 StatusCode::BAD_REQUEST
             }
             Error::Llm(_) | Error::Embedding(_) => StatusCode::BAD_GATEWAY,
+            Error::EmbeddingDimensionMismatch { .. } => StatusCode::CONFLICT,
             Error::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
 

@@ -101,6 +101,8 @@ mod tests {
             mission: String::new(),
             directives: vec![],
             disposition: Disposition::new(skepticism, literalism, empathy, bias_strength).unwrap(),
+            embedding_model: String::new(),
+            embedding_dimensions: 0,
         }
     }
 

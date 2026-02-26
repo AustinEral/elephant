@@ -30,6 +30,17 @@ pub enum Error {
     /// An error from embedding generation.
     #[error("embedding error: {0}")]
     Embedding(String),
+
+    /// The bank's embedding config doesn't match the current embedding client.
+    #[error("embedding dimension mismatch: bank expects {expected} dims ({model}), but client produces {actual} dims")]
+    EmbeddingDimensionMismatch {
+        /// The model name recorded on the bank.
+        model: String,
+        /// The dimension count the bank expects.
+        expected: u16,
+        /// The dimension count the current client produces.
+        actual: u16,
+    },
 }
 
 /// A `Result` alias using the memory engine [`Error`].
