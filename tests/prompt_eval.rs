@@ -269,6 +269,48 @@ async fn eval_extract_conversational() {
     );
 }
 
+#[tokio::test]
+#[ignore]
+async fn eval_extract_selectivity() {
+    init();
+    let client = llm_client();
+    let input = "Hey! How's it going? Yeah so anyway, let me take a look at that. \
+                 Hmm one sec... Ok so we decided to use pgvector for similarity search \
+                 because it integrates natively with our existing Postgres setup. \
+                 Cool, let me know if you have questions.";
+
+    let request = extraction_request(input, Some("Austin"));
+    let facts: Vec<ExtractedFact> = complete_structured(&client, request)
+        .await
+        .expect("LLM call failed");
+
+    println!("=== eval_extract_selectivity ===");
+    println!("{facts:#?}");
+
+    // Should extract the decision, skip all the filler
+    assert!(
+        facts.len() <= 2,
+        "should extract at most 2 facts from mostly filler, got {}",
+        facts.len()
+    );
+    assert!(
+        !facts.is_empty(),
+        "should extract at least the pgvector decision"
+    );
+
+    let all_content: String = facts.iter().map(|f| f.content.as_str()).collect::<Vec<_>>().join(" ");
+    let lower = all_content.to_lowercase();
+    assert!(
+        lower.contains("pgvector"),
+        "should capture the pgvector decision, got: {all_content}"
+    );
+    // Should NOT extract greetings or task chatter
+    assert!(
+        !lower.contains("how's it going") && !lower.contains("one sec") && !lower.contains("let me know"),
+        "should skip filler, got: {all_content}"
+    );
+}
+
 // ===========================================================================
 // reflect
 // ===========================================================================

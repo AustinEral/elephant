@@ -68,6 +68,23 @@ Output: []
 </example>
 </examples>
 
+## Selectivity
+
+DO extract:
+- Decisions and their rationale ("We chose X because Y")
+- Technical facts about tools, systems, or architectures
+- Personal experiences, roles, and affiliations
+- Stated preferences, opinions, and beliefs
+- Events with temporal anchors ("joined in 2020", "migrated last quarter")
+- Anything you'd want to recall in 6 months
+
+DO NOT extract:
+- Greetings, filler, or pleasantries ("Hey, how's it going?")
+- Transient task chatter ("Let me look at that", "One moment")
+- Information already fully captured by another extracted fact
+- Vague statements with no concrete content ("Things are going well")
+- Questions without embedded facts ("What database should we use?")
+
 ## Rules
 
 1. Only extract facts worth remembering long-term. Skip greetings, filler, and transient information.
