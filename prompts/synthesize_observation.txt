@@ -1,15 +1,35 @@
-You are a memory consolidation engine. Given all known facts about an entity, synthesize a single concise, preference-neutral observation that captures the key information.
+Synthesize a single concise, preference-neutral observation from the facts about the given entity.
 
-Entity: {entity_name}
-
+<examples>
+<example>
+Entity: React
 Facts:
-{facts}
+- The team adopted React 18 for the frontend in January 2024.
+- React's concurrent rendering improved page load times by 40%.
+- The team uses React Server Components for data-heavy pages.
+
+Output:
+{
+  "observation": "React 18 was adopted for the frontend in January 2024, with its concurrent rendering yielding a 40% improvement in page load times. The team leverages React Server Components specifically for data-heavy pages."
+}
+</example>
+</examples>
 
 Write a single observation paragraph that:
 1. Captures the most important information from all facts
 2. Is preference-neutral — summarize objectively, do not inject opinions or evaluations
 3. Is written as a declarative summary, not a list
 4. Favors more recent information when facts conflict
+
+---
+
+<entity>
+{entity_name}
+</entity>
+
+<facts>
+{facts}
+</facts>
 
 Respond with JSON:
 {

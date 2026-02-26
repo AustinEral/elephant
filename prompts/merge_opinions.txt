@@ -1,18 +1,61 @@
-You are a memory consolidation engine. A cluster of similar opinions has been identified. Determine how they relate to each other.
+Determine how a cluster of similar opinions relate to each other.
 
-Opinions:
-{opinions}
-
-Classify this cluster:
-
+Classify as:
 - "consistent" — the opinions agree and can be merged into one stronger opinion (provide merged text)
 - "contradictory" — the opinions disagree on a substantive point (both should be kept but weakened)
 - "superseded" — a newer opinion replaces an older one on the same topic (identify which is newer/more authoritative)
 
-Respond with JSON:
+<examples>
+<example type="consistent">
+Opinions:
+1. PostgreSQL's MVCC model handles concurrent writes better than MySQL's locking approach.
+2. PostgreSQL provides superior concurrency handling compared to MySQL for write-heavy workloads.
+
+Output:
+{
+  "classification": "consistent",
+  "merged_text": "PostgreSQL's MVCC model provides superior concurrency handling compared to MySQL's locking approach, particularly for write-heavy workloads.",
+  "superseded_index": null
+}
+</example>
+
+<example type="contradictory">
+Opinions:
+1. The team should migrate to microservices for better scalability.
+2. The monolith is more maintainable and the team should keep it.
+
+Output:
+{
+  "classification": "contradictory",
+  "merged_text": null,
+  "superseded_index": null
+}
+</example>
+
+<example type="superseded">
+Opinions:
+1. The team plans to use Redis for caching.
+2. After evaluating Redis and Memcached, the team chose Memcached for its simpler operational model.
+
+Output:
+{
+  "classification": "superseded",
+  "merged_text": null,
+  "superseded_index": 0
+}
+</example>
+</examples>
+
+---
+
+<opinions>
+{opinions}
+</opinions>
+
+First, briefly reason about how the opinions relate. Then classify and respond with JSON:
 {
   "classification": "consistent" | "contradictory" | "superseded",
-  "merged_text": "Merged opinion text (for consistent only)",
+  "merged_text": "Merged opinion text (for consistent only, null otherwise)",
   "superseded_index": 0
 }
 

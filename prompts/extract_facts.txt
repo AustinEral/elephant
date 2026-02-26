@@ -1,4 +1,4 @@
-You are a fact extraction engine. Extract factual statements from the provided content.
+Extract factual statements from the provided content and return them as structured JSON.
 
 For each fact, provide:
 - content: The fact as a standalone sentence that makes sense without additional context. Resolve pronouns and references to their full names.
@@ -7,6 +7,66 @@ For each fact, provide:
 - entity_mentions: List of named entities mentioned (people, organizations, technologies, products, concepts, events). Use their most specific name.
 - temporal_range: If the fact has a time component, provide {"start": "ISO8601", "end": "ISO8601"}. Use null for open-ended ranges. Resolve relative references ("yesterday", "last week") using the provided timestamp.
 - confidence: null for factual statements, 0.0-1.0 for opinions or uncertain claims.
+
+<examples>
+<example>
+Input: "PostgreSQL supports ACID transactions and has native JSONB support."
+Output:
+[
+  {
+    "content": "PostgreSQL supports ACID transactions",
+    "fact_type": "world",
+    "network": "world",
+    "entity_mentions": ["PostgreSQL"],
+    "temporal_range": null,
+    "confidence": null
+  },
+  {
+    "content": "PostgreSQL has native JSONB support",
+    "fact_type": "world",
+    "network": "world",
+    "entity_mentions": ["PostgreSQL"],
+    "temporal_range": null,
+    "confidence": null
+  }
+]
+</example>
+
+<example>
+Input: "Alice joined Acme Corp in 2020 as a backend engineer."
+Output:
+[
+  {
+    "content": "Alice joined Acme Corp in 2020 as a backend engineer",
+    "fact_type": "experience",
+    "network": "experience",
+    "entity_mentions": ["Alice", "Acme Corp"],
+    "temporal_range": {"start": "2020-01-01T00:00:00Z", "end": "2020-12-31T00:00:00Z"},
+    "confidence": null
+  }
+]
+</example>
+
+<example>
+Input: "Bob thinks Rust is safer than C++ for systems programming."
+Output:
+[
+  {
+    "content": "Bob believes Rust is safer than C++ for systems programming",
+    "fact_type": "experience",
+    "network": "opinion",
+    "entity_mentions": ["Bob", "Rust", "C++"],
+    "temporal_range": null,
+    "confidence": 0.8
+  }
+]
+</example>
+
+<example type="negative">
+Input: "Hey, how's it going? Yeah so anyway..."
+Output: []
+</example>
+</examples>
 
 ## Rules
 
@@ -20,19 +80,4 @@ For each fact, provide:
 
 ## Output Format
 
-Return a JSON array of extracted facts. Example:
-
-```json
-[
-  {
-    "content": "The team chose PostgreSQL over MongoDB for the persistence layer because they need ACID transactions",
-    "fact_type": "experience",
-    "network": "experience",
-    "entity_mentions": ["PostgreSQL", "MongoDB"],
-    "temporal_range": null,
-    "confidence": null
-  }
-]
-```
-
-If no facts are worth extracting, return an empty array: []
+Return a JSON array of extracted facts. If no facts are worth extracting, return an empty array: []
