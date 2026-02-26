@@ -5,12 +5,13 @@ pub mod consolidation;
 pub mod embedding;
 pub mod error;
 pub mod llm;
+pub mod mcp;
 pub mod recall;
 pub mod reflect;
 pub mod retain;
+pub mod server;
 pub mod storage;
 pub mod types;
-pub mod server;
 pub mod util;
 
 pub use embedding::EmbeddingClient;

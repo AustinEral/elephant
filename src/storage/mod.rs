@@ -70,4 +70,7 @@ pub trait MemoryStore: Send + Sync {
 
     /// Create a new memory bank. Returns the bank ID.
     async fn create_bank(&self, bank: &MemoryBank) -> Result<BankId>;
+
+    /// List all memory banks.
+    async fn list_banks(&self) -> Result<Vec<MemoryBank>>;
 }

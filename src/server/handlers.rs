@@ -65,6 +65,14 @@ fn parse_entity_id(id: &str) -> Result<crate::types::EntityId> {
 
 // --- Handlers ---
 
+/// GET /v1/banks
+pub async fn list_banks(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<MemoryBank>>> {
+    let banks = state.store.list_banks().await?;
+    Ok(Json(banks))
+}
+
 /// POST /v1/banks
 pub async fn create_bank(
     State(state): State<AppState>,

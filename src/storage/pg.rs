@@ -518,4 +518,14 @@ impl MemoryStore for PgMemoryStore {
         .await?;
         rows.iter().map(row_to_entity).collect()
     }
+
+    async fn list_banks(&self) -> Result<Vec<MemoryBank>> {
+        let rows = sqlx::query(
+            "SELECT id, name, mission, directives, skepticism, literalism, empathy, bias_strength
+             FROM memory_banks ORDER BY name",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_bank).collect()
+    }
 }

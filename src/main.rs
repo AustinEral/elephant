@@ -25,9 +25,12 @@ use elephant::retain::extractor::LlmFactExtractor;
 use elephant::retain::graph_builder::{DefaultGraphBuilder, GraphConfig};
 use elephant::retain::resolver::LayeredEntityResolver;
 use elephant::retain::DefaultRetainPipeline;
+use elephant::mcp::ElephantMcp;
 use elephant::server::{self, AppState};
 use elephant::storage::pg::PgMemoryStore;
 use elephant::types::ChunkConfig;
+use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
+use rmcp::transport::StreamableHttpService;
 
 fn make_llm(provider: &str, api_key: &str, model: &str) -> Box<dyn LlmClient> {
     match provider {
@@ -149,10 +152,20 @@ async fn main() {
         store,
     };
 
-    let app = server::router(state);
+    // 8. MCP server at /mcp
+    let mcp_state = state.clone();
+    let mcp_service = StreamableHttpService::new(
+        move || Ok(ElephantMcp::new(mcp_state.clone())),
+        LocalSessionManager::default().into(),
+        Default::default(),
+    );
+
+    let app = server::router(state).nest_service("/mcp", mcp_service);
     let listener = tokio::net::TcpListener::bind(&listen_addr)
         .await
         .expect("failed to bind listener");
     println!("Listening on {listen_addr}");
+    println!("  REST API: http://{listen_addr}/v1/");
+    println!("  MCP:      http://{listen_addr}/mcp/");
     axum::serve(listener, app).await.expect("server error");
 }

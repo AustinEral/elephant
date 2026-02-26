@@ -37,7 +37,7 @@ pub struct AppState {
 /// Build the Axum router with all routes.
 pub fn router(state: AppState) -> Router {
     Router::new()
-        .route("/v1/banks", post(handlers::create_bank))
+        .route("/v1/banks", get(handlers::list_banks).post(handlers::create_bank))
         .route("/v1/banks/{id}", get(handlers::get_bank))
         .route("/v1/banks/{id}/retain", post(handlers::retain))
         .route("/v1/banks/{id}/recall", post(handlers::recall))

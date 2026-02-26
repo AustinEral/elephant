@@ -1,0 +1,27 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: elephant
+      POSTGRES_USER: elephant
+      POSTGRES_PASSWORD: elephant
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U elephant"]
+      interval: 2s
+      retries: 10
+
+  elephant:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://elephant:elephant@postgres/elephant
+
+volumes:
+  pgdata:

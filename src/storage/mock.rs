@@ -215,4 +215,9 @@ impl MemoryStore for MockMemoryStore {
         store.push(bank.clone());
         Ok(bank.id)
     }
+
+    async fn list_banks(&self) -> Result<Vec<MemoryBank>> {
+        let store = self.banks.lock().unwrap();
+        Ok(store.clone())
+    }
 }
