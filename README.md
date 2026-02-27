@@ -1,133 +1,126 @@
-# Elephant
+<h1 align="center">elephant 🐘</h1>
 
-A Rust implementation of the [Hindsight](https://arxiv.org/abs/2512.12818) memory architecture for AI agents. Four-network memory (world, experience, observation, opinion), three core operations (retain, recall, reflect), with TEMPR retrieval and RRF fusion.
+<p align="center">
+  Long-term memory for AI agents.<br>
+  Structured extraction · entity resolution · temporal reasoning · preference tracking.
+</p>
 
-## Architecture
+<p align="center">
+  <a href="https://arxiv.org/abs/2512.12818"><img src="https://img.shields.io/badge/arXiv-2512.12818-b31b1b" alt="Paper"></a>
+  <a href="#quick-start"><img src="https://img.shields.io/badge/docker-ready-blue" alt="Docker"></a>
+  <img src="https://img.shields.io/badge/rust-2024-orange" alt="Rust">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+</p>
 
-```
-Reflect (CARA)  →  Recall (TEMPR)  →  Storage (pgvector)
-     ↑                   ↑
-Retain Pipeline    Embedding (local ONNX / API)
-     ↓
-  LLM Extraction → Entity Resolution → Fact Storage
-```
+<p align="center"><b>81.2% accuracy</b> on <a href="bench/locomo/README.md">LoCoMo</a> · <b>91.9%</b> multi-hop reasoning</p>
 
-**Memory networks:**
-- **World** — objective facts ("PostgreSQL supports JSONB")
-- **Experience** — personal events ("Alice joined Acme in 2020")
-- **Observation** — synthesized summaries across related facts
-- **Opinion** — subjective beliefs with confidence scores
+<p align="center">
+  <a href="#quick-start">Quick Start</a> · <a href="#how-it-works">How It Works</a> · <a href="#features">Features</a> · <a href="#benchmarks">Benchmarks</a>
+</p>
 
-**Operations:**
-- **Retain** — extract structured facts from natural language via LLM, resolve entities, store with embeddings
-- **Recall** — TEMPR retrieval (temporal, entity, meaning, preference, recency) with reciprocal rank fusion
-- **Reflect** — answer questions by reasoning over recalled memory context
+<br>
 
-**Background consolidation:**
-- Observation synthesis (merge related facts about an entity)
-- Opinion merging (detect consistent, contradictory, or superseded opinions)
-- Mental model generation (cross-cutting patterns from observations)
+Most memory systems are a vector store with a prompt. Elephant is a full extraction and reasoning pipeline built in Rust — it pulls structured facts out of conversations, resolves entities across sessions, tracks preferences with confidence scores, and synthesizes answers conditioned on what it actually knows about you.
 
-## Interfaces
+## Quick Start
 
-### MCP Server
+Copy `.env.example` to `.env`, set your `LLM_API_KEY`, and:
 
-Elephant exposes tools via [MCP](https://modelcontextprotocol.io/) (streamable HTTP):
+    cp .env.example .env
+    docker compose up -d
 
-- `retain` — store new memories
-- `recall` — semantic memory search
-- `reflect` — reasoned Q&A over memory
-- `list_banks` — list memory banks
-- `create_bank` — create or get a memory bank
+**Retain** — store a memory:
 
-### REST API
-
-Same operations available as HTTP endpoints on port 3001.
-
-## Setup
-
-### Requirements
-
-- Rust (2024 edition)
-- PostgreSQL 16 with pgvector extension
-- An LLM API key (Anthropic or OpenAI)
-- For local embeddings: ONNX Runtime 1.23.0 + bge-small-en-v1.5 model
-
-### Environment
-
-```bash
-cp .env.example .env  # then fill in values
+```json
+POST /v1/retain
+{"bank_id": "demo", "content": "Alice joined Acme Corp in March 2024. She prefers Rust over Go."}
 ```
 
-All configuration is via environment variables. A `.env` file is loaded automatically.
+**Reflect** — ask a question:
 
-Required:
-```
-DATABASE_URL       — Postgres connection string
-LLM_PROVIDER       — "anthropic" or "openai"
-LLM_API_KEY        — API key for the LLM provider
-EMBEDDING_PROVIDER — "local" or "openai"
+```json
+POST /v1/reflect
+{"bank_id": "demo", "query": "When did Alice join her company and what role?"}
+→ "Alice joined Acme Corp in March 2024 as a senior engineer."
 ```
 
-At least one model must be set:
+### MCP
+
+The same server speaks [MCP](https://modelcontextprotocol.io/) natively. Point any MCP client at it:
+
+    {
+      "mcpServers": {
+        "elephant": {
+          "type": "streamable-http",
+          "url": "http://localhost:3001/mcp"
+        }
+      }
+    }
+
+Five tools: **retain** · **recall** · **reflect** · **list_banks** · **create_bank**
+
+### Building from source
+
+Requires Postgres 16 + pgvector. For local embeddings, ONNX Runtime 1.23.
+
+    cargo run --release
+
+Full config reference in [`.env.example`](.env.example).
+
+## How It Works
+
+```mermaid
+flowchart TB
+    R([Retain]):::op
+    R --> E([LLM Extraction]):::step
+    E --> ER([Entity Resolution]):::step
+    ER --> S[(pgvector)]:::store
+
+    S --> C([Consolidation]):::op
+    C --> S
+
+    S --> T([TEMPR Retrieval]):::step
+    T --> F([RRF Fusion]):::step
+
+    F --> RC([Recall]):::op
+    F --> CARA([CARA Reasoning]):::step
+    CARA --> RE([Reflect]):::op
+
+    classDef op fill:#6366f1,stroke:#4f46e5,color:#fff,font-weight:bold
+    classDef step fill:#06b6d4,stroke:#0891b2,color:#fff
+    classDef store fill:#f59e0b,stroke:#d97706,color:#fff,font-weight:bold
 ```
-LLM_MODEL          — Default model for all operations
-RETAIN_LLM_MODEL   — Override for retain/extraction (can be a fast/cheap model)
-REFLECT_LLM_MODEL  — Override for reflect/consolidation (quality-sensitive)
-```
 
-If `RETAIN_LLM_MODEL` or `REFLECT_LLM_MODEL` is not set, it falls back to `LLM_MODEL`.
+**Retain** extracts structured facts via LLM, resolves entities, and stores them across four memory networks (world, experience, observation, opinion). **Recall** retrieves with five fused signals — temporal, entity, embedding, preference, recency. **Reflect** reasons over retrieved context with preference-conditioned synthesis.
 
-See `.env.example` for the full list including embedding and benchmark judge config.
+→ [Full architecture](docs/architecture.md)
 
-### Docker
+## Features
 
-```bash
-docker compose up
-```
+- **Four memory networks** — world facts, experiences, observations, opinions
+- **TEMPR retrieval** — five signals fused with reciprocal rank fusion
+- **CARA reasoning** — preference-conditioned answer synthesis
+- **Entity resolution** — cross-session deduplication via embeddings + LLM verification
+- **Consolidation** — merges related facts, detects opinions, builds mental models
+- **Local or cloud** — ONNX embeddings or OpenAI; Anthropic or OpenAI for LLM
+- **MCP + REST** — single server, PostgreSQL + pgvector
 
-This starts Postgres (pgvector) and Elephant with local embeddings. Set your LLM API key in `.env`.
+## Benchmarks
 
-### From source
+[LoCoMo](bench/locomo/README.md) — long-context conversational memory benchmark (ACL 2024).
 
-```bash
-cargo build --release
-./target/release/elephant
-```
+| Category | Accuracy | Description |
+|:--|:-:|:--|
+| **Multi-hop** | **91.9%** | Questions requiring reasoning across multiple memories |
+| **Open-domain** | 77.1% | General knowledge grounded in conversation history |
+| **Single-hop** | 78.1% | Direct fact retrieval from a single memory |
+| **Temporal** | 76.9% | Time-aware queries ("when did…", "before/after…") |
+| | | |
+| **Overall** | **81.2%** | **154 questions across all categories** |
 
-## Testing
-
-```bash
-# Unit + mock integration tests (no external deps besides Docker for testcontainers)
-cargo test
-
-# Real integration tests (requires .env with API keys)
-cargo test --test real_integration_tests -- --ignored
-
-# Prompt evaluation tests (requires LLM_API_KEY)
-cargo test --test prompt_eval -- --ignored --nocapture
-```
-
-See [tests/README.md](tests/README.md) for details.
-
-## Project Structure
-
-```
-src/
-  retain/        # Fact extraction, entity resolution, storage
-  recall/        # TEMPR retrieval, RRF fusion
-  reflect/       # CARA reasoning, disposition system
-  consolidation/ # Background observation/opinion/mental model synthesis
-  storage/       # PostgreSQL + pgvector
-  embedding/     # Local ONNX and OpenAI embeddings
-  llm/           # Anthropic and OpenAI LLM clients, retry wrapper
-  mcp/           # MCP server adapter
-  server/        # Axum HTTP server
-  types/         # Shared types
-prompts/         # LLM prompt templates
-migrations/      # SQL migrations
-```
+<sub>Sonnet 4.6 · bge-small-en-v1.5 local embeddings · <a href="bench/README.md">reproduce these results</a></sub>
 
 ## References
 
-- [Hindsight: A Memory Architecture for AI Agents](https://arxiv.org/abs/2512.12818)
+- [Hindsight](https://arxiv.org/abs/2512.12818) — the memory architecture Elephant implements
+- [LoCoMo](https://arxiv.org/abs/2402.17753) — the benchmark dataset
