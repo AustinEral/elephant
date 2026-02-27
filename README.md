@@ -26,36 +26,43 @@ Most memory systems are a vector store with a prompt. Elephant is a full extract
 
 Copy `.env.example` to `.env`, set your `LLM_API_KEY`, and:
 
-    cp .env.example .env
-    docker compose up -d
-
-**Retain** — store a memory:
-
-```json
-POST /v1/retain
-{"bank_id": "demo", "content": "Alice joined Acme Corp in March 2024. She prefers Rust over Go."}
+```sh
+cp .env.example .env
+docker compose up -d
 ```
 
-**Reflect** — ask a question:
+Store a memory:
 
-```json
-POST /v1/reflect
-{"bank_id": "demo", "query": "When did Alice join her company and what role?"}
-→ "Alice joined Acme Corp in March 2024 as a senior engineer."
+```sh
+curl localhost:3001/v1/retain -d '{
+  "bank_id": "demo",
+  "content": "Alice joined Acme Corp in March 2024. She prefers Rust over Go."
+}'
+```
+
+Ask a question:
+
+```sh
+curl localhost:3001/v1/reflect -d '{
+  "bank_id": "demo",
+  "query": "When did Alice join her company and what role?"
+}'
 ```
 
 ### MCP
 
 The same server speaks [MCP](https://modelcontextprotocol.io/) natively. Point any MCP client at it:
 
-    {
-      "mcpServers": {
-        "elephant": {
-          "type": "streamable-http",
-          "url": "http://localhost:3001/mcp"
-        }
-      }
+```json
+{
+  "mcpServers": {
+    "elephant": {
+      "type": "streamable-http",
+      "url": "http://localhost:3001/mcp"
     }
+  }
+}
+```
 
 Five tools: **retain** · **recall** · **reflect** · **list_banks** · **create_bank**
 
@@ -63,7 +70,9 @@ Five tools: **retain** · **recall** · **reflect** · **list_banks** · **creat
 
 Requires Postgres 16 + pgvector. For local embeddings, ONNX Runtime 1.23.
 
-    cargo run --release
+```sh
+cargo run --release
+```
 
 Full config reference in [`.env.example`](.env.example).
 
