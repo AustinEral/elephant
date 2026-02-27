@@ -9,7 +9,7 @@
   <a href="https://arxiv.org/abs/2512.12818"><img src="https://img.shields.io/badge/arXiv-2512.12818-b31b1b" alt="Paper"></a>
   <a href="#quick-start"><img src="https://img.shields.io/badge/docker-ready-blue" alt="Docker"></a>
   <img src="https://img.shields.io/badge/rust-2024-orange" alt="Rust">
-  <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+  <img src="https://img.shields.io/badge/license-MIT%2FApache--2.0-green" alt="License">
 </p>
 
 <p align="center"><b>81.2% accuracy</b> on <a href="bench/locomo/README.md">LoCoMo</a> · <b>91.9%</b> multi-hop reasoning</p>
