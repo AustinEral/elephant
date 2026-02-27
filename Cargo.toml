@@ -31,7 +31,12 @@ tokio = { version = "1.49.0", features = ["full"] }
 tower-http = { version = "0.6.8", features = ["cors"] }
 ulid = { version = "1.2.1", features = ["serde", "uuid"] }
 uuid = { version = "1.21.0", features = ["v4"] }
+tabled = { version = "0.20.0", features = ["ansi"] }
 
 [[bin]]
 name = "locomo-bench"
-path = "bench/locomo.rs"
+path = "bench/locomo/locomo.rs"
+
+[[bin]]
+name = "view"
+path = "bench/view.rs"

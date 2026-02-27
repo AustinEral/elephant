@@ -154,6 +154,20 @@ async fn main() {
 
     // 7. Build app state and serve
     let state = AppState {
+        info: server::ServerInfo {
+            retain_model: format!("{llm_provider}/{retain_model}"),
+            reflect_model: format!("{llm_provider}/{reflect_model}"),
+            embedding_model: match emb_config.provider {
+                EmbeddingProvider::OpenAi => format!("openai/{}", emb_config.model.clone().unwrap_or_default()),
+                EmbeddingProvider::Local => {
+                    let name = emb_config.model_path.as_deref()
+                        .and_then(|p| std::path::Path::new(p).file_name())
+                        .and_then(|f| f.to_str())
+                        .unwrap_or("unknown");
+                    format!("local/{name}")
+                }
+            },
+        },
         retain,
         recall,
         reflect,

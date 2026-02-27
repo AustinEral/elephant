@@ -173,6 +173,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires OPENAI_API_KEY"]
     async fn integration_simple_prompt() {
+        let _ = dotenvy::dotenv();
         let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
         let client = OpenAiClient::new(api_key, std::env::var("LLM_MODEL").expect("LLM_MODEL must be set"));
 
@@ -194,6 +195,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires OPENAI_API_KEY"]
     async fn integration_structured() {
+        let _ = dotenvy::dotenv();
         use crate::llm::complete_structured;
         use serde::Deserialize;
 

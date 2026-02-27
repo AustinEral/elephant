@@ -157,11 +157,12 @@ mod tests {
     use crate::types::llm::Message;
 
     #[tokio::test]
-    #[ignore = "requires ANTHROPIC_API_KEY"]
+    #[ignore = "requires LLM_API_KEY"]
     async fn integration_simple_prompt() {
+        let _ = dotenvy::dotenv();
         let api_key =
-            std::env::var("ANTHROPIC_API_KEY").expect("ANTHROPIC_API_KEY must be set");
-        let client = AnthropicClient::new(api_key, std::env::var("LLM_MODEL").expect("LLM_MODEL must be set"));
+            std::env::var("LLM_API_KEY").expect("LLM_API_KEY must be set");
+        let client = AnthropicClient::new(api_key, std::env::var("LLM_MODEL").or_else(|_| std::env::var("RETAIN_LLM_MODEL")).expect("LLM_MODEL or RETAIN_LLM_MODEL must be set"));
 
         let request = CompletionRequest {
             model: String::new(),
@@ -181,14 +182,15 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires ANTHROPIC_API_KEY"]
+    #[ignore = "requires LLM_API_KEY"]
     async fn integration_structured() {
+        let _ = dotenvy::dotenv();
         use crate::llm::complete_structured;
         use serde::Deserialize;
 
         let api_key =
-            std::env::var("ANTHROPIC_API_KEY").expect("ANTHROPIC_API_KEY must be set");
-        let client = AnthropicClient::new(api_key, std::env::var("LLM_MODEL").expect("LLM_MODEL must be set"));
+            std::env::var("LLM_API_KEY").expect("LLM_API_KEY must be set");
+        let client = AnthropicClient::new(api_key, std::env::var("LLM_MODEL").or_else(|_| std::env::var("RETAIN_LLM_MODEL")).expect("LLM_MODEL or RETAIN_LLM_MODEL must be set"));
 
         #[derive(Deserialize, Debug)]
         struct Color {

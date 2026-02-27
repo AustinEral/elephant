@@ -177,6 +177,7 @@ impl TestHarness {
         ));
 
         let state = AppState {
+            info: elephant::server::ServerInfo { retain_model: "test".into(), reflect_model: "test".into(), embedding_model: "test".into() },
             retain,
             recall,
             reflect,

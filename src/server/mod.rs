@@ -16,9 +16,22 @@ use crate::reflect::ReflectPipeline;
 use crate::retain::RetainPipeline;
 use crate::storage::MemoryStore;
 
+/// Server configuration exposed via `/v1/info`.
+#[derive(Clone, serde::Serialize)]
+pub struct ServerInfo {
+    /// The LLM model used for retain (fact extraction).
+    pub retain_model: String,
+    /// The LLM model used for reflect (synthesis).
+    pub reflect_model: String,
+    /// The embedding model name.
+    pub embedding_model: String,
+}
+
 /// Shared application state holding all pipeline instances.
 #[derive(Clone)]
 pub struct AppState {
+    /// Server info for the `/v1/info` endpoint.
+    pub info: ServerInfo,
     /// The retain pipeline.
     pub retain: Arc<dyn RetainPipeline>,
     /// The recall pipeline.
@@ -40,6 +53,7 @@ pub struct AppState {
 /// Build the Axum router with all routes.
 pub fn router(state: AppState) -> Router {
     Router::new()
+        .route("/v1/info", get(handlers::server_info))
         .route("/v1/banks", get(handlers::list_banks).post(handlers::create_bank))
         .route("/v1/banks/{id}", get(handlers::get_bank))
         .route("/v1/banks/{id}/retain", post(handlers::retain))
@@ -184,6 +198,7 @@ mod tests {
     fn test_app() -> (Router, Arc<MockMemoryStore>) {
         let store = Arc::new(MockMemoryStore::new());
         let state = AppState {
+            info: ServerInfo { retain_model: "test".into(), reflect_model: "test".into(), embedding_model: "test".into() },
             retain: Arc::new(MockRetainPipeline {
                 store: store.clone(),
             }),
@@ -271,6 +286,7 @@ mod tests {
         );
 
         let app2 = router(AppState {
+            info: ServerInfo { retain_model: "test".into(), reflect_model: "test".into(), embedding_model: "test".into() },
             retain: Arc::new(MockRetainPipeline {
                 store: store.clone(),
             }),
@@ -467,6 +483,7 @@ mod tests {
         // Build a fresh app since oneshot consumes the router
         let make_app = || {
             router(AppState {
+                info: ServerInfo { retain_model: "test".into(), reflect_model: "test".into(), embedding_model: "test".into() },
                 retain: Arc::new(MockRetainPipeline {
                     store: store.clone(),
                 }),

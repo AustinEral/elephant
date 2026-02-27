@@ -8,9 +8,11 @@
 //!
 //! Config from .env: LLM_PROVIDER, LLM_API_KEY, LLM_MODEL, ELEPHANT_URL
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -93,6 +95,13 @@ struct CreateBankResponse {
     id: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct ServerInfoResponse {
+    retain_model: String,
+    reflect_model: String,
+    embedding_model: String,
+}
+
 #[derive(Debug, Serialize)]
 struct ConsolidateRequest {
     since: String,
@@ -118,7 +127,15 @@ struct JudgeResponse {
 struct BenchmarkOutput {
     benchmark: String,
     timestamp: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    tag: Option<String>,
     judge_model: String,
+    #[serde(default)]
+    retain_model: String,
+    #[serde(default)]
+    reflect_model: String,
+    #[serde(default)]
+    embedding_model: String,
     total_questions: usize,
     accuracy: f64,
     mean_f1: f64,
@@ -139,11 +156,12 @@ struct CategoryResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct QuestionResult {
+    /// Stable hash of (sample_id, question) for cross-run traceability.
+    question_id: String,
     sample_id: String,
     question: String,
     ground_truth: String,
     hypothesis: String,
-    category: u8,
     category_name: String,
     f1: f64,
     judge_correct: bool,
@@ -371,16 +389,16 @@ fn fmt_elapsed(seconds: f64) -> String {
 
 // --- Incremental results flushing ---
 
-fn flush_results(results: &[QuestionResult], banks: &HashMap<String, String>, output_path: &Path, judge_label: &str, bench_start: Instant) {
+fn flush_results(results: &[QuestionResult], banks: &HashMap<String, String>, output_path: &Path, judge_label: &str, tag: &Option<String>, retain_model: &str, reflect_model: &str, embedding_model: &str, bench_start: Instant) {
     let bench_elapsed = bench_start.elapsed().as_secs_f64();
     let total_questions = results.len();
 
-    let mut category_f1: HashMap<u8, Vec<f64>> = HashMap::new();
-    let mut category_judge: HashMap<u8, Vec<f64>> = HashMap::new();
+    let mut category_f1: HashMap<String, Vec<f64>> = HashMap::new();
+    let mut category_judge: HashMap<String, Vec<f64>> = HashMap::new();
     for r in results {
-        category_f1.entry(r.category).or_default().push(r.f1);
+        category_f1.entry(r.category_name.clone()).or_default().push(r.f1);
         let score = if r.judge_correct { 1.0 } else { 0.0 };
-        category_judge.entry(r.category).or_default().push(score);
+        category_judge.entry(r.category_name.clone()).or_default().push(score);
     }
 
     let mean_f1 = if total_questions > 0 {
@@ -397,31 +415,29 @@ fn flush_results(results: &[QuestionResult], banks: &HashMap<String, String>, ou
     };
 
     let mut per_category = HashMap::new();
-    for cat in 1..=5u8 {
-        let name = category_name(cat);
-        let f1_scores = category_f1.get(&cat);
-        let j_scores = category_judge.get(&cat);
-        let n = f1_scores.map(|v| v.len()).unwrap_or(0);
-        if n > 0 {
-            per_category.insert(
-                name.to_string(),
-                CategoryResult {
-                    accuracy: j_scores
-                        .map(|v| v.iter().sum::<f64>() / v.len() as f64)
-                        .unwrap_or(0.0),
-                    mean_f1: f1_scores
-                        .map(|v| v.iter().sum::<f64>() / v.len() as f64)
-                        .unwrap_or(0.0),
-                    count: n,
-                },
-            );
-        }
+    for (name, f1_scores) in &category_f1 {
+        let j_scores = category_judge.get(name);
+        let n = f1_scores.len();
+        per_category.insert(
+            name.clone(),
+            CategoryResult {
+                accuracy: j_scores
+                    .map(|v| v.iter().sum::<f64>() / v.len() as f64)
+                    .unwrap_or(0.0),
+                mean_f1: f1_scores.iter().sum::<f64>() / n as f64,
+                count: n,
+            },
+        );
     }
 
     let output = BenchmarkOutput {
         benchmark: "locomo".into(),
         timestamp: Utc::now().to_rfc3339(),
+        tag: tag.clone(),
         judge_model: judge_label.to_string(),
+        retain_model: retain_model.to_string(),
+        reflect_model: reflect_model.to_string(),
+        embedding_model: embedding_model.to_string(),
         total_questions,
         accuracy,
         mean_f1,
@@ -441,8 +457,10 @@ fn flush_results(results: &[QuestionResult], banks: &HashMap<String, String>, ou
 struct Args {
     data: PathBuf,
     api_url: String,
-    output: PathBuf,
+    output: Option<PathBuf>,
+    tag: Option<String>,
     max_conversations: Option<usize>,
+    max_sessions: Option<usize>,
     max_questions: Option<usize>,
     bank_id: Option<String>,
     judge_model: Option<String>,
@@ -457,14 +475,16 @@ fn parse_args() -> Args {
     let mut args = Args {
         data: PathBuf::from("data/locomo10.json"),
         api_url: "http://localhost:3001".into(),
-        output: PathBuf::from("bench/results/locomo.json"),
+        output: None,
+        tag: None,
         max_conversations: None,
+        max_sessions: None,
         max_questions: None,
         bank_id: None,
         judge_model: None,
         concurrency: 1,
         question_concurrency: 1,
-        consolidate: false,
+        consolidate: true,
         resume: None,
     };
 
@@ -482,11 +502,19 @@ fn parse_args() -> Args {
             }
             "--output" => {
                 i += 1;
-                args.output = PathBuf::from(&raw[i]);
+                args.output = Some(PathBuf::from(&raw[i]));
+            }
+            "--tag" => {
+                i += 1;
+                args.tag = Some(raw[i].clone());
             }
             "--max-conversations" => {
                 i += 1;
                 args.max_conversations = Some(raw[i].parse().expect("invalid --max-conversations"));
+            }
+            "--max-sessions" => {
+                i += 1;
+                args.max_sessions = Some(raw[i].parse().expect("invalid --max-sessions"));
             }
             "--max-questions" => {
                 i += 1;
@@ -508,8 +536,8 @@ fn parse_args() -> Args {
                 i += 1;
                 args.question_concurrency = raw[i].parse().expect("invalid --question-concurrency");
             }
-            "--consolidate" => {
-                args.consolidate = true;
+            "--no-consolidate" => {
+                args.consolidate = false;
             }
             "--resume" => {
                 i += 1;
@@ -526,9 +554,13 @@ fn parse_args() -> Args {
                     "  --api-url <URL>            Elephant API URL [default: http://localhost:3001]"
                 );
                 eprintln!(
-                    "  --output <PATH>            Output results path [default: bench/results/locomo.json]"
+                    "  --output <PATH>            Output results path (overrides --tag)"
+                );
+                eprintln!(
+                    "  --tag <NAME>               Save to bench/locomo/results/<tag>.json"
                 );
                 eprintln!("  --max-conversations <N>    Limit conversations");
+                eprintln!("  --max-sessions <N>         Limit sessions ingested per conversation");
                 eprintln!("  --max-questions <N>        Limit questions per conversation");
                 eprintln!("  --bank-id <ID>             Reuse existing bank (skip ingestion)");
                 eprintln!("  --judge-model <MODEL>      Override LLM_MODEL for judge");
@@ -539,7 +571,7 @@ fn parse_args() -> Args {
                     "  --question-concurrency <N>      Max parallel questions per conversation [default: 1]"
                 );
                 eprintln!(
-                    "  --consolidate                   Run consolidation after ingestion before questions"
+                    "  --no-consolidate                Skip consolidation after ingestion"
                 );
                 eprintln!(
                     "  --resume <PATH>                 Resume from previous results (reuse bank IDs)"
@@ -563,6 +595,10 @@ struct SharedResults {
     banks: HashMap<String, String>,
     output_path: PathBuf,
     judge_label: String,
+    tag: Option<String>,
+    retain_model: String,
+    reflect_model: String,
+    embedding_model: String,
     bench_start: Instant,
 }
 
@@ -578,7 +614,7 @@ impl SharedResults {
     }
 
     fn flush(&self) {
-        flush_results(&self.results, &self.banks, &self.output_path, &self.judge_label, self.bench_start);
+        flush_results(&self.results, &self.banks, &self.output_path, &self.judge_label, &self.tag, &self.retain_model, &self.reflect_model, &self.embedding_model, self.bench_start);
     }
 }
 
@@ -590,6 +626,7 @@ async fn run_conversation(
     api_url: String,
     entry: LocomoEntry,
     judge: Arc<dyn LlmClient>,
+    max_sessions: Option<usize>,
     max_questions: Option<usize>,
     question_concurrency: usize,
     consolidate: bool,
@@ -617,13 +654,14 @@ async fn run_conversation(
         .await
         .expect("failed to create bank");
 
-        println!("[{tag}] Bank: {} | Ingesting {total_sessions} sessions...", bank.id);
+        let ingest_sessions = max_sessions.map(|m| m.min(total_sessions)).unwrap_or(total_sessions);
+        println!("[{tag}] Bank: {} | Ingesting {ingest_sessions}/{total_sessions} sessions...", bank.id);
 
         let ingest_start = Instant::now();
         let mut total_facts = 0usize;
         let mut session_times: Vec<f64> = Vec::new();
 
-        for idx in 1..=total_sessions {
+        for idx in 1..=ingest_sessions {
             let turns = get_session_turns(conv, idx);
             let date_str = get_session_date(conv, idx);
             let timestamp = parse_session_date(&date_str);
@@ -647,12 +685,12 @@ async fn run_conversation(
             total_facts += resp.facts_stored;
 
             let avg_time = session_times.iter().sum::<f64>() / session_times.len() as f64;
-            let remaining = total_sessions - idx;
+            let remaining = ingest_sessions - idx;
             let eta = avg_time * remaining as f64;
             let total_elapsed = ingest_start.elapsed().as_secs_f64();
 
             println!(
-                "[{tag}] ingest [{idx}/{total_sessions}] {} facts ({elapsed:.0}s) | total: {total_facts} | elapsed: {} | ETA: {}",
+                "[{tag}] ingest [{idx}/{ingest_sessions}] {} facts ({elapsed:.0}s) | total: {total_facts} | elapsed: {} | ETA: {}",
                 resp.facts_stored,
                 fmt_elapsed(total_elapsed),
                 fmt_elapsed(eta),
@@ -778,12 +816,18 @@ async fn run_conversation(
             }
             let done = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
 
+            let qid = {
+                let mut h = DefaultHasher::new();
+                sample_id.hash(&mut h);
+                question.hash(&mut h);
+                format!("{:06x}", h.finish() & 0xFFFFFF)
+            };
             let result = QuestionResult {
+                question_id: qid,
                 sample_id,
                 question,
                 ground_truth: gold,
                 hypothesis,
-                category,
                 category_name: cat_name.into(),
                 f1,
                 judge_correct,
@@ -828,6 +872,15 @@ async fn main() {
 
     let args = parse_args();
 
+    // Resolve output path: --output overrides --tag, --tag maps to results/<tag>.json, default is locomo.json
+    let output_path = if let Some(ref p) = args.output {
+        p.clone()
+    } else if let Some(ref tag) = args.tag {
+        PathBuf::from(format!("bench/locomo/results/{tag}.json"))
+    } else {
+        PathBuf::from("bench/locomo/results/locomo.json")
+    };
+
     // Validate dataset exists
     if !args.data.exists() {
         eprintln!("Dataset not found: {}", args.data.display());
@@ -844,8 +897,14 @@ async fn main() {
         .timeout(std::time::Duration::from_secs(300))
         .build()
         .expect("failed to build HTTP client");
-    match http.get(format!("{}/v1/banks", args.api_url)).send().await {
-        Ok(resp) if resp.status().is_success() => {}
+    // Fetch server info (model config)
+    let server_info: ServerInfoResponse = match http.get(format!("{}/v1/info", args.api_url)).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            resp.json().await.unwrap_or_else(|e| {
+                eprintln!("Failed to parse /v1/info: {e}");
+                std::process::exit(1);
+            })
+        }
         Ok(resp) => {
             eprintln!(
                 "Elephant returned HTTP {}: is the server running?",
@@ -859,7 +918,10 @@ async fn main() {
             eprintln!("  Start it with: docker compose up -d");
             std::process::exit(1);
         }
-    }
+    };
+    println!("retain_model: {}", server_info.retain_model);
+    println!("reflect_model: {}", server_info.reflect_model);
+    println!("embedding_model: {}", server_info.embedding_model);
 
     // Build LLM judge client.
     // JUDGE_* env vars override LLM_* so you can use a different model for judging.
@@ -916,7 +978,7 @@ async fn main() {
     let bench_start = Instant::now();
 
     // Ensure output directory exists
-    if let Some(parent) = args.output.parent() {
+    if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent).ok();
     }
 
@@ -924,8 +986,12 @@ async fn main() {
     let shared = Arc::new(Mutex::new(SharedResults {
         results: Vec::new(),
         banks: HashMap::new(),
-        output_path: args.output.clone(),
+        output_path: output_path.clone(),
         judge_label: judge_label.clone(),
+        tag: args.tag.clone(),
+        retain_model: server_info.retain_model.clone(),
+        reflect_model: server_info.reflect_model.clone(),
+        embedding_model: server_info.embedding_model.clone(),
         bench_start,
     }));
 
@@ -938,6 +1004,7 @@ async fn main() {
         let http = http.clone();
         let api_url = args.api_url.clone();
         let judge = judge.clone();
+        let max_sessions = args.max_sessions;
         let max_questions = args.max_questions;
         let question_concurrency = args.question_concurrency;
         let consolidate = args.consolidate;
@@ -948,7 +1015,7 @@ async fn main() {
 
         handles.push(tokio::spawn(async move {
             let _permit = sem.acquire().await.expect("semaphore closed");
-            run_conversation(tag, http, api_url, entry, judge, max_questions, question_concurrency, consolidate, reuse_bank, shared).await
+            run_conversation(tag, http, api_url, entry, judge, max_sessions, max_questions, question_concurrency, consolidate, reuse_bank, shared).await
         }));
     }
 
@@ -966,12 +1033,12 @@ async fn main() {
     let bench_elapsed = bench_start.elapsed().as_secs_f64();
     let total_questions = all_results.len();
 
-    let mut category_f1: HashMap<u8, Vec<f64>> = HashMap::new();
-    let mut category_judge: HashMap<u8, Vec<f64>> = HashMap::new();
+    let mut category_f1: HashMap<String, Vec<f64>> = HashMap::new();
+    let mut category_judge: HashMap<String, Vec<f64>> = HashMap::new();
     for r in &all_results {
-        category_f1.entry(r.category).or_default().push(r.f1);
+        category_f1.entry(r.category_name.clone()).or_default().push(r.f1);
         let score = if r.judge_correct { 1.0 } else { 0.0 };
-        category_judge.entry(r.category).or_default().push(score);
+        category_judge.entry(r.category_name.clone()).or_default().push(score);
     }
 
     let mean_f1 = if total_questions > 0 {
@@ -1013,20 +1080,17 @@ async fn main() {
         "-".repeat(4)
     );
 
-    for cat in 1..=5u8 {
-        let name = category_name(cat);
-        let f1_scores = category_f1.get(&cat);
-        let j_scores = category_judge.get(&cat);
-        let n = f1_scores.map(|v| v.len()).unwrap_or(0);
-        if n > 0 {
-            let f1_avg = f1_scores
-                .map(|v| v.iter().sum::<f64>() / v.len() as f64)
-                .unwrap_or(0.0);
-            let j_avg = j_scores
-                .map(|v| v.iter().sum::<f64>() / v.len() as f64)
-                .unwrap_or(0.0);
-            println!("  {name:15}  {:.1}%  {f1_avg:.3}  {n:>4}", j_avg * 100.0,);
-        }
+    let mut cat_names: Vec<&String> = category_f1.keys().collect();
+    cat_names.sort();
+    for name in cat_names {
+        let f1_scores = &category_f1[name];
+        let j_scores = category_judge.get(name);
+        let n = f1_scores.len();
+        let f1_avg = f1_scores.iter().sum::<f64>() / n as f64;
+        let j_avg = j_scores
+            .map(|v| v.iter().sum::<f64>() / v.len() as f64)
+            .unwrap_or(0.0);
+        println!("  {name:15}  {:.1}%  {f1_avg:.3}  {n:>4}", j_avg * 100.0);
     }
 
     // Final flush
@@ -1034,7 +1098,7 @@ async fn main() {
         let lock = shared.lock().await;
         lock.banks.clone()
     };
-    flush_results(&all_results, &all_banks, &args.output, &judge_label, bench_start);
+    flush_results(&all_results, &all_banks, &output_path, &judge_label, &args.tag, &server_info.retain_model, &server_info.reflect_model, &server_info.embedding_model, bench_start);
     println!();
-    println!("Results saved to {}", args.output.display());
+    println!("Results saved to {}", output_path.display());
 }

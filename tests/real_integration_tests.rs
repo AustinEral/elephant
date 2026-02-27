@@ -191,6 +191,7 @@ impl RealTestHarness {
         let model_generator = Arc::new(DefaultMentalModelGenerator::new(store_arc.clone(), self.llm.clone(), self.embeddings.clone()));
 
         let state = AppState {
+            info: elephant::server::ServerInfo { retain_model: "test".into(), reflect_model: "test".into(), embedding_model: "test".into() },
             retain,
             recall,
             reflect,

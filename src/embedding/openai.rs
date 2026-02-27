@@ -89,8 +89,9 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    #[ignore]
+    #[ignore = "requires OPENAI_API_KEY"]
     async fn embed_single_text() {
+        let _ = dotenvy::dotenv();
         let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
         let client = OpenAiEmbeddings::new(
             api_key,
@@ -104,8 +105,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore]
+    #[ignore = "requires OPENAI_API_KEY"]
     async fn embed_batch() {
+        let _ = dotenvy::dotenv();
         let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
         let client = OpenAiEmbeddings::new(
             api_key,

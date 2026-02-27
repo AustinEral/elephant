@@ -1,0 +1,69 @@
+{
+  "benchmark": "locomo",
+  "timestamp": "2026-02-27T04:31:00.665214635+00:00",
+  "tag": "smoke",
+  "judge_model": "anthropic/claude-sonnet-4-6",
+  "retain_model": "anthropic/claude-haiku-4-5",
+  "reflect_model": "anthropic/claude-sonnet-4-6",
+  "embedding_model": "local//app/models/bge-small-en-v1.5",
+  "total_questions": 3,
+  "accuracy": 1.0,
+  "mean_f1": 0.2300031123560535,
+  "per_category": {
+    "multi-hop": {
+      "accuracy": 1.0,
+      "mean_f1": 0.32539682539682535,
+      "count": 2
+    },
+    "temporal": {
+      "accuracy": 1.0,
+      "mean_f1": 0.03921568627450981,
+      "count": 1
+    }
+  },
+  "banks": {
+    "conv-26": "01KJENSP3X3P78YX3XPGADRV1V"
+  },
+  "results": [
+    {
+      "question_id": "f8cc48",
+      "sample_id": "conv-26",
+      "question": "When did Melanie paint a sunrise?",
+      "ground_truth": "2022",
+      "hypothesis": "Melanie painted a lake sunrise in 2022 [01KJENSTVYKGVM3M2M6JC10J48][01KJENT3NX1SCZ3JE8D2W1Y2DV].",
+      "category_name": "multi-hop",
+      "f1": 0.2222222222222222,
+      "judge_correct": true,
+      "judge_reasoning": "The generated answer states Melanie painted a lake sunrise in 2022, which matches the gold answer of 2022.",
+      "confidence": 0.95,
+      "elapsed_s": 2.362814866
+    },
+    {
+      "question_id": "4a2e15",
+      "sample_id": "conv-26",
+      "question": "When did Caroline go to the LGBTQ support group?",
+      "ground_truth": "7 May 2023",
+      "hypothesis": "Caroline attended the LGBTQ support group on May 7, 2023 [01KJENSTVYGZE4GKEJQXWXPJ7J][01KJENT6VNNSWT9N4AJFD0RZNJ].",
+      "category_name": "multi-hop",
+      "f1": 0.42857142857142855,
+      "judge_correct": true,
+      "judge_reasoning": "The generated answer states May 7, 2023, which matches the gold answer of 7 May 2023 exactly.",
+      "confidence": 0.98,
+      "elapsed_s": 2.785221544
+    },
+    {
+      "question_id": "35ed34",
+      "sample_id": "conv-26",
+      "question": "What fields would Caroline be likely to pursue in her educaton?",
+      "ground_truth": "Psychology, counseling certification",
+      "hypothesis": "Based on the available information, Caroline would likely pursue education in fields related to mental health and counseling. She is interested in working in mental health [01KJENSTVY6B7Z7MTJH497HZE5] and has a specific interest in counseling as a career [01KJENSTVYJEHFEN1FCV118CCJ]. Her motivation appears to be deeply personal — she wants to support people facing similar challenges to her own [01KJENSTVY1JEGA89CXAKJ9HV7], which is consistent with her experience at the LGBTQ support group where she found transgender stories inspiring [01KJENSTVYNJ4K9N0BE3DNCN85] and felt a sense of acceptance and courage [01KJENSTVYFFWBKWDYJAV0RVR9][01KJENSTVYP7PD8F29614AT38S]. This suggests she would likely pursue programs such as counseling psychology, social work, or related mental health disciplines.",
+      "category_name": "temporal",
+      "f1": 0.03921568627450981,
+      "judge_correct": true,
+      "judge_reasoning": "The generated answer mentions counseling and mental health/psychology fields, which aligns with the gold answer of 'Psychology, counseling certification'.",
+      "confidence": 0.8,
+      "elapsed_s": 8.249933991
+    }
+  ],
+  "total_time_s": 27.068420025
+}

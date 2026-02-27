@@ -156,6 +156,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn model_dir() -> PathBuf {
+        let _ = dotenvy::dotenv();
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("models/bge-small-en-v1.5")
     }
 

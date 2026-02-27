@@ -65,6 +65,13 @@ fn parse_entity_id(id: &str) -> Result<crate::types::EntityId> {
 
 // --- Handlers ---
 
+/// GET /v1/info
+pub async fn server_info(
+    State(state): State<AppState>,
+) -> Json<super::ServerInfo> {
+    Json(state.info.clone())
+}
+
 /// GET /v1/banks
 pub async fn list_banks(
     State(state): State<AppState>,
