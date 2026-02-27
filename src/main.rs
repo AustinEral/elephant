@@ -9,6 +9,7 @@ use elephant::consolidation::{
 use elephant::embedding::{self, EmbeddingClient, EmbeddingConfig, EmbeddingProvider};
 use elephant::llm::anthropic::AnthropicClient;
 use elephant::llm::openai::OpenAiClient;
+use elephant::llm::retry::{RetryPolicy, RetryingLlmClient};
 use elephant::llm::LlmClient;
 use elephant::recall::budget::EstimateTokenizer;
 use elephant::recall::graph::{GraphRetriever, GraphRetrieverConfig};
@@ -34,18 +35,25 @@ use rmcp::transport::StreamableHttpService;
 
 fn make_llm(provider: &str, api_key: &str, model: &str) -> Box<dyn LlmClient> {
     match provider {
-        "openai" => Box::new(OpenAiClient::new(api_key.into(), model.into(), None)),
+        "openai" => Box::new(OpenAiClient::new(api_key.into(), model.into())),
         _ => Box::new(AnthropicClient::new(api_key.into(), model.into())),
     }
 }
 
 #[tokio::main]
 async fn main() {
+    let _ = dotenvy::dotenv();
+
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    let listen_addr = env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:3000".into());
-    let llm_provider = env::var("LLM_PROVIDER").unwrap_or_else(|_| "anthropic".into());
+    let listen_addr = env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:3001".into());
+    let llm_provider = env::var("LLM_PROVIDER").expect("LLM_PROVIDER must be set");
     let llm_api_key = env::var("LLM_API_KEY").expect("LLM_API_KEY must be set");
-    let llm_model = env::var("LLM_MODEL").unwrap_or_else(|_| "claude-sonnet-4-20250514".into());
+    let retain_model = env::var("RETAIN_LLM_MODEL")
+        .or_else(|_| env::var("LLM_MODEL"))
+        .expect("RETAIN_LLM_MODEL or LLM_MODEL must be set");
+    let reflect_model = env::var("REFLECT_LLM_MODEL")
+        .or_else(|_| env::var("LLM_MODEL"))
+        .expect("REFLECT_LLM_MODEL or LLM_MODEL must be set");
 
     // 1. Storage — PgPool is internally Arc'd, cheap to clone
     let pool = sqlx::PgPool::connect(&database_url)
@@ -54,45 +62,48 @@ async fn main() {
     let store = Arc::new(PgMemoryStore::new(pool.clone()));
     store.migrate().await.expect("failed to run migrations");
 
-    // 2. Shared Arc clients for recall/reflect/consolidation
-    let llm: Arc<dyn LlmClient> =
-        Arc::from(make_llm(&llm_provider, &llm_api_key, &llm_model));
+    // 2. LLM clients — retain (extraction) and reflect/consolidation (synthesis) can use
+    //    different models. RETAIN_LLM_MODEL and REFLECT_LLM_MODEL override LLM_MODEL.
+    let retry_policy = RetryPolicy::default();
+    let retain_llm: Arc<dyn LlmClient> = Arc::new(RetryingLlmClient::new(
+        Arc::from(make_llm(&llm_provider, &llm_api_key, &retain_model)),
+        retry_policy.clone(),
+    ));
+    let reflect_llm: Arc<dyn LlmClient> = Arc::new(RetryingLlmClient::new(
+        Arc::from(make_llm(&llm_provider, &llm_api_key, &reflect_model)),
+        retry_policy,
+    ));
     let emb_config = EmbeddingConfig {
-        provider: if env::var("EMBEDDING_PROVIDER").unwrap_or_default() == "openai" {
-            EmbeddingProvider::OpenAi
-        } else {
-            EmbeddingProvider::Local
+        provider: match env::var("EMBEDDING_PROVIDER").expect("EMBEDDING_PROVIDER must be set").as_str() {
+            "openai" => EmbeddingProvider::OpenAi,
+            "local" => EmbeddingProvider::Local,
+            other => panic!("unknown EMBEDDING_PROVIDER: {other} (expected 'local' or 'openai')"),
         },
         model_path: env::var("EMBEDDING_MODEL_PATH").ok(),
         api_key: env::var("EMBEDDING_API_KEY").ok(),
-        model: None,
-        base_url: None,
-        dimensions: None,
+        model: env::var("EMBEDDING_API_MODEL").ok(),
+        dimensions: env::var("EMBEDDING_API_DIMS").ok().and_then(|s| s.parse().ok()),
     };
     let embeddings: Arc<dyn EmbeddingClient> =
         Arc::from(embedding::build_client(&emb_config).expect("failed to create embedding client"));
 
-    // 3. Retain pipeline (Box<dyn ...> — create separate lightweight instances sharing the pool)
+    // 3. Retain pipeline — uses retain-tier LLM (extraction, can be a fast/cheap model)
     let retain = Arc::new(DefaultRetainPipeline::new(
         Box::new(SimpleChunker),
-        Box::new(LlmFactExtractor::new(make_llm(
-            &llm_provider,
-            &llm_api_key,
-            &llm_model,
-        ))),
+        Box::new(LlmFactExtractor::new(retain_llm.clone())),
         Box::new(LayeredEntityResolver::new(
             Box::new(PgMemoryStore::new(pool.clone())),
             embedding::build_client(&emb_config).expect("embedding client"),
-            make_llm(&llm_provider, &llm_api_key, &llm_model),
+            retain_llm.clone(),
         )),
         Box::new(DefaultGraphBuilder::new(
             Box::new(PgMemoryStore::new(pool.clone())),
-            make_llm(&llm_provider, &llm_api_key, &llm_model),
+            retain_llm.clone(),
             GraphConfig::default(),
         )),
         Box::new(PgMemoryStore::new(pool.clone())),
         embedding::build_client(&emb_config).expect("embedding client"),
-        make_llm(&llm_provider, &llm_api_key, &llm_model),
+        retain_llm.clone(),
         ChunkConfig {
             max_tokens: 512,
             overlap_tokens: 64,
@@ -116,28 +127,28 @@ async fn main() {
         50,
     ));
 
-    // 5. Reflect pipeline
+    // 5. Reflect pipeline — uses reflect-tier LLM (synthesis, quality-sensitive)
     let reflect = Arc::new(DefaultReflectPipeline::new(
         Box::new(DefaultHierarchyAssembler::new(recall.clone())),
         Box::new(DefaultOpinionManager::new(store.clone(), embeddings.clone())),
-        llm.clone(),
+        reflect_llm.clone(),
         store.clone(),
     ));
 
-    // 6. Consolidation workers
+    // 6. Consolidation workers — synthesis like reflect, same tier
     let consolidator = Arc::new(DefaultConsolidator::new(
         store.clone(),
-        llm.clone(),
+        reflect_llm.clone(),
         embeddings.clone(),
     ));
     let opinion_merger = Arc::new(DefaultOpinionMerger::new(
         store.clone(),
-        llm.clone(),
+        reflect_llm.clone(),
         embeddings.clone(),
     ));
     let model_generator = Arc::new(DefaultMentalModelGenerator::new(
         store.clone(),
-        llm.clone(),
+        reflect_llm.clone(),
         embeddings.clone(),
     ));
 

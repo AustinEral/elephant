@@ -24,7 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl tar ca-cer
 WORKDIR /onnx
 
 # ONNX Runtime shared library
-RUN curl -fsSL https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-linux-x64-1.22.0.tgz \
+RUN curl -fsSL https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-linux-x64-1.23.0.tgz \
     | tar xz --strip-components=1 -C /onnx
 
 # bge-small-en-v1.5 model files
@@ -54,7 +54,7 @@ ENV LD_LIBRARY_PATH=/usr/local/lib
 ENV EMBEDDING_PROVIDER=local
 ENV EMBEDDING_MODEL_PATH=/app/models/bge-small-en-v1.5
 
-EXPOSE 3000
+EXPOSE 3001
 CMD ["./elephant"]
 
 # ---------------------------------------------------------------------------
@@ -70,7 +70,7 @@ WORKDIR /app
 
 COPY --from=builder /app/target/release/elephant .
 
-EXPOSE 3000
+EXPOSE 3001
 CMD ["./elephant"]
 
 # ---------------------------------------------------------------------------

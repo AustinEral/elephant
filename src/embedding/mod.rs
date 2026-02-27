@@ -30,7 +30,7 @@ pub trait EmbeddingClient: Send + Sync {
 pub enum EmbeddingProvider {
     /// Local ONNX model (bge-small-en-v1.5, 384 dims).
     Local,
-    /// OpenAI-compatible API (text-embedding-3-small, 1536 dims).
+    /// OpenAI API.
     OpenAi,
 }
 
@@ -43,11 +43,9 @@ pub struct EmbeddingConfig {
     pub model_path: Option<String>,
     /// API key (for [`EmbeddingProvider::OpenAi`]).
     pub api_key: Option<String>,
-    /// Model name override.
+    /// Model name (for [`EmbeddingProvider::OpenAi`]).
     pub model: Option<String>,
-    /// Base URL for OpenAI-compatible APIs.
-    pub base_url: Option<String>,
-    /// Override the default dimensionality.
+    /// Embedding dimensions (for [`EmbeddingProvider::OpenAi`]).
     pub dimensions: Option<usize>,
 }
 
@@ -58,7 +56,7 @@ pub fn build_client(config: &EmbeddingConfig) -> Result<Box<dyn EmbeddingClient>
             let model_path = config
                 .model_path
                 .as_deref()
-                .unwrap_or("models/bge-small-en-v1.5");
+                .ok_or_else(|| crate::error::Error::Embedding("EMBEDDING_MODEL_PATH must be set for local embeddings".into()))?;
             let client = local::LocalEmbeddings::new(std::path::Path::new(model_path))?;
             Ok(Box::new(client))
         }
@@ -66,13 +64,15 @@ pub fn build_client(config: &EmbeddingConfig) -> Result<Box<dyn EmbeddingClient>
             let api_key = config
                 .api_key
                 .clone()
-                .ok_or_else(|| crate::error::Error::Embedding("api_key required for OpenAI".into()))?;
-            let client = openai::OpenAiEmbeddings::new(
-                api_key,
-                config.model.clone(),
-                config.base_url.clone(),
-                config.dimensions,
-            );
+                .ok_or_else(|| crate::error::Error::Embedding("EMBEDDING_API_KEY must be set".into()))?;
+            let model = config
+                .model
+                .clone()
+                .ok_or_else(|| crate::error::Error::Embedding("EMBEDDING_API_MODEL must be set".into()))?;
+            let dimensions = config
+                .dimensions
+                .ok_or_else(|| crate::error::Error::Embedding("EMBEDDING_API_DIMS must be set".into()))?;
+            let client = openai::OpenAiEmbeddings::new(api_key, model, dimensions);
             Ok(Box::new(client))
         }
     }

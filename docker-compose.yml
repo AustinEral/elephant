@@ -5,6 +5,8 @@ services:
       POSTGRES_DB: elephant
       POSTGRES_USER: elephant
       POSTGRES_PASSWORD: elephant
+    ports:
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -18,10 +20,14 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "3000:3000"
+      - "3001:3001"
     env_file: .env
     environment:
       DATABASE_URL: postgres://elephant:elephant@postgres/elephant
+      # Override host-specific paths with container paths.
+      # Only used when EMBEDDING_PROVIDER=local (from .env); ignored otherwise.
+      ORT_DYLIB_PATH: /usr/local/lib/libonnxruntime.so
+      EMBEDDING_MODEL_PATH: /app/models/bge-small-en-v1.5
 
 volumes:
   pgdata:

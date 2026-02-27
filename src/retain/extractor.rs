@@ -1,5 +1,7 @@
 //! LLM-based fact extraction from text chunks (Phase 2B).
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 
 use crate::error::Result;
@@ -15,12 +17,12 @@ pub trait FactExtractor: Send + Sync {
 
 /// Fact extractor powered by an LLM.
 pub struct LlmFactExtractor {
-    llm: Box<dyn LlmClient>,
+    llm: Arc<dyn LlmClient>,
 }
 
 impl LlmFactExtractor {
     /// Create a new extractor with the given LLM client.
-    pub fn new(llm: Box<dyn LlmClient>) -> Self {
+    pub fn new(llm: Arc<dyn LlmClient>) -> Self {
         Self { llm }
     }
 
@@ -80,6 +82,8 @@ impl FactExtractor for LlmFactExtractor {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::llm::mock::MockLlmClient;
     use crate::types::{BankId, FactType, NetworkType};
@@ -109,7 +113,7 @@ mod tests {
         let mock = MockLlmClient::new();
         mock.push_response(response_json);
 
-        let extractor = LlmFactExtractor::new(Box::new(mock));
+        let extractor = LlmFactExtractor::new(Arc::new(mock));
         let input = ExtractionInput {
             content: "We decided to use Rust with Postgres instead of MongoDB.".into(),
             bank_id: BankId::new(),
@@ -141,7 +145,7 @@ mod tests {
         let mock = MockLlmClient::new();
         mock.push_response(format!("Here are the facts:\n```json\n{json}\n```"));
 
-        let extractor = LlmFactExtractor::new(Box::new(mock));
+        let extractor = LlmFactExtractor::new(Arc::new(mock));
         let input = ExtractionInput {
             content: "Python is a popular language.".into(),
             bank_id: BankId::new(),
@@ -163,7 +167,7 @@ mod tests {
         let mock = MockLlmClient::new();
         mock.push_response(json);
 
-        let extractor = LlmFactExtractor::new(Box::new(mock));
+        let extractor = LlmFactExtractor::new(Arc::new(mock));
         let input = ExtractionInput {
             content: "Nothing notable.".into(),
             bank_id: BankId::new(),

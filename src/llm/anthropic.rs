@@ -118,28 +118,36 @@ impl LlmClient for AnthropicClient {
             .await
             .map_err(|e| Error::Llm(format!("failed to read Anthropic response: {e}")))?;
 
-        if !status.is_success() {
-            let msg = serde_json::from_str::<AnthropicError>(&resp_text)
-                .map(|e| e.error.message)
-                .unwrap_or(resp_text);
-            return Err(Error::Llm(format!("Anthropic API error ({status}): {msg}")));
+        if status.is_success() {
+            let parsed: AnthropicResponse = serde_json::from_str(&resp_text)
+                .map_err(|e| Error::Llm(format!("failed to parse Anthropic response: {e}")))?;
+
+            let content = parsed
+                .content
+                .into_iter()
+                .next()
+                .map(|b| b.text)
+                .unwrap_or_default();
+
+            return Ok(CompletionResponse {
+                content,
+                input_tokens: parsed.usage.input_tokens,
+                output_tokens: parsed.usage.output_tokens,
+            });
         }
 
-        let parsed: AnthropicResponse = serde_json::from_str(&resp_text)
-            .map_err(|e| Error::Llm(format!("failed to parse Anthropic response: {e}")))?;
+        let msg = serde_json::from_str::<AnthropicError>(&resp_text)
+            .map(|e| e.error.message)
+            .unwrap_or_else(|_| resp_text);
 
-        let content = parsed
-            .content
-            .into_iter()
-            .next()
-            .map(|b| b.text)
-            .unwrap_or_default();
+        if status.as_u16() == 429 {
+            return Err(Error::RateLimit(format!("Anthropic API ({status}): {msg}")));
+        }
+        if status.is_server_error() {
+            return Err(Error::ServerError(format!("Anthropic API ({status}): {msg}")));
+        }
 
-        Ok(CompletionResponse {
-            content,
-            input_tokens: parsed.usage.input_tokens,
-            output_tokens: parsed.usage.output_tokens,
-        })
+        Err(Error::Llm(format!("Anthropic API error ({status}): {msg}")))
     }
 }
 
@@ -153,7 +161,7 @@ mod tests {
     async fn integration_simple_prompt() {
         let api_key =
             std::env::var("ANTHROPIC_API_KEY").expect("ANTHROPIC_API_KEY must be set");
-        let client = AnthropicClient::new(api_key, "claude-sonnet-4-20250514".into());
+        let client = AnthropicClient::new(api_key, std::env::var("LLM_MODEL").expect("LLM_MODEL must be set"));
 
         let request = CompletionRequest {
             model: String::new(),
@@ -180,7 +188,7 @@ mod tests {
 
         let api_key =
             std::env::var("ANTHROPIC_API_KEY").expect("ANTHROPIC_API_KEY must be set");
-        let client = AnthropicClient::new(api_key, "claude-sonnet-4-20250514".into());
+        let client = AnthropicClient::new(api_key, std::env::var("LLM_MODEL").expect("LLM_MODEL must be set"));
 
         #[derive(Deserialize, Debug)]
         struct Color {

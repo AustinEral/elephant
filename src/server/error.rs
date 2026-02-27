@@ -20,7 +20,8 @@ impl IntoResponse for Error {
             Error::InvalidDisposition(_) | Error::InvalidId(_) | Error::Serialization(_) => {
                 StatusCode::BAD_REQUEST
             }
-            Error::Llm(_) | Error::Embedding(_) => StatusCode::BAD_GATEWAY,
+            Error::Llm(_) | Error::Embedding(_) | Error::ServerError(_) => StatusCode::BAD_GATEWAY,
+            Error::RateLimit(_) => StatusCode::TOO_MANY_REQUESTS,
             Error::EmbeddingDimensionMismatch { .. } => StatusCode::CONFLICT,
             Error::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };

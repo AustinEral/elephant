@@ -1,7 +1,4 @@
-//! OpenAI-compatible Chat Completions API client.
-//!
-//! Works with OpenAI, Groq, Together, local vLLM, and any other provider
-//! that implements the OpenAI chat completions endpoint.
+//! OpenAI Chat Completions API client.
 
 use async_trait::async_trait;
 use reqwest::Client;
@@ -11,26 +8,22 @@ use crate::error::{Error, Result};
 use crate::llm::LlmClient;
 use crate::types::llm::{CompletionRequest, CompletionResponse};
 
-const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
+const API_URL: &str = "https://api.openai.com/v1";
 
-/// Client for OpenAI-compatible Chat Completions APIs.
+/// Client for the OpenAI Chat Completions API.
 pub struct OpenAiClient {
     client: Client,
     api_key: String,
     default_model: String,
-    base_url: String,
 }
 
 impl OpenAiClient {
-    /// Create a new OpenAI-compatible client.
-    ///
-    /// If `base_url` is `None`, defaults to `https://api.openai.com/v1`.
-    pub fn new(api_key: String, model: String, base_url: Option<String>) -> Self {
+    /// Create a new OpenAI client.
+    pub fn new(api_key: String, model: String) -> Self {
         Self {
             client: Client::new(),
             api_key,
             default_model: model,
-            base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
         }
     }
 }
@@ -116,7 +109,7 @@ impl LlmClient for OpenAiClient {
             temperature: request.temperature,
         };
 
-        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let url = format!("{API_URL}/chat/completions");
 
         let resp = self
             .client
@@ -134,33 +127,41 @@ impl LlmClient for OpenAiClient {
             .await
             .map_err(|e| Error::Llm(format!("failed to read OpenAI response: {e}")))?;
 
-        if !status.is_success() {
-            let msg = serde_json::from_str::<OpenAiError>(&resp_text)
-                .map(|e| e.error.message)
-                .unwrap_or(resp_text);
-            return Err(Error::Llm(format!("OpenAI API error ({status}): {msg}")));
+        if status.is_success() {
+            let parsed: OpenAiResponse = serde_json::from_str(&resp_text)
+                .map_err(|e| Error::Llm(format!("failed to parse OpenAI response: {e}")))?;
+
+            let content = parsed
+                .choices
+                .into_iter()
+                .next()
+                .and_then(|c| c.message.content)
+                .unwrap_or_default();
+
+            let (input_tokens, output_tokens) = parsed
+                .usage
+                .map(|u| (u.prompt_tokens, u.completion_tokens))
+                .unwrap_or((0, 0));
+
+            return Ok(CompletionResponse {
+                content,
+                input_tokens,
+                output_tokens,
+            });
         }
 
-        let parsed: OpenAiResponse = serde_json::from_str(&resp_text)
-            .map_err(|e| Error::Llm(format!("failed to parse OpenAI response: {e}")))?;
+        let msg = serde_json::from_str::<OpenAiError>(&resp_text)
+            .map(|e| e.error.message)
+            .unwrap_or_else(|_| resp_text);
 
-        let content = parsed
-            .choices
-            .into_iter()
-            .next()
-            .and_then(|c| c.message.content)
-            .unwrap_or_default();
+        if status.as_u16() == 429 {
+            return Err(Error::RateLimit(format!("OpenAI API ({status}): {msg}")));
+        }
+        if status.is_server_error() {
+            return Err(Error::ServerError(format!("OpenAI API ({status}): {msg}")));
+        }
 
-        let (input_tokens, output_tokens) = parsed
-            .usage
-            .map(|u| (u.prompt_tokens, u.completion_tokens))
-            .unwrap_or((0, 0));
-
-        Ok(CompletionResponse {
-            content,
-            input_tokens,
-            output_tokens,
-        })
+        Err(Error::Llm(format!("OpenAI API error ({status}): {msg}")))
     }
 }
 
@@ -173,7 +174,7 @@ mod tests {
     #[ignore = "requires OPENAI_API_KEY"]
     async fn integration_simple_prompt() {
         let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
-        let client = OpenAiClient::new(api_key, "gpt-4o-mini".into(), None);
+        let client = OpenAiClient::new(api_key, std::env::var("LLM_MODEL").expect("LLM_MODEL must be set"));
 
         let request = CompletionRequest {
             model: String::new(),
@@ -197,7 +198,7 @@ mod tests {
         use serde::Deserialize;
 
         let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
-        let client = OpenAiClient::new(api_key, "gpt-4o-mini".into(), None);
+        let client = OpenAiClient::new(api_key, std::env::var("LLM_MODEL").expect("LLM_MODEL must be set"));
 
         #[derive(Deserialize, Debug)]
         struct Color {

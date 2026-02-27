@@ -27,6 +27,14 @@ pub enum Error {
     #[error("llm error: {0}")]
     Llm(String),
 
+    /// The LLM provider returned a rate-limit response (HTTP 429).
+    #[error("rate limited: {0}")]
+    RateLimit(String),
+
+    /// The LLM provider returned a server error (HTTP 5xx).
+    #[error("server error: {0}")]
+    ServerError(String),
+
     /// An error from embedding generation.
     #[error("embedding error: {0}")]
     Embedding(String),

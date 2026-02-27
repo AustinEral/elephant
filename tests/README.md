@@ -1,6 +1,6 @@
 # Running Tests
 
-Copy `.env.test.example` to `.env` and fill in your keys.
+Copy `.env.example` to `.env` and fill in your keys.
 
 ## Unit + mock integration tests
 
@@ -12,7 +12,7 @@ cargo test
 
 ## Prompt eval tests
 
-Fast iteration on prompts — no Docker, no embeddings. Only needs `LLM_API_KEY` + `LLM_MODEL`.
+Fast iteration on prompts — no Docker, no embeddings. Only needs `LLM_PROVIDER`, `LLM_API_KEY`, and `LLM_MODEL`.
 
 ```bash
 cargo test --test prompt_eval -- --ignored --nocapture

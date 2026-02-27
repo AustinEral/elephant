@@ -42,7 +42,7 @@ Elephant exposes tools via [MCP](https://modelcontextprotocol.io/) (streamable H
 
 ### REST API
 
-Same operations available as HTTP endpoints on port 3000.
+Same operations available as HTTP endpoints on port 3001.
 
 ## Setup
 
@@ -50,7 +50,7 @@ Same operations available as HTTP endpoints on port 3000.
 
 - Rust (2024 edition)
 - PostgreSQL 16 with pgvector extension
-- An LLM API key (Anthropic or OpenAI-compatible)
+- An LLM API key (Anthropic or OpenAI)
 - For local embeddings: ONNX Runtime 1.23.0 + bge-small-en-v1.5 model
 
 ### Environment
@@ -59,27 +59,26 @@ Same operations available as HTTP endpoints on port 3000.
 cp .env.example .env  # then fill in values
 ```
 
-Required variables:
+All configuration is via environment variables. A `.env` file is loaded automatically.
+
+Required:
 ```
-DATABASE_URL=postgres://user:pass@localhost/elephant
-LLM_API_KEY=your-api-key
-LLM_MODEL=claude-sonnet-4-5-20250929
+DATABASE_URL       — Postgres connection string
+LLM_PROVIDER       — "anthropic" or "openai"
+LLM_API_KEY        — API key for the LLM provider
+EMBEDDING_PROVIDER — "local" or "openai"
 ```
 
-For local embeddings (recommended):
+At least one model must be set:
 ```
-EMBEDDING_PROVIDER=local
-EMBEDDING_MODEL_PATH=./models/bge-small-en-v1.5
-ORT_DYLIB_PATH=./lib/onnxruntime-linux-x64-1.23.0/lib/libonnxruntime.so
+LLM_MODEL          — Default model for all operations
+RETAIN_LLM_MODEL   — Override for retain/extraction (can be a fast/cheap model)
+REFLECT_LLM_MODEL  — Override for reflect/consolidation (quality-sensitive)
 ```
 
-For API embeddings:
-```
-EMBEDDING_PROVIDER=openai
-EMBEDDING_API_KEY=your-key
-EMBEDDING_API_MODEL=text-embedding-3-small
-EMBEDDING_API_DIMS=384
-```
+If `RETAIN_LLM_MODEL` or `REFLECT_LLM_MODEL` is not set, it falls back to `LLM_MODEL`.
+
+See `.env.example` for the full list including embedding and benchmark judge config.
 
 ### Docker
 
@@ -120,8 +119,8 @@ src/
   reflect/       # CARA reasoning, disposition system
   consolidation/ # Background observation/opinion/mental model synthesis
   storage/       # PostgreSQL + pgvector
-  embedding/     # Local ONNX and OpenAI-compatible embeddings
-  llm/           # Anthropic and OpenAI-compatible LLM clients
+  embedding/     # Local ONNX and OpenAI embeddings
+  llm/           # Anthropic and OpenAI LLM clients, retry wrapper
   mcp/           # MCP server adapter
   server/        # Axum HTTP server
   types/         # Shared types

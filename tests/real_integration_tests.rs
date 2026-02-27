@@ -119,8 +119,8 @@ impl RealTestHarness {
         let api_key = llm_api_key();
         let model = llm_model();
 
-        let make_llm = || -> Box<dyn LlmClient> {
-            Box::new(AnthropicClient::new(api_key.clone(), model.clone()))
+        let make_llm = || -> Arc<dyn LlmClient> {
+            Arc::new(AnthropicClient::new(api_key.clone(), model.clone()))
         };
         let make_emb = || -> Box<dyn EmbeddingClient> {
             let dims = self.embeddings.dimensions();
@@ -135,9 +135,8 @@ impl RealTestHarness {
             } else {
                 Box::new(elephant::embedding::openai::OpenAiEmbeddings::new(
                     embedding_api_key(),
-                    Some(model_name),
-                    None,
-                    Some(dims),
+                    model_name,
+                    dims,
                 ))
             }
         };
@@ -217,7 +216,6 @@ fn local_embedding_config() -> EmbeddingConfig {
         model_path: Some(embedding_model_path()),
         api_key: None,
         model: None,
-        base_url: None,
         dimensions: None,
     }
 }
@@ -229,7 +227,6 @@ fn openai_embedding_config() -> EmbeddingConfig {
         model_path: None,
         api_key: Some(embedding_api_key()),
         model: Some(embedding_api_model()),
-        base_url: None,
         dimensions: Some(embedding_api_dims()),
     }
 }

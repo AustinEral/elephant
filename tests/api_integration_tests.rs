@@ -19,6 +19,7 @@ use tower::util::ServiceExt;
 use elephant::consolidation::{DefaultConsolidator, DefaultMentalModelGenerator, DefaultOpinionMerger};
 use elephant::embedding::mock::MockEmbeddings;
 use elephant::llm::mock::MockLlmClient;
+use elephant::llm::LlmClient;
 use elephant::recall::budget::EstimateTokenizer;
 use elephant::recall::graph::{GraphRetriever, GraphRetrieverConfig};
 use elephant::recall::keyword::KeywordRetriever;
@@ -91,15 +92,15 @@ impl TestHarness {
     }
 
     fn app(&self) -> Router {
-        // Retain pipeline — each Box<dyn> slot gets a fresh instance from the pool
+        // Retain pipeline — each Arc<dyn>/Box<dyn> slot gets a fresh instance from the pool
         let retain_store = Box::new(PgMemoryStore::new(self.pool.clone()));
         let retain_embeddings = Box::new(MockEmbeddings::new(EMBED_DIMS));
-        let retain_llm_resolver = Box::new(MockLlmClient::new());
-        let retain_llm_graph = Box::new(MockLlmClient::new());
+        let retain_llm_resolver: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new());
+        let retain_llm_graph: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new());
 
         // Wire the shared MockLlmClient for extraction (where we push responses)
         let extractor = Box::new(LlmFactExtractor::new(
-            Box::new(self.llm.as_ref().clone()),
+            Arc::new(self.llm.as_ref().clone()),
         ));
         let resolver = Box::new(LayeredEntityResolver::new(
             Box::new(PgMemoryStore::new(self.pool.clone())),
@@ -122,7 +123,7 @@ impl TestHarness {
             graph_builder,
             retain_store,
             retain_embeddings,
-            Box::new(self.llm.as_ref().clone()),
+            Arc::new(self.llm.as_ref().clone()),
             ChunkConfig {
                 max_tokens: 512,
                 overlap_tokens: 50,

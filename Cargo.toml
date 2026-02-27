@@ -5,7 +5,6 @@ edition = "2024"
 
 [dev-dependencies]
 anyhow = "1.0.102"
-dotenvy = "0.15"
 proptest = "1"
 testcontainers = { version = "0.27.1", features = ["watchdog"] }
 testcontainers-modules = { version = "0.15.0", features = ["postgres"] }
@@ -13,6 +12,7 @@ tower = { version = "0.5.3", features = ["util"] }
 
 [dependencies]
 async-trait = "0.1.89"
+dotenvy = "0.15"
 axum = "0.8.8"
 chrono = { version = "0.4.44", features = ["serde"] }
 ndarray = "0.17.2"
@@ -31,3 +31,7 @@ tokio = { version = "1.49.0", features = ["full"] }
 tower-http = { version = "0.6.8", features = ["cors"] }
 ulid = { version = "1.2.1", features = ["serde", "uuid"] }
 uuid = { version = "1.21.0", features = ["v4"] }
+
+[[bin]]
+name = "locomo-bench"
+path = "bench/locomo.rs"

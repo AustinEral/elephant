@@ -1,6 +1,7 @@
 //! Entity resolution and deduplication (Phase 2C).
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 
@@ -36,7 +37,7 @@ pub trait EntityResolver: Send + Sync {
 pub struct LayeredEntityResolver {
     store: Box<dyn MemoryStore>,
     embeddings: Box<dyn EmbeddingClient>,
-    llm: Box<dyn LlmClient>,
+    llm: Arc<dyn LlmClient>,
     similarity_threshold: f32,
 }
 
@@ -45,7 +46,7 @@ impl LayeredEntityResolver {
     pub fn new(
         store: Box<dyn MemoryStore>,
         embeddings: Box<dyn EmbeddingClient>,
-        llm: Box<dyn LlmClient>,
+        llm: Arc<dyn LlmClient>,
     ) -> Self {
         Self {
             store,

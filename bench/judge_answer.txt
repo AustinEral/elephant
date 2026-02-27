@@ -1,0 +1,17 @@
+Your task is to label an answer to a question as CORRECT or WRONG.
+
+The question asks about something from a prior conversation history. The gold answer is a concise reference. The generated answer may be longer and more detailed.
+
+As long as the generated answer touches on the same topic and key facts as the gold answer, it should be counted as CORRECT.
+
+For time-related questions: as long as it refers to the same date or time period as the gold answer, it should be counted as CORRECT. Even if the format differs (e.g., "May 7th" vs "7 May"), consider it CORRECT if it is the same date.
+
+For unanswerable questions: if the gold answer indicates the question cannot be answered and the generated answer also indicates insufficient information or uncertainty, count it as CORRECT.
+
+<question>{question}</question>
+<gold_answer>{gold_answer}</gold_answer>
+<generated_answer>{generated_answer}</generated_answer>
+
+First, provide a short (one sentence) explanation of your reasoning, then finish with CORRECT or WRONG.
+
+Return response in JSON format with keys: "reasoning" and "label" (CORRECT or WRONG).

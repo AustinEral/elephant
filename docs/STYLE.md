@@ -250,7 +250,7 @@ fn start_run(session: Ulid, run: Ulid);
 
 ```rust
 let config = ConfigBuilder::new()
-    .model("claude-sonnet-4-20250514")
+    .model("claude-sonnet-4-6")
     .max_tokens(8000)
     .timeout(Duration::from_secs(30))
     .build()?;

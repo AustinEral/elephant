@@ -11,6 +11,8 @@ pub mod extractor;
 pub mod graph_builder;
 pub mod resolver;
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use chrono::Utc;
 
@@ -44,7 +46,7 @@ pub struct DefaultRetainPipeline {
     graph_builder: Box<dyn GraphBuilder>,
     store: Box<dyn MemoryStore>,
     embeddings: Box<dyn EmbeddingClient>,
-    llm: Box<dyn LlmClient>,
+    llm: Arc<dyn LlmClient>,
     chunk_config: crate::types::ChunkConfig,
 }
 
@@ -58,7 +60,7 @@ impl DefaultRetainPipeline {
         graph_builder: Box<dyn GraphBuilder>,
         store: Box<dyn MemoryStore>,
         embeddings: Box<dyn EmbeddingClient>,
-        llm: Box<dyn LlmClient>,
+        llm: Arc<dyn LlmClient>,
         chunk_config: crate::types::ChunkConfig,
     ) -> Self {
         Self {

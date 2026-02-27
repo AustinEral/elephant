@@ -3,6 +3,7 @@
 pub mod anthropic;
 pub mod mock;
 pub mod openai;
+pub mod retry;
 
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
@@ -132,7 +133,7 @@ pub fn extract_json(text: &str) -> Result<String> {
 pub enum Provider {
     /// Anthropic Claude API.
     Anthropic,
-    /// OpenAI-compatible API (OpenAI, Groq, Together, vLLM, etc.)
+    /// OpenAI API.
     OpenAi,
 }
 
@@ -145,8 +146,6 @@ pub struct ProviderConfig {
     pub api_key: String,
     /// Model name/ID to use.
     pub model: String,
-    /// Base URL override for OpenAI-compatible APIs.
-    pub base_url: Option<String>,
 }
 
 /// Configuration for LLM usage across the system.
@@ -173,7 +172,6 @@ pub fn build_client(config: &ProviderConfig) -> Box<dyn LlmClient> {
         Provider::OpenAi => Box::new(openai::OpenAiClient::new(
             config.api_key.clone(),
             config.model.clone(),
-            config.base_url.clone(),
         )),
     }
 }

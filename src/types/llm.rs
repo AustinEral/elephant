@@ -44,7 +44,7 @@ mod tests {
     #[test]
     fn completion_request_roundtrip() {
         let req = CompletionRequest {
-            model: "claude-sonnet-4-20250514".into(),
+            model: "test-model".into(),
             messages: vec![Message {
                 role: "user".into(),
                 content: "hello".into(),

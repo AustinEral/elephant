@@ -1,4 +1,4 @@
-//! OpenAI-compatible embedding client.
+//! OpenAI embedding client.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -6,29 +6,24 @@ use serde::{Deserialize, Serialize};
 use super::EmbeddingClient;
 use crate::error::{Error, Result};
 
+const API_URL: &str = "https://api.openai.com/v1";
+
 /// An embedding client that calls the OpenAI embeddings API.
-///
-/// Also works with any OpenAI-compatible endpoint (e.g. vLLM, Together, etc.)
-/// by setting `base_url`.
 pub struct OpenAiEmbeddings {
     client: reqwest::Client,
     api_key: String,
     model: String,
-    base_url: String,
     dims: usize,
 }
 
 impl OpenAiEmbeddings {
     /// Create a new OpenAI embedding client.
-    pub fn new(api_key: String, model: Option<String>, base_url: Option<String>, dimensions: Option<usize>) -> Self {
-        let model = model.unwrap_or_else(|| "text-embedding-3-small".to_string());
-        let dims = dimensions.unwrap_or(1536);
+    pub fn new(api_key: String, model: String, dimensions: usize) -> Self {
         Self {
             client: reqwest::Client::new(),
             api_key,
             model,
-            base_url: base_url.unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
-            dims,
+            dims: dimensions,
         }
     }
 }
@@ -59,7 +54,7 @@ impl EmbeddingClient for OpenAiEmbeddings {
 
         let response = self
             .client
-            .post(format!("{}/embeddings", self.base_url))
+            .post(format!("{API_URL}/embeddings"))
             .header("Authorization", format!("Bearer {}", self.api_key))
             .json(&request_body)
             .send()
@@ -97,7 +92,12 @@ mod tests {
     #[ignore]
     async fn embed_single_text() {
         let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
-        let client = OpenAiEmbeddings::new(api_key, None, None, None);
+        let client = OpenAiEmbeddings::new(
+            api_key,
+            std::env::var("EMBEDDING_API_MODEL").expect("EMBEDDING_API_MODEL must be set"),
+            std::env::var("EMBEDDING_API_DIMS").expect("EMBEDDING_API_DIMS must be set")
+                .parse().expect("EMBEDDING_API_DIMS must be a number"),
+        );
         let result = client.embed(&["Hello, world!"]).await.unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].len(), 1536);
@@ -107,7 +107,12 @@ mod tests {
     #[ignore]
     async fn embed_batch() {
         let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
-        let client = OpenAiEmbeddings::new(api_key, None, None, None);
+        let client = OpenAiEmbeddings::new(
+            api_key,
+            std::env::var("EMBEDDING_API_MODEL").expect("EMBEDDING_API_MODEL must be set"),
+            std::env::var("EMBEDDING_API_DIMS").expect("EMBEDDING_API_DIMS must be set")
+                .parse().expect("EMBEDDING_API_DIMS must be a number"),
+        );
         let result = client.embed(&["cat", "dog", "database"]).await.unwrap();
         assert_eq!(result.len(), 3);
         for v in &result {

@@ -1,5 +1,7 @@
 //! Graph link construction after fact extraction (Phase 2D).
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use chrono::Duration;
 
@@ -42,7 +44,7 @@ impl Default for GraphConfig {
 /// Graph builder that constructs temporal, semantic, entity, and causal links.
 pub struct DefaultGraphBuilder {
     store: Box<dyn MemoryStore>,
-    llm: Box<dyn LlmClient>,
+    llm: Arc<dyn LlmClient>,
     config: GraphConfig,
 }
 
@@ -50,7 +52,7 @@ impl DefaultGraphBuilder {
     /// Create a new graph builder.
     pub fn new(
         store: Box<dyn MemoryStore>,
-        llm: Box<dyn LlmClient>,
+        llm: Arc<dyn LlmClient>,
         config: GraphConfig,
     ) -> Self {
         Self {
@@ -316,6 +318,8 @@ impl GraphBuilder for DefaultGraphBuilder {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::types::{FactId, FactType, TemporalRange};
     use chrono::Utc;
@@ -342,7 +346,7 @@ mod tests {
     fn entity_links_shared_entities() {
         let builder = DefaultGraphBuilder {
             store: Box::new(crate::storage::mock::MockMemoryStore::new()),
-            llm: Box::new(crate::llm::mock::MockLlmClient::new()),
+            llm: Arc::new(crate::llm::mock::MockLlmClient::new()),
             config: GraphConfig::default(),
         };
 
@@ -366,7 +370,7 @@ mod tests {
     fn temporal_links_close_facts() {
         let builder = DefaultGraphBuilder {
             store: Box::new(crate::storage::mock::MockMemoryStore::new()),
-            llm: Box::new(crate::llm::mock::MockLlmClient::new()),
+            llm: Arc::new(crate::llm::mock::MockLlmClient::new()),
             config: GraphConfig::default(),
         };
 
@@ -395,7 +399,7 @@ mod tests {
     fn temporal_links_distant_facts_no_link() {
         let builder = DefaultGraphBuilder {
             store: Box::new(crate::storage::mock::MockMemoryStore::new()),
-            llm: Box::new(crate::llm::mock::MockLlmClient::new()),
+            llm: Arc::new(crate::llm::mock::MockLlmClient::new()),
             config: GraphConfig {
                 temporal_max_days: 30,
                 ..Default::default()
