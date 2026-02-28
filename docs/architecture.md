@@ -9,8 +9,10 @@ graph LR
     ER --> S[(pgvector)]
     S --> T[TEMPR Retrieval]
     T --> F[RRF Fusion]
-    F --> RC[Recall]
-    F --> RF[CARA Reasoning]
+    F --> X[Cross-Encoder Rerank]
+    X --> B[Token Budget]
+    B --> RC[Recall]
+    B --> RF[CARA Reasoning]
     RF --> RE[Reflect]
     S --> C[Consolidation]
     C --> S
@@ -27,23 +29,23 @@ graph LR
 
 ## Consolidation
 
-Consolidation can be triggered to:
+Consolidation runs two steps:
 
 1. **Observation synthesis** — groups related facts about the same entity, merges them into a single summary, and stores it as an observation memory.
-2. **Opinion detection** — identifies subjective beliefs and preferences, scores them with a confidence level, and stores them as opinion memories.
-3. **Mental models** — generates cross-cutting summaries ("pinned reflections") that stay current by periodically re-running their source query through reflect.
+2. **Opinion merging** — clusters similar opinions by embedding similarity, classifies them as consistent/contradictory/superseded, and merges or weakens accordingly.
 
-Consolidation uses the same LLM as retain (overridable via `RETAIN_LLM_MODEL`). It can be disabled per-request or globally.
+Consolidation uses the reflect-tier LLM (overridable via `REFLECT_LLM_MODEL`). Each step is triggered independently via the API.
 
 ## Retrieval (TEMPR)
 
-TEMPR fuses five retrieval signals using reciprocal rank fusion:
+TEMPR (**T**emporal **E**ntity **M**emory **P**riming **R**etrieval) runs four parallel retrieval channels, fuses them with RRF, then refines with a cross-encoder:
 
-- **T**emporal — recency-weighted scoring
-- **E**ntity — entity-graph traversal
-- **M**eaning — embedding similarity (pgvector cosine distance)
-- **P**reference — opinion/preference matching
-- **R**ecency — access-time boosting
+1. **Semantic** — embedding similarity (pgvector cosine distance)
+2. **Keyword** — BM25 full-text search
+3. **Graph** — entity-graph spreading activation
+4. **Temporal** — date-range matching and recency scoring
+
+Results are merged via Reciprocal Rank Fusion (k=60), reranked by a cross-encoder (ms-marco-MiniLM-L-6-v2), then trimmed to a token budget.
 
 ## Reasoning (CARA)
 

@@ -23,7 +23,7 @@ use elephant::llm::LlmClient;
 use elephant::recall::budget::EstimateTokenizer;
 use elephant::recall::graph::{GraphRetriever, GraphRetrieverConfig};
 use elephant::recall::keyword::KeywordRetriever;
-use elephant::recall::reranker::NoOpReranker;
+use elephant::recall::reranker::{self, RerankerConfig, RerankerProvider};
 use elephant::recall::semantic::SemanticRetriever;
 use elephant::recall::temporal::TemporalRetriever;
 use elephant::recall::DefaultRecallPipeline;
@@ -140,7 +140,13 @@ impl TestHarness {
             Box::new(KeywordRetriever::new(store_arc.clone(), 20)),
             Box::new(GraphRetriever::new(store_arc.clone(), embed_arc.clone(), GraphRetrieverConfig::default())),
             Box::new(TemporalRetriever::new(store_arc.clone())),
-            Box::new(NoOpReranker),
+            reranker::build_reranker(&RerankerConfig {
+                provider: RerankerProvider::None,
+                model_path: None,
+                api_key: None,
+                api_url: None,
+                api_model: None,
+            }).expect("reranker"),
             Box::new(EstimateTokenizer),
             60.0,
             50,

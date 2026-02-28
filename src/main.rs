@@ -12,7 +12,7 @@ use elephant::llm::LlmClient;
 use elephant::recall::budget::EstimateTokenizer;
 use elephant::recall::graph::{GraphRetriever, GraphRetrieverConfig};
 use elephant::recall::keyword::KeywordRetriever;
-use elephant::recall::reranker::NoOpReranker;
+use elephant::recall::reranker::{self, RerankerConfig, RerankerProvider};
 use elephant::recall::semantic::SemanticRetriever;
 use elephant::recall::temporal::TemporalRetriever;
 use elephant::recall::DefaultRecallPipeline;
@@ -110,7 +110,23 @@ async fn main() {
         },
     ));
 
-    // 4. Recall pipeline
+    // 4. Reranker
+    let reranker_config = RerankerConfig {
+        provider: match env::var("RERANKER_PROVIDER").expect("RERANKER_PROVIDER must be set").as_str() {
+            "local" => RerankerProvider::Local,
+            "api" => RerankerProvider::Api,
+            "none" => RerankerProvider::None,
+            other => panic!("unknown RERANKER_PROVIDER: {other} (expected 'local', 'api', or 'none')"),
+        },
+        model_path: env::var("RERANKER_MODEL_PATH").ok(),
+        api_key: env::var("RERANKER_API_KEY").ok(),
+        api_url: env::var("RERANKER_API_URL").ok(),
+        api_model: env::var("RERANKER_API_MODEL").ok(),
+    };
+    let reranker = reranker::build_reranker(&reranker_config)
+        .expect("failed to create reranker");
+
+    // 5. Recall pipeline
     let recall = Arc::new(DefaultRecallPipeline::new(
         Box::new(SemanticRetriever::new(store.clone(), embeddings.clone(), 20)),
         Box::new(KeywordRetriever::new(store.clone(), 20)),
@@ -120,7 +136,7 @@ async fn main() {
             GraphRetrieverConfig::default(),
         )),
         Box::new(TemporalRetriever::new(store.clone())),
-        Box::new(NoOpReranker),
+        reranker,
         Box::new(EstimateTokenizer),
         60.0,
         50,

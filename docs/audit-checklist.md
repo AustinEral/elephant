@@ -15,9 +15,9 @@ Audit performed Feb 2026 against Hindsight paper (arXiv:2512.12818).
 
 ## Design Gaps
 
-- [ ] **No cross-encoder reranker** (`src/recall/reranker.rs`)
-  - `NoOpReranker` (truncation) wired in production. Paper's TEMPR includes reranking step.
-  - `Reranker` trait is ready — needs a real implementation (e.g., cross-encoder model or LLM-based).
+- [x] **No cross-encoder reranker** (`src/recall/reranker/`)
+  - Fixed: added `LocalReranker` (ONNX cross-encoder) and `ApiReranker` (Cohere-compatible API).
+  - Configurable via `RERANKER_PROVIDER=local|api|none` (default: none).
 
 - [x] **Inline opinion reinforcement prompt** (`src/retain/mod.rs`)
   - Fixed: extracted to `prompts/reinforce_opinion.txt`, loaded via `include_str!`.

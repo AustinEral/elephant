@@ -90,9 +90,11 @@ flowchart TB
 
     S --> T([TEMPR Retrieval]):::step
     T --> F([RRF Fusion]):::step
+    F --> X([Cross-Encoder Rerank]):::step
+    X --> B([Token Budget]):::step
 
-    F --> RC([Recall]):::op
-    F --> CARA([CARA Reasoning]):::step
+    B --> RC([Recall]):::op
+    B --> CARA([CARA Reasoning]):::step
     CARA --> RE([Reflect]):::op
 
     classDef op fill:#6366f1,stroke:#4f46e5,color:#fff,font-weight:bold
@@ -100,14 +102,14 @@ flowchart TB
     classDef store fill:#f59e0b,stroke:#d97706,color:#fff,font-weight:bold
 ```
 
-**Retain** extracts structured facts via LLM, resolves entities, and stores them across four memory networks (world, experience, observation, opinion). **Recall** retrieves with five fused signals — temporal, entity, embedding, preference, recency. **Reflect** reasons over retrieved context with preference-conditioned synthesis.
+**Retain** extracts structured facts via LLM, resolves entities, and stores them across four memory networks (world, experience, observation, opinion). **Recall** runs four parallel retrieval channels (semantic, keyword, graph, temporal), fuses with RRF, reranks with a cross-encoder, and trims to a token budget. **Reflect** reasons over retrieved context with preference-conditioned synthesis.
 
 → [Full architecture](docs/architecture.md)
 
 ## Features
 
 - **Four memory networks** — world facts, experiences, observations, opinions
-- **TEMPR retrieval** — five signals fused with reciprocal rank fusion
+- **TEMPR retrieval** — four channels fused with RRF, cross-encoder reranking
 - **CARA reasoning** — preference-conditioned answer synthesis
 - **Entity resolution** — cross-session deduplication via embeddings + LLM verification
 - **Consolidation** — merges related facts into observations, detects and reconciles opinions

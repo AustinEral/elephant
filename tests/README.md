@@ -39,6 +39,14 @@ curl -Lo models/bge-small-en-v1.5/model.onnx https://huggingface.co/BAAI/bge-sma
 curl -Lo models/bge-small-en-v1.5/tokenizer.json https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/tokenizer.json
 ```
 
+**Cross-encoder reranker model** (needed for local reranker tests):
+
+```bash
+mkdir -p models/ms-marco-MiniLM-L-6-v2
+curl -Lo models/ms-marco-MiniLM-L-6-v2/model.onnx https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/main/onnx/model.onnx
+curl -Lo models/ms-marco-MiniLM-L-6-v2/tokenizer.json https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/main/tokenizer.json
+```
+
 ### Run
 
 ```bash
