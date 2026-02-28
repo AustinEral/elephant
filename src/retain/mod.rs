@@ -115,13 +115,9 @@ impl DefaultRetainPipeline {
                 }
 
                 // High similarity — ask LLM if this supports or contradicts
-                let prompt = format!(
-                    "Does the following new fact support or contradict the existing opinion?\n\n\
-                     Opinion: {}\n\
-                     New fact: {}\n\n\
-                     Answer with just 'supports' or 'contradicts' or 'unrelated'.",
-                    opinion.content, new_facts[i].content
-                );
+                let prompt = include_str!("../../prompts/reinforce_opinion.txt")
+                    .replace("{opinion}", &opinion.content)
+                    .replace("{new_fact}", &new_facts[i].content);
 
                 let request = CompletionRequest {
                     model: String::new(),

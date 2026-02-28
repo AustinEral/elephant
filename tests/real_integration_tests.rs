@@ -17,8 +17,7 @@ use testcontainers_modules::testcontainers::ImageExt;
 
 use elephant::consolidation::{DefaultConsolidator, DefaultOpinionMerger};
 use elephant::embedding::{self, EmbeddingClient, EmbeddingConfig, EmbeddingProvider};
-use elephant::llm::anthropic::AnthropicClient;
-use elephant::llm::LlmClient;
+use elephant::llm::{self, LlmClient, Provider, ProviderConfig};
 use elephant::recall::budget::EstimateTokenizer;
 use elephant::recall::graph::{GraphRetriever, GraphRetrieverConfig};
 use elephant::recall::keyword::KeywordRetriever;
@@ -54,6 +53,22 @@ fn env(key: &str) -> String {
 
 fn llm_api_key() -> String { env("LLM_API_KEY") }
 fn llm_model() -> String { env("LLM_MODEL") }
+fn llm_provider() -> Provider {
+    match std::env::var("LLM_PROVIDER").unwrap_or_default().as_str() {
+        "openai" => Provider::OpenAi,
+        _ => Provider::Anthropic,
+    }
+}
+fn llm_base_url() -> Option<String> { std::env::var("LLM_BASE_URL").ok() }
+
+fn make_test_llm() -> Arc<dyn LlmClient> {
+    Arc::from(llm::build_client(&ProviderConfig {
+        provider: llm_provider(),
+        api_key: llm_api_key(),
+        model: llm_model(),
+        base_url: llm_base_url(),
+    }))
+}
 fn embedding_model_path() -> String { env("EMBEDDING_MODEL_PATH") }
 fn embedding_api_key() -> String { env("EMBEDDING_API_KEY") }
 fn embedding_api_model() -> String { env("EMBEDDING_API_MODEL") }
@@ -105,8 +120,7 @@ impl RealTestHarness {
         let store = Arc::new(PgMemoryStore::new(pool.clone()));
         store.migrate().await.expect("migration failed");
 
-        let llm: Arc<dyn LlmClient> =
-            Arc::new(AnthropicClient::new(llm_api_key(), llm_model()));
+        let llm: Arc<dyn LlmClient> = make_test_llm();
 
         let embeddings: Arc<dyn EmbeddingClient> =
             Arc::from(embedding::build_client(&emb_config).expect("failed to build embedding client"));
@@ -116,12 +130,8 @@ impl RealTestHarness {
 
     fn app(&self) -> Router {
         let _ = dotenvy::dotenv();
-        let api_key = llm_api_key();
-        let model = llm_model();
 
-        let make_llm = || -> Arc<dyn LlmClient> {
-            Arc::new(AnthropicClient::new(api_key.clone(), model.clone()))
-        };
+        let make_llm = || -> Arc<dyn LlmClient> { make_test_llm() };
         let make_emb = || -> Box<dyn EmbeddingClient> {
             let dims = self.embeddings.dimensions();
             let model_name = self.embeddings.model_name().to_string();

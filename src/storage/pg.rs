@@ -299,20 +299,22 @@ impl MemoryStore for PgMemoryStore {
         let aliases = serde_json::to_value(&entity.aliases)?;
         let entity_type = enum_to_sql(&entity.entity_type)?;
 
-        sqlx::query(
+        let row = sqlx::query(
             "INSERT INTO entities (id, bank_id, canonical_name, aliases, entity_type)
              VALUES ($1, $2, $3, $4, $5)
              ON CONFLICT (bank_id, canonical_name)
-             DO UPDATE SET aliases = $4, entity_type = $5, updated_at = now()",
+             DO UPDATE SET aliases = $4, entity_type = $5, updated_at = now()
+             RETURNING id",
         )
         .bind(entity.id)
         .bind(entity.bank_id)
         .bind(&entity.canonical_name)
         .bind(&aliases)
         .bind(&entity_type)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
-        Ok(entity.id)
+        let id: EntityId = row.get("id");
+        Ok(id)
     }
 
     async fn find_entity(&self, bank: BankId, name: &str) -> Result<Option<Entity>> {

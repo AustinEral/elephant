@@ -1,0 +1,6 @@
+Does the following new fact support or contradict the existing opinion?
+
+Opinion: {opinion}
+New fact: {new_fact}
+
+Answer with just 'supports' or 'contradicts' or 'unrelated'.

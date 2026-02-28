@@ -146,6 +146,8 @@ pub struct ProviderConfig {
     pub api_key: String,
     /// Model name/ID to use.
     pub model: String,
+    /// Optional base URL override for OpenAI-compatible providers.
+    pub base_url: Option<String>,
 }
 
 /// Configuration for LLM usage across the system.
@@ -172,6 +174,7 @@ pub fn build_client(config: &ProviderConfig) -> Box<dyn LlmClient> {
         Provider::OpenAi => Box::new(openai::OpenAiClient::new(
             config.api_key.clone(),
             config.model.clone(),
+            config.base_url.clone(),
         )),
     }
 }

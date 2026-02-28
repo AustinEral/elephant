@@ -38,6 +38,7 @@ CREATE INDEX IF NOT EXISTS idx_facts_bank_id ON facts(bank_id);
 CREATE INDEX IF NOT EXISTS idx_facts_bank_network ON facts(bank_id, network);
 CREATE INDEX IF NOT EXISTS idx_facts_temporal ON facts(temporal_start, temporal_end);
 CREATE INDEX IF NOT EXISTS idx_facts_entity_ids ON facts USING GIN(entity_ids);
+CREATE INDEX IF NOT EXISTS idx_facts_fts ON facts USING GIN(to_tsvector('english', content));
 
 -- Entities: named entities referenced by facts.
 CREATE TABLE IF NOT EXISTS entities (

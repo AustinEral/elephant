@@ -329,6 +329,37 @@ async fn bank_isolation() {
 }
 
 #[tokio::test]
+async fn upsert_entity_returns_existing_id_on_conflict() {
+    let (store, _container) = setup_store().await;
+    let bank = make_bank();
+    store.create_bank(&bank).await.unwrap();
+
+    let original = Entity {
+        id: EntityId::new(),
+        canonical_name: "Rust".into(),
+        aliases: vec!["rust-lang".into()],
+        entity_type: EntityType::Concept,
+        bank_id: bank.id,
+    };
+    let id1 = store.upsert_entity(&original).await.unwrap();
+    assert_eq!(id1, original.id);
+
+    // Upsert again with a different UUID but same (bank_id, canonical_name)
+    let duplicate = Entity {
+        id: EntityId::new(), // different ID
+        canonical_name: "Rust".into(),
+        aliases: vec!["rust-lang".into(), "Rust programming".into()],
+        entity_type: EntityType::Concept,
+        bank_id: bank.id,
+    };
+    let id2 = store.upsert_entity(&duplicate).await.unwrap();
+
+    // Should return the ORIGINAL id, not the new one
+    assert_eq!(id2, original.id);
+    assert_ne!(id2, duplicate.id);
+}
+
+#[tokio::test]
 async fn entity_facts_lookup() {
     let (store, _container) = setup_store().await;
     let bank = make_bank();

@@ -31,9 +31,9 @@ use elephant::types::ChunkConfig;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::StreamableHttpService;
 
-fn make_llm(provider: &str, api_key: &str, model: &str) -> Box<dyn LlmClient> {
+fn make_llm(provider: &str, api_key: &str, model: &str, base_url: Option<String>) -> Box<dyn LlmClient> {
     match provider {
-        "openai" => Box::new(OpenAiClient::new(api_key.into(), model.into())),
+        "openai" => Box::new(OpenAiClient::new(api_key.into(), model.into(), base_url)),
         _ => Box::new(AnthropicClient::new(api_key.into(), model.into())),
     }
 }
@@ -52,6 +52,7 @@ async fn main() {
     let reflect_model = env::var("REFLECT_LLM_MODEL")
         .or_else(|_| env::var("LLM_MODEL"))
         .expect("REFLECT_LLM_MODEL or LLM_MODEL must be set");
+    let llm_base_url = env::var("LLM_BASE_URL").ok();
 
     // 1. Storage — PgPool is internally Arc'd, cheap to clone
     let pool = sqlx::PgPool::connect(&database_url)
@@ -64,11 +65,11 @@ async fn main() {
     //    different models. RETAIN_LLM_MODEL and REFLECT_LLM_MODEL override LLM_MODEL.
     let retry_policy = RetryPolicy::default();
     let retain_llm: Arc<dyn LlmClient> = Arc::new(RetryingLlmClient::new(
-        Arc::from(make_llm(&llm_provider, &llm_api_key, &retain_model)),
+        Arc::from(make_llm(&llm_provider, &llm_api_key, &retain_model, llm_base_url.clone())),
         retry_policy.clone(),
     ));
     let reflect_llm: Arc<dyn LlmClient> = Arc::new(RetryingLlmClient::new(
-        Arc::from(make_llm(&llm_provider, &llm_api_key, &reflect_model)),
+        Arc::from(make_llm(&llm_provider, &llm_api_key, &reflect_model, llm_base_url.clone())),
         retry_policy,
     ));
     let emb_config = EmbeddingConfig {

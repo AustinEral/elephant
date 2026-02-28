@@ -986,6 +986,7 @@ async fn main() {
         provider,
         api_key: judge_api_key,
         model: judge_model.clone(),
+        base_url: None,
     };
     let judge: Arc<dyn LlmClient> = Arc::new(RetryingLlmClient::new(
         Arc::from(llm::build_client(&judge_config)),

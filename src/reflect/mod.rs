@@ -79,14 +79,8 @@ impl ReflectPipeline for DefaultReflectPipeline {
             .await?;
 
         // Step 2: Load bank profile and verbalize disposition
-        let bank_profile = match self.store.get_bank(query.bank_id).await {
-            Ok(bank) => verbalize_bank_profile(&bank),
-            Err(_) => crate::types::BankPromptContext {
-                disposition_prompt: String::new(),
-                directives_prompt: String::new(),
-                mission_prompt: String::new(),
-            },
-        };
+        let bank = self.store.get_bank(query.bank_id).await?;
+        let bank_profile = verbalize_bank_profile(&bank);
 
         // Step 3: Get existing opinions on this topic
         let existing_opinions = self
@@ -502,5 +496,23 @@ mod tests {
         assert!(profile.disposition_prompt.contains("reads between the lines"));
         assert!(profile.directives_prompt.contains("Never share secrets"));
         assert_eq!(profile.mission_prompt, "Remember developer context");
+    }
+
+    #[tokio::test]
+    async fn reflect_fails_when_bank_not_found() {
+        let h = TestHarness::new().await;
+        let pipeline = h.build_pipeline();
+
+        // Use a bank_id that doesn't exist in the store
+        let bogus_bank = crate::types::BankId::new();
+        let result = pipeline
+            .reflect(&ReflectQuery {
+                bank_id: bogus_bank,
+                question: "anything".into(),
+                budget_tokens: 2000,
+            })
+            .await;
+
+        assert!(result.is_err(), "reflect should fail when bank doesn't exist");
     }
 }

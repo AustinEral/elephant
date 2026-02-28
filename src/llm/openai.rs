@@ -15,15 +15,17 @@ pub struct OpenAiClient {
     client: Client,
     api_key: String,
     default_model: String,
+    base_url: String,
 }
 
 impl OpenAiClient {
-    /// Create a new OpenAI client.
-    pub fn new(api_key: String, model: String) -> Self {
+    /// Create a new OpenAI client with optional base URL for compatible providers.
+    pub fn new(api_key: String, model: String, base_url: Option<String>) -> Self {
         Self {
             client: Client::new(),
             api_key,
             default_model: model,
+            base_url: base_url.unwrap_or_else(|| API_URL.to_string()),
         }
     }
 }
@@ -109,7 +111,7 @@ impl LlmClient for OpenAiClient {
             temperature: request.temperature,
         };
 
-        let url = format!("{API_URL}/chat/completions");
+        let url = format!("{}/chat/completions", self.base_url);
 
         let resp = self
             .client
@@ -175,7 +177,7 @@ mod tests {
     async fn integration_simple_prompt() {
         let _ = dotenvy::dotenv();
         let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
-        let client = OpenAiClient::new(api_key, std::env::var("LLM_MODEL").expect("LLM_MODEL must be set"));
+        let client = OpenAiClient::new(api_key, std::env::var("LLM_MODEL").expect("LLM_MODEL must be set"), None);
 
         let request = CompletionRequest {
             model: String::new(),
@@ -200,7 +202,7 @@ mod tests {
         use serde::Deserialize;
 
         let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
-        let client = OpenAiClient::new(api_key, std::env::var("LLM_MODEL").expect("LLM_MODEL must be set"));
+        let client = OpenAiClient::new(api_key, std::env::var("LLM_MODEL").expect("LLM_MODEL must be set"), None);
 
         #[derive(Deserialize, Debug)]
         struct Color {
