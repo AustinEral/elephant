@@ -39,6 +39,10 @@ pub enum Error {
     #[error("embedding error: {0}")]
     Embedding(String),
 
+    /// An error from the reranker.
+    #[error("reranker error: {0}")]
+    Reranker(String),
+
     /// The bank's embedding config doesn't match the current embedding client.
     #[error("embedding dimension mismatch: bank expects {expected} dims ({model}), but client produces {actual} dims")]
     EmbeddingDimensionMismatch {
