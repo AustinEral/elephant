@@ -136,6 +136,8 @@ struct BenchmarkOutput {
     reflect_model: String,
     #[serde(default)]
     embedding_model: String,
+    #[serde(default)]
+    consolidation_strategy: String,
     total_questions: usize,
     accuracy: f64,
     mean_f1: f64,
@@ -389,7 +391,7 @@ fn fmt_elapsed(seconds: f64) -> String {
 
 // --- Incremental results flushing ---
 
-fn flush_results(results: &[QuestionResult], banks: &HashMap<String, String>, output_path: &Path, judge_label: &str, tag: &Option<String>, retain_model: &str, reflect_model: &str, embedding_model: &str, bench_start: Instant) {
+fn flush_results(results: &[QuestionResult], banks: &HashMap<String, String>, output_path: &Path, judge_label: &str, tag: &Option<String>, retain_model: &str, reflect_model: &str, embedding_model: &str, consolidation_strategy: &str, bench_start: Instant) {
     let bench_elapsed = bench_start.elapsed().as_secs_f64();
     let total_questions = results.len();
 
@@ -438,6 +440,7 @@ fn flush_results(results: &[QuestionResult], banks: &HashMap<String, String>, ou
         retain_model: retain_model.to_string(),
         reflect_model: reflect_model.to_string(),
         embedding_model: embedding_model.to_string(),
+        consolidation_strategy: consolidation_strategy.to_string(),
         total_questions,
         accuracy,
         mean_f1,
@@ -467,6 +470,7 @@ struct Args {
     concurrency: usize,
     question_concurrency: usize,
     consolidate: bool,
+    consolidate_per_session: bool,
     /// Resume from a previous results file — reuses bank IDs to skip ingestion.
     resume: Option<PathBuf>,
 }
@@ -485,6 +489,7 @@ fn parse_args() -> Args {
         concurrency: 1,
         question_concurrency: 1,
         consolidate: true,
+        consolidate_per_session: false,
         resume: None,
     };
 
@@ -539,6 +544,9 @@ fn parse_args() -> Args {
             "--no-consolidate" => {
                 args.consolidate = false;
             }
+            "--consolidate-per-session" => {
+                args.consolidate_per_session = true;
+            }
             "--resume" => {
                 i += 1;
                 args.resume = Some(PathBuf::from(&raw[i]));
@@ -574,6 +582,9 @@ fn parse_args() -> Args {
                     "  --no-consolidate                Skip consolidation after ingestion"
                 );
                 eprintln!(
+                    "  --consolidate-per-session       Consolidate after each session (incremental)"
+                );
+                eprintln!(
                     "  --resume <PATH>                 Resume from previous results (reuse bank IDs)"
                 );
                 std::process::exit(0);
@@ -599,6 +610,7 @@ struct SharedResults {
     retain_model: String,
     reflect_model: String,
     embedding_model: String,
+    consolidation_strategy: String,
     bench_start: Instant,
 }
 
@@ -614,7 +626,7 @@ impl SharedResults {
     }
 
     fn flush(&self) {
-        flush_results(&self.results, &self.banks, &self.output_path, &self.judge_label, &self.tag, &self.retain_model, &self.reflect_model, &self.embedding_model, self.bench_start);
+        flush_results(&self.results, &self.banks, &self.output_path, &self.judge_label, &self.tag, &self.retain_model, &self.reflect_model, &self.embedding_model, &self.consolidation_strategy, self.bench_start);
     }
 }
 
@@ -630,6 +642,7 @@ async fn run_conversation(
     max_questions: Option<usize>,
     question_concurrency: usize,
     consolidate: bool,
+    consolidate_per_session: bool,
     reuse_bank: Option<String>,
     shared: Arc<Mutex<SharedResults>>,
 ) {
@@ -660,6 +673,9 @@ async fn run_conversation(
         let ingest_start = Instant::now();
         let mut total_facts = 0usize;
         let mut session_times: Vec<f64> = Vec::new();
+        let mut last_consolidation: DateTime<Utc> = DateTime::parse_from_rfc3339("2000-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
 
         for idx in 1..=ingest_sessions {
             let turns = get_session_turns(conv, idx);
@@ -695,6 +711,32 @@ async fn run_conversation(
                 fmt_elapsed(total_elapsed),
                 fmt_elapsed(eta),
             );
+
+            // Per-session consolidation (incremental edit path)
+            if consolidate_per_session && resp.facts_stored > 0 {
+                let since_str = last_consolidation.to_rfc3339();
+                let consolidate_url = format!("{api_url}/v1/banks/{}/consolidate", bank.id);
+                match api_post::<ConsolidateResponse>(
+                    &http,
+                    &consolidate_url,
+                    &ConsolidateRequest {
+                        since: since_str,
+                    },
+                )
+                .await
+                {
+                    Ok(cr) => {
+                        println!(
+                            "[{tag}]   consolidate: {} created, {} updated",
+                            cr.observations_created, cr.observations_updated,
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("[{tag}]   consolidate failed: {e}");
+                    }
+                }
+                last_consolidation = Utc::now();
+            }
         }
 
         let total_elapsed = ingest_start.elapsed().as_secs_f64();
@@ -709,8 +751,8 @@ async fn run_conversation(
     // Record bank ID for resume
     shared.lock().await.record_bank(entry.sample_id.clone(), bank_id.clone());
 
-    // Consolidation phase (optional)
-    if consolidate {
+    // Consolidation phase (optional) — skip if already consolidated per-session
+    if consolidate && !consolidate_per_session {
         println!("[{tag}] Consolidating...");
         let t0 = Instant::now();
         let consolidate_url = format!("{api_url}/v1/banks/{bank_id}/consolidate");
@@ -992,6 +1034,13 @@ async fn main() {
         retain_model: server_info.retain_model.clone(),
         reflect_model: server_info.reflect_model.clone(),
         embedding_model: server_info.embedding_model.clone(),
+        consolidation_strategy: if args.consolidate_per_session {
+            "per-session".into()
+        } else if args.consolidate {
+            "end".into()
+        } else {
+            "none".into()
+        },
         bench_start,
     }));
 
@@ -1008,6 +1057,7 @@ async fn main() {
         let max_questions = args.max_questions;
         let question_concurrency = args.question_concurrency;
         let consolidate = args.consolidate;
+        let consolidate_per_session = args.consolidate_per_session;
         let reuse_bank = resume_banks.get(&entry.sample_id).cloned()
             .or_else(|| if conv_idx == 0 { args.bank_id.clone() } else { None });
         let tag = format!("conv {}/{total_convs}", conv_idx + 1);
@@ -1015,7 +1065,7 @@ async fn main() {
 
         handles.push(tokio::spawn(async move {
             let _permit = sem.acquire().await.expect("semaphore closed");
-            run_conversation(tag, http, api_url, entry, judge, max_sessions, max_questions, question_concurrency, consolidate, reuse_bank, shared).await
+            run_conversation(tag, http, api_url, entry, judge, max_sessions, max_questions, question_concurrency, consolidate, consolidate_per_session, reuse_bank, shared).await
         }));
     }
 
@@ -1098,7 +1148,14 @@ async fn main() {
         let lock = shared.lock().await;
         lock.banks.clone()
     };
-    flush_results(&all_results, &all_banks, &output_path, &judge_label, &args.tag, &server_info.retain_model, &server_info.reflect_model, &server_info.embedding_model, bench_start);
+    let consolidation_strategy = if args.consolidate_per_session {
+        "per-session"
+    } else if args.consolidate {
+        "end"
+    } else {
+        "none"
+    };
+    flush_results(&all_results, &all_banks, &output_path, &judge_label, &args.tag, &server_info.retain_model, &server_info.reflect_model, &server_info.embedding_model, consolidation_strategy, bench_start);
     println!();
     println!("Results saved to {}", output_path.display());
 }

@@ -81,7 +81,12 @@ impl RecallPipeline for DefaultRecallPipeline {
 
         // Step 2: RRF fusion
         let rankings = [semantic_r, keyword_r, graph_r, temporal_r];
-        let fused = fusion::fuse_rankings(&rankings, self.rrf_k);
+        let mut fused = fusion::fuse_rankings(&rankings, self.rrf_k);
+
+        // Step 2.5: Apply network filter (if set)
+        if let Some(ref networks) = query.network_filter {
+            fused.retain(|sf| networks.contains(&sf.fact.network));
+        }
 
         // Step 3: Rerank top N
         let reranked = self
@@ -195,7 +200,6 @@ mod tests {
             budget_tokens: 1000,
             network_filter: None,
             temporal_anchor: None,
-            tag_filter: None,
         };
 
         let result = pipeline.recall(&query).await.unwrap();
@@ -240,7 +244,6 @@ mod tests {
             budget_tokens: 20,
             network_filter: None,
             temporal_anchor: None,
-            tag_filter: None,
         };
 
         let result = pipeline.recall(&query).await.unwrap();
@@ -283,7 +286,6 @@ mod tests {
             budget_tokens: 1000,
             network_filter: None,
             temporal_anchor: None,
-            tag_filter: None,
         };
 
         let result = pipeline.recall(&query).await.unwrap();
@@ -318,11 +320,56 @@ mod tests {
             budget_tokens: 1000,
             network_filter: None,
             temporal_anchor: None,
-            tag_filter: None,
         };
 
         let result = pipeline.recall(&query).await.unwrap();
         assert!(result.facts.is_empty());
         assert_eq!(result.total_tokens, 0);
+    }
+
+    #[tokio::test]
+    async fn network_filter_excludes_non_matching() {
+        let store = Arc::new(MockMemoryStore::new());
+        let embeddings = Arc::new(MockEmbeddings::new(8));
+        let bank = create_test_bank(&store, 8).await;
+
+        let emb = embeddings.embed(&["test content"]).await.unwrap();
+
+        // Insert a World fact and an Opinion fact
+        let world_fact = make_fact_with_embedding(bank, "world fact about testing", emb[0].clone());
+        let mut opinion_fact = make_fact_with_embedding(bank, "opinion about testing", emb[0].clone());
+        opinion_fact.network = NetworkType::Opinion;
+        opinion_fact.confidence = Some(0.8);
+        store.insert_facts(&[world_fact, opinion_fact]).await.unwrap();
+
+        let pipeline = DefaultRecallPipeline::new(
+            Box::new(SemanticRetriever::new(store.clone(), embeddings.clone(), 10)),
+            Box::new(KeywordRetriever::new(store.clone(), 10)),
+            Box::new(GraphRetriever::new(
+                store.clone(),
+                embeddings.clone(),
+                GraphRetrieverConfig::default(),
+            )),
+            Box::new(TemporalRetriever::new(store.clone())),
+            Box::new(NoOpReranker),
+            Box::new(EstimateTokenizer),
+            60.0,
+            50,
+        );
+
+        // Filter to Opinion only
+        let query = RecallQuery {
+            bank_id: bank,
+            query: "testing".into(),
+            budget_tokens: 1000,
+            network_filter: Some(vec![NetworkType::Opinion]),
+            temporal_anchor: None,
+        };
+
+        let result = pipeline.recall(&query).await.unwrap();
+        assert!(!result.facts.is_empty(), "should return opinion facts");
+        for sf in &result.facts {
+            assert_eq!(sf.fact.network, NetworkType::Opinion, "all results should be opinions");
+        }
     }
 }

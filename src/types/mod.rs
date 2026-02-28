@@ -19,7 +19,7 @@ pub use llm::{CompletionRequest, CompletionResponse, Message};
 pub use network::NetworkType;
 pub use pipeline::{
     AssembledContext, BankPromptContext, Chunk, ChunkConfig, ConsolidationReport, ExtractionInput,
-    ExtractedFact, FactFilter, MentalModelReport, OpinionMergeReport, RecallQuery, RecallResult,
+    ExtractedFact, FactFilter, OpinionMergeReport, RecallQuery, RecallResult,
     ReflectQuery, ReflectResult, ResolvedEntity, RetainInput, RetainOutput,
 };
 pub use temporal::TemporalRange;

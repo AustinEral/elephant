@@ -2,7 +2,7 @@
 
 ## Project
 
-Rust reimplementation of the Hindsight memory architecture (arXiv:2512.12818). Four-network memory (world, experience, observation, opinion, mental model), three operations (retain, recall, reflect), TEMPR retrieval with RRF fusion, CARA preference-conditioned reasoning.
+Rust reimplementation of the Hindsight memory architecture (arXiv:2512.12818). Four-network memory (world, experience, observation, opinion), three operations (retain, recall, reflect), TEMPR retrieval with RRF fusion, CARA preference-conditioned reasoning.
 
 Build plan: see `docs/build-plan.md`
 

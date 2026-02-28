@@ -1,15 +1,12 @@
 //! Background consolidation workers that synthesize higher-level memory structures.
 //!
-//! Three workers:
+//! Two workers:
 //! - **Observation consolidator** — merges raw facts into entity-level observations
 //! - **Opinion merger** — deduplicates and reconciles opinions
-//! - **Mental model generator** — synthesizes cross-cutting mental models from observations
 
-pub mod mental_model;
 pub mod observation;
 pub mod opinion_merger;
 
-pub use mental_model::{DefaultMentalModelGenerator, MentalModelGenerator};
 pub use observation::{Consolidator, DefaultConsolidator};
 pub use opinion_merger::{DefaultOpinionMerger, OpinionMerger};
 

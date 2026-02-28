@@ -65,8 +65,6 @@ pub struct RecallQuery {
     pub network_filter: Option<Vec<NetworkType>>,
     /// Optional temporal anchor for temporal retrieval.
     pub temporal_anchor: Option<TemporalRange>,
-    /// Optional tag filter.
-    pub tag_filter: Option<Vec<String>>,
 }
 
 // --- Reflect pipeline ---
@@ -209,18 +207,16 @@ pub struct ReflectResult {
 
 /// Assembled memory context for the reflect pipeline (Phase 5A output).
 ///
-/// Contains memory organized by priority tier with budget-allocated content.
+/// Contains memory organized by network type with budget-allocated content.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AssembledContext {
-    /// Highest priority — cross-cutting synthesis.
-    pub mental_models: Vec<Fact>,
-    /// Mid priority — entity-level summaries.
+    /// Entity-level summaries.
     pub observations: Vec<Fact>,
-    /// Lower priority — individual world/experience facts.
+    /// Individual world/experience facts.
     pub raw_facts: Vec<Fact>,
     /// Relevant beliefs with confidence scores.
     pub opinions: Vec<Fact>,
-    /// Total tokens across all tiers.
+    /// Total tokens across all sections.
     pub total_tokens: usize,
     /// Pre-formatted string ready to inject into the LLM prompt.
     pub formatted: String,
@@ -248,8 +244,6 @@ pub struct ConsolidationReport {
     pub observations_created: usize,
     /// Number of existing observations updated with new evidence.
     pub observations_updated: usize,
-    /// Number of existing observations left unchanged.
-    pub observations_unchanged: usize,
 }
 
 /// Report from opinion merging.
@@ -261,17 +255,6 @@ pub struct OpinionMergeReport {
     pub opinions_superseded: usize,
     /// Number of opinions found to be conflicting (both weakened).
     pub opinions_conflicting: usize,
-}
-
-/// Report from mental model generation.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MentalModelReport {
-    /// Number of new mental models created.
-    pub models_created: usize,
-    /// Number of existing mental models updated.
-    pub models_updated: usize,
-    /// Number of existing mental models left unchanged.
-    pub models_unchanged: usize,
 }
 
 #[cfg(test)]
@@ -318,7 +301,6 @@ mod tests {
             budget_tokens: 2048,
             network_filter: Some(vec![NetworkType::World, NetworkType::Experience]),
             temporal_anchor: None,
-            tag_filter: None,
         };
         let json = serde_json::to_string(&query).unwrap();
         let back: RecallQuery = serde_json::from_str(&json).unwrap();
@@ -403,7 +385,6 @@ mod tests {
     #[test]
     fn assembled_context_roundtrip() {
         let ctx = AssembledContext {
-            mental_models: vec![],
             observations: vec![],
             raw_facts: vec![],
             opinions: vec![],

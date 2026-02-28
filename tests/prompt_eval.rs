@@ -104,21 +104,6 @@ fn merge_opinions_request(opinions: &str) -> CompletionRequest {
     }
 }
 
-fn synthesize_mental_model_request(observations: &str) -> CompletionRequest {
-    let template = include_str!("../prompts/synthesize_mental_model.txt");
-    let user_prompt = template.replace("{observations}", observations);
-    CompletionRequest {
-        model: String::new(),
-        messages: vec![Message {
-            role: "user".into(),
-            content: user_prompt,
-        }],
-        max_tokens: None,
-        temperature: Some(0.3),
-        system: None,
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Response types (matching what the pipeline expects)
 // ---------------------------------------------------------------------------
@@ -154,12 +139,6 @@ struct MergeResponse {
     merged_text: Option<String>,
     #[serde(default)]
     superseded_index: Option<usize>,
-}
-
-#[derive(Debug, Deserialize)]
-struct MentalModelResponse {
-    mental_model: String,
-    confidence: f64,
 }
 
 // ===========================================================================
@@ -455,41 +434,3 @@ async fn eval_merge_consistent_opinions() {
     }
 }
 
-// ===========================================================================
-// synthesize_mental_model
-// ===========================================================================
-
-#[tokio::test]
-#[ignore]
-async fn eval_synthesize_mental_model() {
-    init();
-    let client = llm_client();
-
-    let observations = "\
-- Austin designs Rust types to make invalid states unrepresentable, preferring enums and newtypes over stringly-typed code or boolean flags.
-- Austin structures code around trait-based dependency injection, depending on abstractions rather than concrete types so components are testable and swappable.
-- Austin values brevity in documentation and commit messages, writing minimal doc comments that cover purpose and constraints without restating what the type system already enforces.";
-
-    let request = synthesize_mental_model_request(observations);
-    let resp: MentalModelResponse = complete_structured(&client, request)
-        .await
-        .expect("LLM call failed");
-
-    println!("=== eval_synthesize_mental_model ===");
-    println!("{resp:#?}");
-
-    assert!(
-        !resp.mental_model.is_empty(),
-        "mental model should not be empty"
-    );
-    assert!(
-        resp.mental_model.len() > 50,
-        "mental model should be a substantial paragraph, got {} chars",
-        resp.mental_model.len()
-    );
-    assert!(
-        (0.0..=1.0).contains(&resp.confidence),
-        "confidence should be 0.0-1.0, got {}",
-        resp.confidence
-    );
-}

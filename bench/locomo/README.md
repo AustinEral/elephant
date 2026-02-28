@@ -48,6 +48,7 @@ cargo run --release --bin view -- bench/locomo/results/quick.json bench/locomo/r
 | `--concurrency <N>` | Parallel conversations | 1 |
 | `--question-concurrency <N>` | Parallel questions per conversation | 1 |
 | `--no-consolidate` | Skip consolidation after ingestion | consolidate on |
+| `--consolidate-per-session` | Consolidate after each session (incremental) | off |
 | `--resume <path>` | Reuse bank IDs from previous results (skip ingestion) | |
 | `--bank-id <id>` | Reuse a specific bank (skip ingestion) | |
 | `--judge-model <name>` | Override judge model | from env |

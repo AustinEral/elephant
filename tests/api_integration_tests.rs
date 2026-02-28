@@ -16,7 +16,7 @@ use testcontainers::GenericImage;
 use testcontainers_modules::testcontainers::ImageExt;
 use tower::util::ServiceExt;
 
-use elephant::consolidation::{DefaultConsolidator, DefaultMentalModelGenerator, DefaultOpinionMerger};
+use elephant::consolidation::{DefaultConsolidator, DefaultOpinionMerger};
 use elephant::embedding::mock::MockEmbeddings;
 use elephant::llm::mock::MockLlmClient;
 use elephant::llm::LlmClient;
@@ -170,12 +170,6 @@ impl TestHarness {
             self.llm.clone() as Arc<dyn elephant::LlmClient>,
             self.embeddings.clone() as Arc<dyn elephant::EmbeddingClient>,
         ));
-        let model_generator = Arc::new(DefaultMentalModelGenerator::new(
-            store_arc.clone(),
-            self.llm.clone() as Arc<dyn elephant::LlmClient>,
-            self.embeddings.clone() as Arc<dyn elephant::EmbeddingClient>,
-        ));
-
         let state = AppState {
             info: elephant::server::ServerInfo { retain_model: "test".into(), reflect_model: "test".into(), embedding_model: "test".into() },
             retain,
@@ -183,7 +177,6 @@ impl TestHarness {
             reflect,
             consolidator,
             opinion_merger,
-            model_generator,
             store: self.store.clone(),
             embeddings: self.embeddings.clone(),
         };
@@ -487,16 +480,6 @@ async fn consolidation_empty_bank() {
     let body = json_body(resp).await;
     assert_eq!(body["opinions_merged"], 0);
 
-    // Generate models on empty bank
-    let req = json_request(
-        "POST",
-        &format!("/v1/banks/{bank_id}/generate-models"),
-        json!({}),
-    );
-    let resp = h.app().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = json_body(resp).await;
-    assert_eq!(body["models_created"], 0);
 }
 
 #[tokio::test]

@@ -14,8 +14,6 @@ pub enum NetworkType {
     Observation,
     /// Opinions formed through reflection.
     Opinion,
-    /// High-level mental models synthesized from other networks.
-    MentalModel,
 }
 
 #[cfg(test)]
@@ -29,7 +27,6 @@ mod tests {
             NetworkType::Experience,
             NetworkType::Observation,
             NetworkType::Opinion,
-            NetworkType::MentalModel,
         ] {
             let json = serde_json::to_string(&variant).unwrap();
             let back: NetworkType = serde_json::from_str(&json).unwrap();
@@ -40,8 +37,8 @@ mod tests {
     #[test]
     fn json_format() {
         assert_eq!(
-            serde_json::to_string(&NetworkType::MentalModel).unwrap(),
-            "\"mental_model\""
+            serde_json::to_string(&NetworkType::Opinion).unwrap(),
+            "\"opinion\""
         );
     }
 }

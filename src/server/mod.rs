@@ -9,7 +9,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use tower_http::cors::CorsLayer;
 
-use crate::consolidation::{Consolidator, MentalModelGenerator, OpinionMerger};
+use crate::consolidation::{Consolidator, OpinionMerger};
 use crate::embedding::EmbeddingClient;
 use crate::recall::RecallPipeline;
 use crate::reflect::ReflectPipeline;
@@ -42,8 +42,6 @@ pub struct AppState {
     pub consolidator: Arc<dyn Consolidator>,
     /// The opinion merger.
     pub opinion_merger: Arc<dyn OpinionMerger>,
-    /// The mental model generator.
-    pub model_generator: Arc<dyn MentalModelGenerator>,
     /// The backing memory store.
     pub store: Arc<dyn MemoryStore>,
     /// The embedding client (for reading model info at bank creation).
@@ -69,14 +67,6 @@ pub fn router(state: AppState) -> Router {
             "/v1/banks/{id}/merge-opinions",
             post(handlers::merge_opinions),
         )
-        .route(
-            "/v1/banks/{id}/generate-models",
-            post(handlers::generate_models),
-        )
-        .route(
-            "/v1/banks/{id}/mental-models",
-            get(handlers::list_mental_models),
-        )
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
@@ -84,7 +74,7 @@ pub fn router(state: AppState) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::consolidation::{Consolidator, MentalModelGenerator, OpinionMerger};
+    use crate::consolidation::{Consolidator, OpinionMerger};
     use crate::embedding::mock::MockEmbeddings;
     use crate::error::Result;
     use crate::recall::RecallPipeline;
@@ -186,15 +176,6 @@ mod tests {
         }
     }
 
-    struct MockModelGenerator;
-
-    #[async_trait]
-    impl MentalModelGenerator for MockModelGenerator {
-        async fn generate(&self, _bank_id: BankId) -> Result<MentalModelReport> {
-            Ok(MentalModelReport::default())
-        }
-    }
-
     fn test_app() -> (Router, Arc<MockMemoryStore>) {
         let store = Arc::new(MockMemoryStore::new());
         let state = AppState {
@@ -206,7 +187,6 @@ mod tests {
             reflect: Arc::new(MockReflectPipeline),
             consolidator: Arc::new(MockConsolidator),
             opinion_merger: Arc::new(MockOpinionMerger),
-            model_generator: Arc::new(MockModelGenerator),
             store: store.clone(),
             embeddings: Arc::new(MockEmbeddings::new(384)),
         };
@@ -294,7 +274,6 @@ mod tests {
             reflect: Arc::new(MockReflectPipeline),
             consolidator: Arc::new(MockConsolidator),
             opinion_merger: Arc::new(MockOpinionMerger),
-            model_generator: Arc::new(MockModelGenerator),
             store: store.clone(),
             embeddings: Arc::new(MockEmbeddings::new(384)),
         });
@@ -491,8 +470,7 @@ mod tests {
                 reflect: Arc::new(MockReflectPipeline),
                 consolidator: Arc::new(MockConsolidator),
                 opinion_merger: Arc::new(MockOpinionMerger),
-                model_generator: Arc::new(MockModelGenerator),
-                store: store.clone(),
+                    store: store.clone(),
                 embeddings: Arc::new(MockEmbeddings::new(384)),
             })
         };
@@ -515,13 +493,5 @@ mod tests {
         let resp = make_app().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
 
-        // Generate models
-        let req = json_request(
-            "POST",
-            &format!("/v1/banks/{bank_id}/generate-models"),
-            json!({}),
-        );
-        let resp = make_app().oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
     }
 }

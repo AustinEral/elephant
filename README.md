@@ -110,7 +110,7 @@ flowchart TB
 - **TEMPR retrieval** — five signals fused with reciprocal rank fusion
 - **CARA reasoning** — preference-conditioned answer synthesis
 - **Entity resolution** — cross-session deduplication via embeddings + LLM verification
-- **Consolidation** — merges related facts, detects opinions, builds mental models
+- **Consolidation** — merges related facts into observations, detects and reconciles opinions
 - **Local or cloud** — ONNX embeddings or OpenAI; Anthropic or OpenAI for LLM
 - **MCP + REST** — single server, PostgreSQL + pgvector
 

@@ -26,6 +26,8 @@ struct BenchmarkOutput {
     reflect_model: String,
     #[serde(default)]
     embedding_model: String,
+    #[serde(default)]
+    consolidation_strategy: String,
     total_questions: usize,
     accuracy: f64,
     #[serde(default)]
@@ -224,6 +226,9 @@ fn view_single(a: &BenchmarkOutput, path: &str) {
     if !a.embedding_model.is_empty() {
         config_rows.push(SingleConfigRow { key: "embedding".into(), value: a.embedding_model.clone() });
     }
+    if !a.consolidation_strategy.is_empty() {
+        config_rows.push(SingleConfigRow { key: "consolidation".into(), value: a.consolidation_strategy.clone() });
+    }
     config_rows.push(SingleConfigRow { key: "questions".into(), value: a.total_questions.to_string() });
     if a.total_time_s > 0.0 {
         config_rows.push(SingleConfigRow { key: "total time".into(), value: fmt_time(a.total_time_s) });
@@ -383,6 +388,9 @@ fn main() {
     }
     if !a.embedding_model.is_empty() || !b.embedding_model.is_empty() {
         config_rows.push(ConfigRow { key: "embedding".into(), val_a: a.embedding_model.clone(), val_b: b.embedding_model.clone() });
+    }
+    if !a.consolidation_strategy.is_empty() || !b.consolidation_strategy.is_empty() {
+        config_rows.push(ConfigRow { key: "consolidation".into(), val_a: a.consolidation_strategy.clone(), val_b: b.consolidation_strategy.clone() });
     }
     config_rows.push(ConfigRow {
         key: "questions".into(),

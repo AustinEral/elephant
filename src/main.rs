@@ -3,9 +3,7 @@
 use std::env;
 use std::sync::Arc;
 
-use elephant::consolidation::{
-    DefaultConsolidator, DefaultMentalModelGenerator, DefaultOpinionMerger,
-};
+use elephant::consolidation::{DefaultConsolidator, DefaultOpinionMerger};
 use elephant::embedding::{self, EmbeddingClient, EmbeddingConfig, EmbeddingProvider};
 use elephant::llm::anthropic::AnthropicClient;
 use elephant::llm::openai::OpenAiClient;
@@ -146,12 +144,6 @@ async fn main() {
         reflect_llm.clone(),
         embeddings.clone(),
     ));
-    let model_generator = Arc::new(DefaultMentalModelGenerator::new(
-        store.clone(),
-        reflect_llm.clone(),
-        embeddings.clone(),
-    ));
-
     // 7. Build app state and serve
     let state = AppState {
         info: server::ServerInfo {
@@ -173,7 +165,6 @@ async fn main() {
         reflect,
         consolidator,
         opinion_merger,
-        model_generator,
         store,
         embeddings,
     };

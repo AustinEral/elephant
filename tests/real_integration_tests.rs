@@ -15,7 +15,7 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers::GenericImage;
 use testcontainers_modules::testcontainers::ImageExt;
 
-use elephant::consolidation::{DefaultConsolidator, DefaultMentalModelGenerator, DefaultOpinionMerger};
+use elephant::consolidation::{DefaultConsolidator, DefaultOpinionMerger};
 use elephant::embedding::{self, EmbeddingClient, EmbeddingConfig, EmbeddingProvider};
 use elephant::llm::anthropic::AnthropicClient;
 use elephant::llm::LlmClient;
@@ -188,8 +188,6 @@ impl RealTestHarness {
 
         let consolidator = Arc::new(DefaultConsolidator::new(store_arc.clone(), self.llm.clone(), self.embeddings.clone()));
         let opinion_merger = Arc::new(DefaultOpinionMerger::new(store_arc.clone(), self.llm.clone(), self.embeddings.clone()));
-        let model_generator = Arc::new(DefaultMentalModelGenerator::new(store_arc.clone(), self.llm.clone(), self.embeddings.clone()));
-
         let state = AppState {
             info: elephant::server::ServerInfo { retain_model: "test".into(), reflect_model: "test".into(), embedding_model: "test".into() },
             retain,
@@ -197,7 +195,6 @@ impl RealTestHarness {
             reflect,
             consolidator,
             opinion_merger,
-            model_generator,
             store: self.store.clone(),
             embeddings: self.embeddings.clone(),
         };

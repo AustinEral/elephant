@@ -163,7 +163,6 @@ impl ElephantMcp {
             budget_tokens: params.max_tokens,
             network_filter: None,
             temporal_anchor: None,
-            tag_filter: None,
         };
 
         let result = self.state.recall.recall(&query).await.map_err(|e| e.to_string())?;

@@ -28,7 +28,7 @@ pub struct Fact {
     pub embedding: Option<Vec<f32>>,
     /// Confidence score, primarily for opinions.
     pub confidence: Option<f32>,
-    /// Facts that support this one (for observations, opinions, mental models).
+    /// Facts that support this one (for observations and opinions).
     pub evidence_ids: Vec<FactId>,
     /// The conversation turn that produced this fact.
     pub source_turn_id: Option<TurnId>,
@@ -148,7 +148,6 @@ mod tests {
                 Just(NetworkType::Experience),
                 Just(NetworkType::Observation),
                 Just(NetworkType::Opinion),
-                Just(NetworkType::MentalModel),
             ]
         }
 

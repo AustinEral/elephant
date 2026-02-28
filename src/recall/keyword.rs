@@ -89,7 +89,6 @@ mod tests {
             budget_tokens: 1000,
             network_filter: None,
             temporal_anchor: None,
-            tag_filter: None,
         };
 
         let results = retriever.retrieve(&query).await.unwrap();

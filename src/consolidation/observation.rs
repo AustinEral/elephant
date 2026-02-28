@@ -72,7 +72,7 @@ impl Consolidator for DefaultConsolidator {
         let mut report = ConsolidationReport::default();
 
         // 1. Fetch new World/Experience facts since `since`
-        //    (only raw fact networks — not Observation/Opinion/MentalModel)
+        //    (only raw fact networks — not Observation/Opinion)
         let new_facts = self
             .store
             .get_facts_by_bank(
@@ -398,7 +398,6 @@ mod tests {
 
         assert_eq!(report.observations_created, 0);
         assert_eq!(report.observations_updated, 0);
-        assert_eq!(report.observations_unchanged, 0);
         assert_eq!(llm.remaining(), 0);
     }
 

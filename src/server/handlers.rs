@@ -7,7 +7,7 @@ use serde::Deserialize;
 
 use crate::error::{Error, Result};
 use crate::types::{
-    BankId, ConsolidationReport, Disposition, Entity, Fact, MemoryBank, MentalModelReport,
+    BankId, ConsolidationReport, Disposition, Entity, Fact, MemoryBank,
     OpinionMergeReport, RecallQuery, RecallResult, ReflectQuery, ReflectResult, RetainInput,
     RetainOutput,
 };
@@ -189,32 +189,3 @@ pub async fn merge_opinions(
     Ok(Json(report))
 }
 
-/// POST /v1/banks/:id/generate-models
-pub async fn generate_models(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<MentalModelReport>> {
-    let bank_id = parse_bank_id(&id)?;
-    let report = state.model_generator.generate(bank_id).await?;
-    Ok(Json(report))
-}
-
-/// GET /v1/banks/:id/mental-models
-pub async fn list_mental_models(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<Vec<Fact>>> {
-    let bank_id = parse_bank_id(&id)?;
-    use crate::types::{FactFilter, NetworkType};
-    let facts = state
-        .store
-        .get_facts_by_bank(
-            bank_id,
-            FactFilter {
-                network: Some(vec![NetworkType::MentalModel]),
-                ..Default::default()
-            },
-        )
-        .await?;
-    Ok(Json(facts))
-}
