@@ -252,3 +252,169 @@ impl EntityResolver for LayeredEntityResolver {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::embedding::mock::MockEmbeddings;
+    use crate::llm::mock::MockLlmClient;
+    use crate::storage::mock::MockMemoryStore;
+    use crate::types::{BankId, Disposition, MemoryBank};
+
+    use crate::storage::MemoryStore;
+
+    async fn setup() -> (MockMemoryStore, MockEmbeddings, Arc<MockLlmClient>, BankId) {
+        let store = MockMemoryStore::new();
+        let embeddings = MockEmbeddings::new(8);
+        let llm = Arc::new(MockLlmClient::new());
+        let bank_id = BankId::new();
+
+        store
+            .create_bank(&MemoryBank {
+                id: bank_id,
+                name: "test".into(),
+                mission: String::new(),
+                directives: vec![],
+                disposition: Disposition::default(),
+                embedding_model: "mock".into(),
+                embedding_dimensions: 8,
+            })
+            .await
+            .unwrap();
+
+        (store, embeddings, llm, bank_id)
+    }
+
+    fn make_resolver(
+        store: &MockMemoryStore,
+        embeddings: &MockEmbeddings,
+        llm: Arc<MockLlmClient>,
+    ) -> LayeredEntityResolver {
+        LayeredEntityResolver::new(
+            Box::new(store.clone()),
+            Box::new(embeddings.clone()),
+            llm,
+        )
+    }
+
+    #[tokio::test]
+    async fn exact_match_resolves_existing_entity() {
+        let (store, embeddings, llm, bank_id) = setup().await;
+
+        // Pre-insert an entity
+        let entity = Entity {
+            id: EntityId::new(),
+            canonical_name: "Rust".into(),
+            aliases: vec!["rust-lang".into()],
+            entity_type: EntityType::Concept,
+            bank_id,
+        };
+        store.upsert_entity(&entity).await.unwrap();
+
+        let resolver = make_resolver(&store, &embeddings, llm);
+        let results = resolver.resolve(&["Rust".into()], bank_id).await.unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].entity_id, entity.id);
+        assert!(!results[0].is_new);
+        assert_eq!(results[0].confidence, 1.0);
+    }
+
+    #[tokio::test]
+    async fn exact_match_by_alias() {
+        let (store, embeddings, llm, bank_id) = setup().await;
+
+        let entity = Entity {
+            id: EntityId::new(),
+            canonical_name: "Rust".into(),
+            aliases: vec!["rust-lang".into()],
+            entity_type: EntityType::Concept,
+            bank_id,
+        };
+        store.upsert_entity(&entity).await.unwrap();
+
+        let resolver = make_resolver(&store, &embeddings, llm);
+        let results = resolver.resolve(&["rust-lang".into()], bank_id).await.unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].entity_id, entity.id);
+        assert!(!results[0].is_new);
+    }
+
+    #[tokio::test]
+    async fn no_match_creates_new_entity() {
+        let (store, embeddings, llm, bank_id) = setup().await;
+
+        let resolver = make_resolver(&store, &embeddings, llm);
+        let results = resolver.resolve(&["Rust".into()], bank_id).await.unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_new);
+        assert_eq!(results[0].canonical_name, "Rust");
+
+        // Entity should now exist in the store
+        let found = store.find_entity(bank_id, "Rust").await.unwrap();
+        assert!(found.is_some());
+    }
+
+    #[tokio::test]
+    async fn batch_dedup_same_mention_twice() {
+        let (store, embeddings, llm, bank_id) = setup().await;
+
+        let resolver = make_resolver(&store, &embeddings, llm);
+        let results = resolver
+            .resolve(&["Rust".into(), "rust".into(), "RUST".into()], bank_id)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 3);
+        // All should resolve to the same entity (batch-local cache normalizes to lowercase)
+        assert_eq!(results[0].entity_id, results[1].entity_id);
+        assert_eq!(results[1].entity_id, results[2].entity_id);
+        // Only the first should be "new", rest come from cache
+        assert!(results[0].is_new);
+    }
+
+    #[tokio::test]
+    async fn llm_confirm_borderline_match() {
+        let (store, embeddings, llm, bank_id) = setup().await;
+
+        // We can't easily control mock embedding similarity, but we can
+        // test the LLM confirmation path directly
+        let entity = Entity {
+            id: EntityId::new(),
+            canonical_name: "PostgreSQL".into(),
+            aliases: vec!["Postgres".into()],
+            entity_type: EntityType::Concept,
+            bank_id,
+        };
+
+        let resolver = make_resolver(&store, &embeddings, llm.clone());
+
+        // Test llm_confirm directly
+        llm.push_response("yes");
+        let confirmed = resolver.llm_confirm("pg", &entity).await.unwrap();
+        assert!(confirmed);
+
+        llm.push_response("no");
+        let rejected = resolver.llm_confirm("MySQL", &entity).await.unwrap();
+        assert!(!rejected);
+    }
+
+    #[tokio::test]
+    async fn multiple_distinct_entities() {
+        let (store, embeddings, llm, bank_id) = setup().await;
+
+        let resolver = make_resolver(&store, &embeddings, llm);
+        let results = resolver
+            .resolve(&["Rust".into(), "Python".into(), "Go".into()], bank_id)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 3);
+        // All different entities
+        assert_ne!(results[0].entity_id, results[1].entity_id);
+        assert_ne!(results[1].entity_id, results[2].entity_id);
+        assert!(results.iter().all(|r| r.is_new));
+    }
+}
+

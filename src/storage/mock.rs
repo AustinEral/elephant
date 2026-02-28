@@ -1,6 +1,6 @@
 //! Mock memory store for unit tests.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
@@ -14,21 +14,22 @@ use crate::util::cosine_similarity;
 use super::MemoryStore;
 
 /// A no-op memory store for unit tests that don't need real persistence.
+#[derive(Clone)]
 pub struct MockMemoryStore {
-    facts: Mutex<Vec<Fact>>,
-    entities: Mutex<Vec<Entity>>,
-    links: Mutex<Vec<GraphLink>>,
-    banks: Mutex<Vec<MemoryBank>>,
+    facts: Arc<Mutex<Vec<Fact>>>,
+    entities: Arc<Mutex<Vec<Entity>>>,
+    links: Arc<Mutex<Vec<GraphLink>>>,
+    banks: Arc<Mutex<Vec<MemoryBank>>>,
 }
 
 impl MockMemoryStore {
     /// Create a new empty mock store.
     pub fn new() -> Self {
         Self {
-            facts: Mutex::new(Vec::new()),
-            entities: Mutex::new(Vec::new()),
-            links: Mutex::new(Vec::new()),
-            banks: Mutex::new(Vec::new()),
+            facts: Arc::new(Mutex::new(Vec::new())),
+            entities: Arc::new(Mutex::new(Vec::new())),
+            links: Arc::new(Mutex::new(Vec::new())),
+            banks: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }

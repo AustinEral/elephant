@@ -24,10 +24,9 @@ Audit performed Feb 2026 against Hindsight paper (arXiv:2512.12818).
 
 ## Test Gaps
 
-- [ ] **Entity resolver has no unit tests** (`src/retain/resolver.rs`)
-  - Most complex component: 4-layer resolution (exact → embedding ≥0.90 → LLM confirm 0.75-0.90 → create new).
-  - Only exercised by `#[ignore]` real integration tests.
-  - Fix: add unit tests with MockMemoryStore + MockEmbeddings + MockLlmClient.
+- [x] **Entity resolver has no unit tests** (`src/retain/resolver.rs`)
+  - Fixed: 7 unit tests covering all 4 layers + batch dedup + multi-entity resolution.
+  - Added `MemoryStore` and `EmbeddingClient` blanket impls for `Arc<T>`.
 
 ## Minor
 

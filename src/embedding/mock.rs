@@ -9,6 +9,7 @@ use crate::error::Result;
 ///
 /// Hashes input text to seed a simple PRNG, producing L2-normalized vectors.
 /// Same text always produces the same embedding.
+#[derive(Clone)]
 pub struct MockEmbeddings {
     dims: usize,
 }
