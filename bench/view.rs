@@ -19,6 +19,7 @@ use tabled::{Table, Tabled};
 struct BenchmarkOutput {
     #[serde(default)]
     tag: Option<String>,
+    #[serde(default)]
     judge_model: String,
     #[serde(default)]
     retain_model: String,
@@ -27,8 +28,11 @@ struct BenchmarkOutput {
     #[serde(default)]
     embedding_model: String,
     #[serde(default)]
+    reranker_model: String,
+    #[serde(default)]
     consolidation_strategy: String,
     total_questions: usize,
+    #[allow(dead_code)]
     accuracy: f64,
     #[serde(default)]
     results: Vec<QuestionResult>,
@@ -46,6 +50,8 @@ struct QuestionResult {
     #[allow(dead_code)]
     #[serde(default)]
     ground_truth: String,
+    #[serde(default)]
+    hypothesis: String,
     #[serde(default)]
     f1: f64,
     #[serde(default)]
@@ -195,9 +201,19 @@ struct SingleSummaryRow {
 }
 
 #[derive(Tabled)]
-struct SingleMetricsRow {
-    metric: String,
-    value: String,
+struct ConversationRow {
+    #[tabled(rename = "conversation")]
+    sample_id: String,
+    #[tabled(rename = "acc")]
+    acc: String,
+    #[tabled(rename = "F1")]
+    f1: String,
+    #[tabled(rename = "conf")]
+    conf: String,
+    #[tabled(rename = "avg time")]
+    avg_time: String,
+    #[tabled(rename = "n")]
+    n: usize,
 }
 
 #[derive(Tabled)]
@@ -216,20 +232,13 @@ fn view_single(a: &BenchmarkOutput, path: &str) {
     let mut config_rows = vec![
         SingleConfigRow { key: "tag".into(), value: label },
         SingleConfigRow { key: "judge".into(), value: a.judge_model.clone() },
+        SingleConfigRow { key: "retain".into(), value: a.retain_model.clone() },
+        SingleConfigRow { key: "reflect".into(), value: a.reflect_model.clone() },
+        SingleConfigRow { key: "embedding".into(), value: a.embedding_model.clone() },
+        SingleConfigRow { key: "reranker".into(), value: a.reranker_model.clone() },
+        SingleConfigRow { key: "consolidation".into(), value: a.consolidation_strategy.clone() },
+        SingleConfigRow { key: "questions".into(), value: a.total_questions.to_string() },
     ];
-    if !a.retain_model.is_empty() {
-        config_rows.push(SingleConfigRow { key: "retain".into(), value: a.retain_model.clone() });
-    }
-    if !a.reflect_model.is_empty() {
-        config_rows.push(SingleConfigRow { key: "reflect".into(), value: a.reflect_model.clone() });
-    }
-    if !a.embedding_model.is_empty() {
-        config_rows.push(SingleConfigRow { key: "embedding".into(), value: a.embedding_model.clone() });
-    }
-    if !a.consolidation_strategy.is_empty() {
-        config_rows.push(SingleConfigRow { key: "consolidation".into(), value: a.consolidation_strategy.clone() });
-    }
-    config_rows.push(SingleConfigRow { key: "questions".into(), value: a.total_questions.to_string() });
     if a.total_time_s > 0.0 {
         config_rows.push(SingleConfigRow { key: "total time".into(), value: fmt_time(a.total_time_s) });
     }
@@ -240,9 +249,18 @@ fn view_single(a: &BenchmarkOutput, path: &str) {
     println!("{config_table}");
     println!();
 
-    // --- Per-category accuracy ---
+    // --- Detect incomplete conversations (any empty hypothesis = error) ---
+    let incomplete_convs: BTreeSet<&str> = a.results.iter()
+        .filter(|r| r.hypothesis.is_empty())
+        .map(|r| r.sample_id.as_str())
+        .collect();
+    let complete_results: Vec<&QuestionResult> = a.results.iter()
+        .filter(|r| !incomplete_convs.contains(r.sample_id.as_str()))
+        .collect();
+
+    // --- Per-category accuracy (complete conversations only) ---
     let mut cat_stats: BTreeMap<&str, (usize, usize)> = BTreeMap::new(); // (correct, total)
-    for r in &a.results {
+    for r in &complete_results {
         if r.category_name.is_empty() { continue; }
         let e = cat_stats.entry(&r.category_name).or_insert((0, 0));
         e.1 += 1;
@@ -260,10 +278,12 @@ fn view_single(a: &BenchmarkOutput, path: &str) {
             });
         }
     }
+    let total_correct: usize = cat_stats.values().map(|v| v.0).sum();
+    let total_n = complete_results.len();
     summary_rows.push(SingleSummaryRow {
         category: "TOTAL".into(),
-        acc: fmt_pct(a.accuracy),
-        n: a.results.len(),
+        acc: fmt_pct(total_correct as f64 / total_n.max(1) as f64),
+        n: total_n,
     });
 
     let summary_table = Table::new(&summary_rows)
@@ -272,23 +292,63 @@ fn view_single(a: &BenchmarkOutput, path: &str) {
         .to_string();
     println!("{summary_table}");
 
-    // --- Metrics table ---
-    let avg_f1 = avg(&a.results.iter().map(|r| r.f1).collect::<Vec<_>>());
-    let avg_conf = avg(&a.results.iter().map(|r| r.confidence as f64).collect::<Vec<_>>());
-    let avg_time = avg(&a.results.iter().map(|r| r.elapsed_s).collect::<Vec<_>>());
+    // --- Per-conversation table ---
+    let conv_ids: BTreeSet<&str> = a.results.iter().map(|r| r.sample_id.as_str()).collect();
+    let mut conv_rows = Vec::new();
 
-    let metrics_rows = vec![
-        SingleMetricsRow { metric: "F1".into(), value: format!("{avg_f1:.3}") },
-        SingleMetricsRow { metric: "confidence".into(), value: format!("{avg_conf:.3}") },
-        SingleMetricsRow { metric: "avg time".into(), value: fmt_time(avg_time) },
-    ];
+    for cid in &conv_ids {
+        if incomplete_convs.contains(cid) {
+            conv_rows.push(ConversationRow {
+                sample_id: format!("{cid} *"),
+                acc: "-".into(),
+                f1: "-".into(),
+                conf: "-".into(),
+                avg_time: "-".into(),
+                n: 0,
+            });
+        } else {
+            let qs: Vec<&QuestionResult> = a.results.iter().filter(|r| r.sample_id == *cid).collect();
+            let correct = qs.iter().filter(|r| r.judge_correct).count();
+            let f1 = avg(&qs.iter().map(|r| r.f1).collect::<Vec<_>>());
+            let conf = avg(&qs.iter().map(|r| r.confidence as f64).collect::<Vec<_>>());
+            let time = avg(&qs.iter().map(|r| r.elapsed_s).collect::<Vec<_>>());
+
+            conv_rows.push(ConversationRow {
+                sample_id: cid.to_string(),
+                acc: fmt_pct(correct as f64 / qs.len().max(1) as f64),
+                f1: format!("{f1:.3}"),
+                conf: format!("{conf:.3}"),
+                avg_time: fmt_time(time),
+                n: qs.len(),
+            });
+        }
+    }
+
+    // Total row — only complete conversations
+    let total_correct = complete_results.iter().filter(|r| r.judge_correct).count();
+    let total_f1 = avg(&complete_results.iter().map(|r| r.f1).collect::<Vec<_>>());
+    let total_conf = avg(&complete_results.iter().map(|r| r.confidence as f64).collect::<Vec<_>>());
+    let total_time = avg(&complete_results.iter().map(|r| r.elapsed_s).collect::<Vec<_>>());
+
+    conv_rows.push(ConversationRow {
+        sample_id: "TOTAL".into(),
+        acc: fmt_pct(total_correct as f64 / total_n.max(1) as f64),
+        f1: format!("{total_f1:.3}"),
+        conf: format!("{total_conf:.3}"),
+        avg_time: fmt_time(total_time),
+        n: total_n,
+    });
 
     println!();
-    let metrics_table = Table::new(&metrics_rows)
+    let conv_table = Table::new(&conv_rows)
         .with(Style::rounded())
         .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
         .to_string();
-    println!("{metrics_table}");
+    println!("{conv_table}");
+
+    if !incomplete_convs.is_empty() {
+        println!("  * incomplete (excluded from TOTAL)");
+    }
 
     // --- Per-question table ---
     if a.results.is_empty() { return; }
@@ -334,22 +394,52 @@ fn load_file(path: &str) -> BenchmarkOutput {
     })
 }
 
+fn filter_conv(mut output: BenchmarkOutput, conv: &str) -> BenchmarkOutput {
+    output.results.retain(|r| r.sample_id == conv);
+    output
+}
+
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    if args.len() == 2 {
-        view_single(&load_file(&args[1]), &args[1]);
+    let raw_args: Vec<String> = env::args().collect();
+
+    // Parse --conv flag
+    let mut conv_filter: Option<String> = None;
+    let mut files: Vec<String> = Vec::new();
+    let mut i = 1;
+    while i < raw_args.len() {
+        if raw_args[i] == "--conv" {
+            i += 1;
+            if i >= raw_args.len() {
+                eprintln!("--conv requires a conversation ID");
+                process::exit(1);
+            }
+            conv_filter = Some(raw_args[i].clone());
+        } else {
+            files.push(raw_args[i].clone());
+        }
+        i += 1;
+    }
+
+    if files.len() == 1 {
+        let mut a = load_file(&files[0]);
+        if let Some(ref conv) = conv_filter { a = filter_conv(a, conv); }
+        view_single(&a, &files[0]);
         return;
     }
-    if args.len() != 3 {
-        eprintln!("Usage: view <file.json> [file2.json]");
+    if files.len() != 2 {
+        eprintln!("Usage: view [--conv <id>] <file.json> [file2.json]");
         process::exit(1);
     }
 
-    let a = load_file(&args[1]);
-    let b = load_file(&args[2]);
+    let mut a = load_file(&files[0]);
+    let mut b = load_file(&files[1]);
+    if let Some(ref conv) = conv_filter {
+        a = filter_conv(a, conv);
+        b = filter_conv(b, conv);
+    }
 
-    let label_a = file_label(&a, &args[1]);
-    let label_b = file_label(&b, &args[2]);
+    let label_a = file_label(&a, &files[0]);
+    let label_b = file_label(&b, &files[1]);
 
     // Match questions across runs
     let map_b: HashMap<QKey, &QuestionResult> = b.results.iter().map(|r| (qkey(r), r)).collect();
@@ -379,19 +469,12 @@ fn main() {
     let mut config_rows = vec![
         ConfigRow { key: "tag".into(), val_a: label_a.clone(), val_b: label_b.clone() },
         ConfigRow { key: "judge".into(), val_a: a.judge_model.clone(), val_b: b.judge_model.clone() },
+        ConfigRow { key: "retain".into(), val_a: a.retain_model.clone(), val_b: b.retain_model.clone() },
+        ConfigRow { key: "reflect".into(), val_a: a.reflect_model.clone(), val_b: b.reflect_model.clone() },
+        ConfigRow { key: "embedding".into(), val_a: a.embedding_model.clone(), val_b: b.embedding_model.clone() },
+        ConfigRow { key: "reranker".into(), val_a: a.reranker_model.clone(), val_b: b.reranker_model.clone() },
+        ConfigRow { key: "consolidation".into(), val_a: a.consolidation_strategy.clone(), val_b: b.consolidation_strategy.clone() },
     ];
-    if !a.retain_model.is_empty() || !b.retain_model.is_empty() {
-        config_rows.push(ConfigRow { key: "retain".into(), val_a: a.retain_model.clone(), val_b: b.retain_model.clone() });
-    }
-    if !a.reflect_model.is_empty() || !b.reflect_model.is_empty() {
-        config_rows.push(ConfigRow { key: "reflect".into(), val_a: a.reflect_model.clone(), val_b: b.reflect_model.clone() });
-    }
-    if !a.embedding_model.is_empty() || !b.embedding_model.is_empty() {
-        config_rows.push(ConfigRow { key: "embedding".into(), val_a: a.embedding_model.clone(), val_b: b.embedding_model.clone() });
-    }
-    if !a.consolidation_strategy.is_empty() || !b.consolidation_strategy.is_empty() {
-        config_rows.push(ConfigRow { key: "consolidation".into(), val_a: a.consolidation_strategy.clone(), val_b: b.consolidation_strategy.clone() });
-    }
     config_rows.push(ConfigRow {
         key: "questions".into(),
         val_a: a.total_questions.to_string(),
@@ -431,12 +514,17 @@ fn main() {
         }
     }
 
+    let total_a: usize = cat_stats.values().map(|v| v.0).sum();
+    let total_b: usize = cat_stats.values().map(|v| v.1).sum();
+    let total_n = matched.len();
+    let acc_a = total_a as f64 / total_n.max(1) as f64;
+    let acc_b = total_b as f64 / total_n.max(1) as f64;
     summary_rows.push(SummaryRow {
         category: "TOTAL".into(),
-        acc_a: fmt_pct(a.accuracy),
-        acc_b: fmt_pct(b.accuracy),
-        delta: fmt_delta(a.accuracy, b.accuracy),
-        n: matched.len(),
+        acc_a: fmt_pct(acc_a),
+        acc_b: fmt_pct(acc_b),
+        delta: fmt_delta(acc_a, acc_b),
+        n: total_n,
     });
 
     let summary_table = Table::new(&summary_rows)

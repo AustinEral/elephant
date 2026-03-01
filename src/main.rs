@@ -176,6 +176,17 @@ async fn main() {
                     format!("local/{name}")
                 }
             },
+            reranker_model: match reranker_config.provider {
+                RerankerProvider::Local => {
+                    let name = reranker_config.model_path.as_deref()
+                        .and_then(|p| std::path::Path::new(p).file_name())
+                        .and_then(|f| f.to_str())
+                        .unwrap_or("unknown");
+                    format!("local/{name}")
+                }
+                RerankerProvider::Api => format!("api/{}", reranker_config.api_model.as_deref().unwrap_or("unknown")),
+                RerankerProvider::None => "none".into(),
+            },
         },
         retain,
         recall,

@@ -55,6 +55,26 @@ cargo run --release --bin view -- bench/locomo/results/quick.json bench/locomo/r
 | `--api-url <url>` | Elephant server URL | `http://localhost:3001` |
 | `--data <path>` | Dataset path | `data/locomo10.json` |
 
+### View tool
+
+```bash
+# View a single result
+cargo run --release --bin view -- bench/locomo/results/baseline.json
+
+# Compare two runs
+cargo run --release --bin view -- bench/locomo/results/reranker.json bench/locomo/results/baseline.json
+
+# Filter to a single conversation
+cargo run --release --bin view -- --conv conv-26 bench/locomo/results/reranker.json
+
+# Compare a single conversation across runs
+cargo run --release --bin view -- --conv conv-26 bench/locomo/results/reranker.json bench/locomo/results/baseline.json
+```
+
+| Flag | Description |
+|---|---|
+| `--conv <id>` | Filter results to a single conversation |
+
 ## Scoring
 
 - **LLM-as-judge** (primary): Binary CORRECT/WRONG via the configured LLM.

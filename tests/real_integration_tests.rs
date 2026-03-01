@@ -205,7 +205,7 @@ impl RealTestHarness {
         let consolidator = Arc::new(DefaultConsolidator::new(store_arc.clone(), self.llm.clone(), self.embeddings.clone()));
         let opinion_merger = Arc::new(DefaultOpinionMerger::new(store_arc.clone(), self.llm.clone(), self.embeddings.clone()));
         let state = AppState {
-            info: elephant::server::ServerInfo { retain_model: "test".into(), reflect_model: "test".into(), embedding_model: "test".into() },
+            info: elephant::server::ServerInfo { retain_model: "test".into(), reflect_model: "test".into(), embedding_model: "test".into(), reranker_model: "none".into() },
             retain,
             recall,
             reflect,

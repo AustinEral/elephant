@@ -100,6 +100,7 @@ struct ServerInfoResponse {
     retain_model: String,
     reflect_model: String,
     embedding_model: String,
+    reranker_model: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -130,13 +131,10 @@ struct BenchmarkOutput {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     tag: Option<String>,
     judge_model: String,
-    #[serde(default)]
     retain_model: String,
-    #[serde(default)]
     reflect_model: String,
-    #[serde(default)]
     embedding_model: String,
-    #[serde(default)]
+    reranker_model: String,
     consolidation_strategy: String,
     total_questions: usize,
     accuracy: f64,
@@ -391,7 +389,7 @@ fn fmt_elapsed(seconds: f64) -> String {
 
 // --- Incremental results flushing ---
 
-fn flush_results(results: &[QuestionResult], banks: &HashMap<String, String>, output_path: &Path, judge_label: &str, tag: &Option<String>, retain_model: &str, reflect_model: &str, embedding_model: &str, consolidation_strategy: &str, bench_start: Instant) {
+fn flush_results(results: &[QuestionResult], banks: &HashMap<String, String>, output_path: &Path, judge_label: &str, tag: &Option<String>, retain_model: &str, reflect_model: &str, embedding_model: &str, reranker_model: &str, consolidation_strategy: &str, bench_start: Instant) {
     let bench_elapsed = bench_start.elapsed().as_secs_f64();
     let total_questions = results.len();
 
@@ -440,6 +438,7 @@ fn flush_results(results: &[QuestionResult], banks: &HashMap<String, String>, ou
         retain_model: retain_model.to_string(),
         reflect_model: reflect_model.to_string(),
         embedding_model: embedding_model.to_string(),
+        reranker_model: reranker_model.to_string(),
         consolidation_strategy: consolidation_strategy.to_string(),
         total_questions,
         accuracy,
@@ -610,6 +609,7 @@ struct SharedResults {
     retain_model: String,
     reflect_model: String,
     embedding_model: String,
+    reranker_model: String,
     consolidation_strategy: String,
     bench_start: Instant,
 }
@@ -626,7 +626,7 @@ impl SharedResults {
     }
 
     fn flush(&self) {
-        flush_results(&self.results, &self.banks, &self.output_path, &self.judge_label, &self.tag, &self.retain_model, &self.reflect_model, &self.embedding_model, &self.consolidation_strategy, self.bench_start);
+        flush_results(&self.results, &self.banks, &self.output_path, &self.judge_label, &self.tag, &self.retain_model, &self.reflect_model, &self.embedding_model, &self.reranker_model, &self.consolidation_strategy, self.bench_start);
     }
 }
 
@@ -963,6 +963,7 @@ async fn main() {
     };
     println!("retain_model: {}", server_info.retain_model);
     println!("reflect_model: {}", server_info.reflect_model);
+    println!("reranker_model: {}", server_info.reranker_model);
     println!("embedding_model: {}", server_info.embedding_model);
 
     // Build LLM judge client.
@@ -1035,6 +1036,7 @@ async fn main() {
         retain_model: server_info.retain_model.clone(),
         reflect_model: server_info.reflect_model.clone(),
         embedding_model: server_info.embedding_model.clone(),
+        reranker_model: server_info.reranker_model.clone(),
         consolidation_strategy: if args.consolidate_per_session {
             "per-session".into()
         } else if args.consolidate {
@@ -1156,7 +1158,7 @@ async fn main() {
     } else {
         "none"
     };
-    flush_results(&all_results, &all_banks, &output_path, &judge_label, &args.tag, &server_info.retain_model, &server_info.reflect_model, &server_info.embedding_model, consolidation_strategy, bench_start);
+    flush_results(&all_results, &all_banks, &output_path, &judge_label, &args.tag, &server_info.retain_model, &server_info.reflect_model, &server_info.embedding_model, &server_info.reranker_model, consolidation_strategy, bench_start);
     println!();
     println!("Results saved to {}", output_path.display());
 }

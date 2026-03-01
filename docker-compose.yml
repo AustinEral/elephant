@@ -25,9 +25,9 @@ services:
     environment:
       DATABASE_URL: postgres://elephant:elephant@postgres/elephant
       # Override host-specific paths with container paths.
-      # Only used when EMBEDDING_PROVIDER=local (from .env); ignored otherwise.
       ORT_DYLIB_PATH: /usr/local/lib/libonnxruntime.so
       EMBEDDING_MODEL_PATH: /app/models/bge-small-en-v1.5
+      RERANKER_MODEL_PATH: /app/models/ms-marco-MiniLM-L-6-v2
 
 volumes:
   pgdata:

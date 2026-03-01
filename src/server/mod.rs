@@ -25,6 +25,8 @@ pub struct ServerInfo {
     pub reflect_model: String,
     /// The embedding model name.
     pub embedding_model: String,
+    /// The reranker model (e.g. "local/ms-marco-MiniLM-L-6-v2", "api/rerank-english-v3.0", or "none").
+    pub reranker_model: String,
 }
 
 /// Shared application state holding all pipeline instances.
@@ -179,7 +181,7 @@ mod tests {
     fn test_app() -> (Router, Arc<MockMemoryStore>) {
         let store = Arc::new(MockMemoryStore::new());
         let state = AppState {
-            info: ServerInfo { retain_model: "test".into(), reflect_model: "test".into(), embedding_model: "test".into() },
+            info: ServerInfo { retain_model: "test".into(), reflect_model: "test".into(), embedding_model: "test".into(), reranker_model: "none".into() },
             retain: Arc::new(MockRetainPipeline {
                 store: store.clone(),
             }),
@@ -266,7 +268,7 @@ mod tests {
         );
 
         let app2 = router(AppState {
-            info: ServerInfo { retain_model: "test".into(), reflect_model: "test".into(), embedding_model: "test".into() },
+            info: ServerInfo { retain_model: "test".into(), reflect_model: "test".into(), embedding_model: "test".into(), reranker_model: "none".into() },
             retain: Arc::new(MockRetainPipeline {
                 store: store.clone(),
             }),
@@ -462,7 +464,7 @@ mod tests {
         // Build a fresh app since oneshot consumes the router
         let make_app = || {
             router(AppState {
-                info: ServerInfo { retain_model: "test".into(), reflect_model: "test".into(), embedding_model: "test".into() },
+                info: ServerInfo { retain_model: "test".into(), reflect_model: "test".into(), embedding_model: "test".into(), reranker_model: "none".into() },
                 retain: Arc::new(MockRetainPipeline {
                     store: store.clone(),
                 }),
