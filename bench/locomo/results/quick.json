@@ -1,0 +1,102 @@
+{
+  "benchmark": "locomo",
+  "timestamp": "2026-02-28T14:16:01.275304724+00:00",
+  "tag": "quick",
+  "judge_model": "anthropic/claude-sonnet-4-6",
+  "retain_model": "anthropic/claude-sonnet-4-6",
+  "reflect_model": "anthropic/claude-sonnet-4-6",
+  "embedding_model": "local/bge-small-en-v1.5",
+  "reranker_model": "local/ms-marco-MiniLM-L-6-v2",
+  "consolidation_strategy": "end",
+  "total_questions": 5,
+  "accuracy": 0.6,
+  "mean_f1": 0.06431399237484724,
+  "per_category": {
+    "temporal": {
+      "accuracy": 1.0,
+      "mean_f1": 0.0396039603960396,
+      "count": 1
+    },
+    "single-hop": {
+      "accuracy": 0.0,
+      "mean_f1": 0.012195121951219514,
+      "count": 2
+    },
+    "multi-hop": {
+      "accuracy": 1.0,
+      "mean_f1": 0.12878787878787878,
+      "count": 2
+    }
+  },
+  "banks": {
+    "conv-26": "01KJJ9MKRTN5XXJNZ8W0Y49C0J"
+  },
+  "results": [
+    {
+      "question_id": "ad2056",
+      "sample_id": "conv-26",
+      "question": "What is Caroline's identity?",
+      "ground_truth": "Transgender woman",
+      "hypothesis": "Based on the available memory context, Caroline attended an LGBTQ support group on May 7, 2023 [01KJJ9MWFJM22FEPJYAMK8VFTJ], where she found the transgender stories shared to be inspiring [01KJJ9MWFJBJYF1S16YNQ87Y3Y] and felt accepted, gaining courage to embrace herself [01KJJ9MWFJYTT7D26QSY1076G7]. This suggests Caroline is part of or exploring her identity within the LGBTQ community, though the memory context does not explicitly specify her identity label (e.g., transgender, gay, lesbian, bisexual, etc.). The experience at the support group appears to have been meaningful to her personal journey of self-acceptance.",
+      "category_name": "single-hop",
+      "f1": 0.02439024390243903,
+      "judge_correct": false,
+      "judge_reasoning": "The generated answer does not explicitly state that Caroline is a transgender woman, instead saying her identity label is not explicitly specified. However, the gold answer clearly states she is a transgender woman. The generated answer hedges and says it 'suggests' she is part of the LGBTQ community without confirming her transgender identity.",
+      "confidence": 0.6,
+      "elapsed_s": 6.875873748
+    },
+    {
+      "question_id": "f8cc48",
+      "sample_id": "conv-26",
+      "question": "When did Melanie paint a sunrise?",
+      "ground_truth": "2022",
+      "hypothesis": "Melanie painted a lake sunrise painting in 2022 [01KJJ9MWFJE75VF60G29Z1YGF6]. She uses painting as a creative outlet to express her feelings and relax [01KJJ9MWFJX306QKEHD38PGTGC].",
+      "category_name": "multi-hop",
+      "f1": 0.0909090909090909,
+      "judge_correct": true,
+      "judge_reasoning": "The generated answer states that Melanie painted a lake sunrise painting in 2022, which matches the gold answer of 2022.",
+      "confidence": 0.99,
+      "elapsed_s": 2.560231531
+    },
+    {
+      "question_id": "4a2e15",
+      "sample_id": "conv-26",
+      "question": "When did Caroline go to the LGBTQ support group?",
+      "ground_truth": "7 May 2023",
+      "hypothesis": "Caroline attended the LGBTQ support group on May 7, 2023 [01KJJ9MWFJM22FEPJYAMK8VFTJ]. At the group, she found the transgender stories shared to be inspiring [01KJJ9MWFJBJYF1S16YNQ87Y3Y] and came away feeling accepted and more confident in embracing herself [01KJJ9MWFJYTT7D26QSY1076G7].",
+      "category_name": "multi-hop",
+      "f1": 0.16666666666666669,
+      "judge_correct": true,
+      "judge_reasoning": "The generated answer states Caroline attended the LGBTQ support group on May 7, 2023, which matches the gold answer of 7 May 2023.",
+      "confidence": 0.99,
+      "elapsed_s": 2.9837666990000002
+    },
+    {
+      "question_id": "35ed34",
+      "sample_id": "conv-26",
+      "question": "What fields would Caroline be likely to pursue in her educaton?",
+      "ground_truth": "Psychology, counseling certification",
+      "hypothesis": "Based on the available information, Caroline is planning to continue her education and explore career options [01KJJ9MWFJWN011TB91PR8589E], with a particular interest in counseling or mental health [01KJJ9MWFJCASS132TP5BP26RK]. This interest appears to be motivated by her desire to support people facing similar challenges to those she has encountered, likely informed by her meaningful experience at the LGBTQ support group on May 7, 2023 [01KJJ9MWFJM22FEPJYAMK8VFTJ], where she found transgender stories inspiring [01KJJ9MWFJBJYF1S16YNQ87Y3Y] and felt a sense of acceptance and courage to embrace herself [01KJJ9MWFJYTT7D26QSY1076G7]. So in terms of educational fields, counseling, psychology, or mental health-related programs would be the most likely paths for her.",
+      "category_name": "temporal",
+      "f1": 0.0396039603960396,
+      "judge_correct": true,
+      "judge_reasoning": "The generated answer mentions counseling, psychology, and mental health-related programs, which aligns with the gold answer of psychology and counseling certification.",
+      "confidence": 0.9,
+      "elapsed_s": 7.450296241
+    },
+    {
+      "question_id": "40c006",
+      "sample_id": "conv-26",
+      "question": "What did Caroline research?",
+      "ground_truth": "Adoption agencies",
+      "hypothesis": "The available memory context does not contain any information about Caroline conducting research. What is documented is that Caroline attended an LGBTQ support group on May 7, 2023 [01KJJ9MWFJM22FEPJYAMK8VFTJ], found the transgender stories shared there inspiring [01KJJ9MWFJBJYF1S16YNQ87Y3Y], and is planning to continue her education and explore career options [01KJJ9MWFJWN011TB91PR8589E], with a particular interest in counseling or mental health [01KJJ9MWFJCASS132TP5BP26RK]. However, no specific 'research' activity is mentioned in the context.",
+      "category_name": "single-hop",
+      "f1": 0.0,
+      "judge_correct": false,
+      "judge_reasoning": "The generated answer states that no specific research activity is mentioned in the context, while the gold answer indicates Caroline researched adoption agencies. The generated answer fails to identify the correct topic of Caroline's research.",
+      "confidence": 0.15,
+      "elapsed_s": 4.102996846
+    }
+  ],
+  "total_time_s": 59.104999777
+}

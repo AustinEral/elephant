@@ -16,10 +16,11 @@ Output:
 </examples>
 
 Write a single observation paragraph that:
-1. Captures the most important information from all facts
-2. Is preference-neutral — summarize objectively, do not inject opinions or evaluations
-3. Is written as a declarative summary, not a list
-4. Favors more recent information when facts conflict
+1. Preserves ALL specific details from the facts — names, counts, dates, relationships, locations, activities. Do not drop information to be concise.
+2. When multiple facts reference the same topic, combine them and infer aggregate details (e.g., separate mentions of "son", "daughter", and "2 younger kids" → "3 children")
+3. Is preference-neutral — summarize objectively, do not inject opinions or evaluations
+4. Is written as a declarative summary, not a list
+5. Favors more recent information when facts conflict
 
 ---
 

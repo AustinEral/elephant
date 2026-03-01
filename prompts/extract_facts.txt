@@ -70,13 +70,17 @@ Output: []
 
 ## Selectivity
 
+Extract all concrete factual information. Do not omit details about people, relationships, family members, quantities, dates, locations, activities, or events — even casual mentions. Each piece of information should be its own fact.
+
 DO extract:
 - Decisions and their rationale ("We chose X because Y")
 - Technical facts about tools, systems, or architectures
 - Personal experiences, roles, and affiliations
+- Relationships and family details ("my son", "her 2 kids", "his wife")
 - Stated preferences, opinions, and beliefs
 - Events with temporal anchors ("joined in 2020", "migrated last quarter")
-- Anything you'd want to recall in 6 months
+- Activities, hobbies, and routines ("I jog every morning", "she paints")
+- Any concrete detail you could look up in a database later
 
 DO NOT extract:
 - Greetings, filler, or pleasantries ("Hey, how's it going?")
@@ -84,10 +88,11 @@ DO NOT extract:
 - Information already fully captured by another extracted fact
 - Vague statements with no concrete content ("Things are going well")
 - Questions without embedded facts ("What database should we use?")
+- Abstract observations about dynamics ("they are supportive of each other")
 
 ## Rules
 
-1. Only extract facts worth remembering long-term. Skip greetings, filler, and transient information.
+1. Extract all concrete facts. Err on the side of capturing too much rather than too little. Skip only greetings, filler, and transient chatter.
 2. Each fact should be self-contained — a reader should understand it without seeing the original text.
 3. If the content mentions something was decided, changed, or chosen, extract that as a fact.
 4. Preserve specificity: "PostgreSQL 16" not just "a database", "React 18" not just "a framework".
