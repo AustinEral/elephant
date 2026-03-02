@@ -51,6 +51,7 @@ cargo run --release --bin view -- bench/locomo/results/quick.json bench/locomo/r
 | `--consolidate-per-session` | Consolidate after each session (incremental) | off |
 | `--resume <path>` | Reuse bank IDs from previous results (skip ingestion) | |
 | `--bank-id <id>` | Reuse a specific bank (skip ingestion) | |
+| `--ingest-only` | Ingest and consolidate only, skip questions | off |
 | `--judge-model <name>` | Override judge model | from env |
 | `--api-url <url>` | Elephant server URL | `http://localhost:3001` |
 | `--data <path>` | Dataset path | `data/locomo10.json` |

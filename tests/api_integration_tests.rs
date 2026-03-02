@@ -129,6 +129,7 @@ impl TestHarness {
                 overlap_tokens: 50,
                 preserve_turns: false,
             },
+            None, // no dedup in tests
         ));
 
         // Recall pipeline

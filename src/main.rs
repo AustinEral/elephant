@@ -87,6 +87,11 @@ async fn main() {
         Arc::from(embedding::build_client(&emb_config).expect("failed to create embedding client"));
 
     // 3. Retain pipeline — uses retain-tier LLM (extraction, can be a fast/cheap model)
+    let dedup_threshold: Option<f32> = match env::var("DEDUP_THRESHOLD").as_deref() {
+        Ok("none") => None,
+        Ok(s) => Some(s.parse().expect("DEDUP_THRESHOLD must be a float or 'none'")),
+        Err(_) => Some(0.95),
+    };
     let retain = Arc::new(DefaultRetainPipeline::new(
         Box::new(SimpleChunker),
         Box::new(LlmFactExtractor::new(retain_llm.clone())),
@@ -108,6 +113,7 @@ async fn main() {
             overlap_tokens: 64,
             preserve_turns: true,
         },
+        dedup_threshold,
     ));
 
     // 4. Reranker

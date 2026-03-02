@@ -172,6 +172,7 @@ impl RealTestHarness {
                 overlap_tokens: 64,
                 preserve_turns: true,
             },
+            None, // no dedup in tests
         ));
 
         let store_arc: Arc<dyn elephant::MemoryStore> =

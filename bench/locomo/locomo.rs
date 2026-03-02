@@ -470,6 +470,8 @@ struct Args {
     consolidate_per_session: bool,
     /// Resume from a previous results file — reuses bank IDs to skip ingestion.
     resume: Option<PathBuf>,
+    /// Ingest only — skip question phase (useful for separating ingestion from evaluation).
+    ingest_only: bool,
 }
 
 fn parse_args() -> Args {
@@ -488,6 +490,7 @@ fn parse_args() -> Args {
         consolidate: true,
         consolidate_per_session: false,
         resume: None,
+        ingest_only: false,
     };
 
     let raw: Vec<String> = env::args().collect();
@@ -548,6 +551,9 @@ fn parse_args() -> Args {
                 i += 1;
                 args.resume = Some(PathBuf::from(&raw[i]));
             }
+            "--ingest-only" => {
+                args.ingest_only = true;
+            }
             "--help" | "-h" => {
                 eprintln!("Usage: locomo-bench [OPTIONS]");
                 eprintln!();
@@ -583,6 +589,9 @@ fn parse_args() -> Args {
                 );
                 eprintln!(
                     "  --resume <PATH>                 Resume from previous results (reuse bank IDs)"
+                );
+                eprintln!(
+                    "  --ingest-only                   Ingest only, skip question phase"
                 );
                 std::process::exit(0);
             }
@@ -642,6 +651,7 @@ async fn run_conversation(
     consolidate: bool,
     consolidate_per_session: bool,
     reuse_bank: Option<String>,
+    ingest_only: bool,
     shared: Arc<Mutex<SharedResults>>,
 ) {
     let conv = &entry.conversation;
@@ -767,6 +777,12 @@ async fn run_conversation(
                 eprintln!("[{tag}] Consolidation failed: {e}");
             }
         }
+    }
+
+    // Skip questions if ingest-only mode
+    if ingest_only {
+        println!("[{tag}] Ingest-only mode — skipping questions");
+        return;
     }
 
     // Question phase
@@ -1054,10 +1070,11 @@ async fn main() {
             .or_else(|| if conv_idx == 0 { args.bank_id.clone() } else { None });
         let tag = format!("conv {}/{total_convs}", conv_idx + 1);
         let shared = shared.clone();
+        let ingest_only = args.ingest_only;
 
         handles.push(tokio::spawn(async move {
             let _permit = sem.acquire().await.expect("semaphore closed");
-            run_conversation(tag, http, api_url, entry, judge, max_sessions, max_questions, question_concurrency, consolidate, consolidate_per_session, reuse_bank, shared).await
+            run_conversation(tag, http, api_url, entry, judge, max_sessions, max_questions, question_concurrency, consolidate, consolidate_per_session, reuse_bank, ingest_only, shared).await
         }));
     }
 

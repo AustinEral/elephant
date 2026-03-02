@@ -48,6 +48,7 @@ pub struct DefaultRetainPipeline {
     embeddings: Box<dyn EmbeddingClient>,
     llm: Arc<dyn LlmClient>,
     chunk_config: crate::types::ChunkConfig,
+    dedup_threshold: Option<f32>,
 }
 
 impl DefaultRetainPipeline {
@@ -62,6 +63,7 @@ impl DefaultRetainPipeline {
         embeddings: Box<dyn EmbeddingClient>,
         llm: Arc<dyn LlmClient>,
         chunk_config: crate::types::ChunkConfig,
+        dedup_threshold: Option<f32>,
     ) -> Self {
         Self {
             chunker,
@@ -72,7 +74,25 @@ impl DefaultRetainPipeline {
             embeddings,
             llm,
             chunk_config,
+            dedup_threshold,
         }
+    }
+
+    /// Remove facts that are near-duplicates of existing facts in the bank.
+    async fn dedup_facts(&self, facts: Vec<Fact>, bank_id: crate::types::BankId, threshold: f32) -> Result<Vec<Fact>> {
+        let mut kept = Vec::with_capacity(facts.len());
+        for fact in facts {
+            if let Some(ref emb) = fact.embedding {
+                let results = self.store.vector_search(emb, bank_id, 1).await?;
+                if let Some(top) = results.first() {
+                    if top.score >= threshold {
+                        continue;
+                    }
+                }
+            }
+            kept.push(fact);
+        }
+        Ok(kept)
     }
 
     /// Run opinion reinforcement: check new facts against existing opinions.
@@ -259,11 +279,22 @@ impl RetainPipeline for DefaultRetainPipeline {
                 facts.push(fact);
             }
 
-            // 2d. Store facts
+            // 2d. Dedup against existing facts
+            let facts = if let Some(threshold) = self.dedup_threshold {
+                let deduped = self.dedup_facts(facts, input.bank_id, threshold).await?;
+                if deduped.is_empty() {
+                    continue;
+                }
+                deduped
+            } else {
+                facts
+            };
+
+            // 2e. Store facts
             let ids = self.store.insert_facts(&facts).await?;
             all_fact_ids.extend_from_slice(&ids);
 
-            // 2e. Build graph links
+            // 2f. Build graph links
             let links = self
                 .graph_builder
                 .build_links(&facts, input.bank_id)
