@@ -35,8 +35,16 @@ impl LocalEmbeddings {
             .commit_from_file(&model_path)
             .map_err(|e| Error::Embedding(format!("model load error: {e}")))?;
 
-        let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path)
+        let mut tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| Error::Embedding(format!("tokenizer load error: {e}")))?;
+        let max_seq_len: usize = std::env::var("EMBEDDING_MAX_SEQ_LEN")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(512);
+        tokenizer.with_truncation(Some(tokenizers::TruncationParams {
+            max_length: max_seq_len,
+            ..Default::default()
+        })).map_err(|e| Error::Embedding(format!("truncation config error: {e}")))?;
 
         Ok(Self {
             session: Arc::new(Mutex::new(session)),
