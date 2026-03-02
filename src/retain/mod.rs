@@ -148,6 +148,7 @@ impl DefaultRetainPipeline {
                     }],
                     temperature: Some(0.0),
                     max_tokens: Some(10),
+                    ..Default::default()
                 };
 
                 let response = self.llm.complete(request).await?;

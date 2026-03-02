@@ -187,6 +187,7 @@ impl RealTestHarness {
             reranker::build_reranker(&RerankerConfig {
                 provider: RerankerProvider::None,
                 model_path: None,
+                max_seq_len: 512,
                 api_key: None,
                 api_url: None,
                 api_model: None,
@@ -201,6 +202,7 @@ impl RealTestHarness {
             Box::new(DefaultOpinionManager::new(store_arc.clone(), embed_arc.clone())),
             self.llm.clone(),
             store_arc.clone(),
+            5,
         ));
 
         let consolidator = Arc::new(DefaultConsolidator::new(store_arc.clone(), self.llm.clone(), self.embeddings.clone()));

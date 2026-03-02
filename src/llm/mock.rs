@@ -15,7 +15,7 @@ use crate::types::llm::{CompletionRequest, CompletionResponse};
 /// with an empty queue — tests should set up all expected responses upfront.
 #[derive(Debug, Clone)]
 pub struct MockLlmClient {
-    responses: Arc<Mutex<VecDeque<String>>>,
+    responses: Arc<Mutex<VecDeque<CompletionResponse>>>,
 }
 
 impl MockLlmClient {
@@ -26,9 +26,19 @@ impl MockLlmClient {
         }
     }
 
-    /// Queue a response to be returned by the next `complete` call.
+    /// Queue a text-only response to be returned by the next `complete` call.
     pub fn push_response(&self, text: impl Into<String>) {
-        self.responses.lock().unwrap().push_back(text.into());
+        self.responses.lock().unwrap().push_back(CompletionResponse {
+            content: text.into(),
+            input_tokens: 10,
+            output_tokens: 20,
+            tool_calls: vec![],
+        });
+    }
+
+    /// Queue a full `CompletionResponse` (e.g. with tool_calls).
+    pub fn push_response_full(&self, resp: CompletionResponse) {
+        self.responses.lock().unwrap().push_back(resp);
     }
 
     /// Return the number of responses still in the queue.
@@ -46,17 +56,13 @@ impl Default for MockLlmClient {
 #[async_trait]
 impl LlmClient for MockLlmClient {
     async fn complete(&self, _request: CompletionRequest) -> Result<CompletionResponse> {
-        let text = self
+        let resp = self
             .responses
             .lock()
             .unwrap()
             .pop_front()
             .expect("MockLlmClient: no responses queued — did you forget push_response()?");
-        Ok(CompletionResponse {
-            content: text,
-            input_tokens: 10,
-            output_tokens: 20,
-        })
+        Ok(resp)
     }
 }
 
@@ -72,6 +78,7 @@ mod tests {
             max_tokens: None,
             temperature: None,
             system: None,
+            ..Default::default()
         }
     }
 

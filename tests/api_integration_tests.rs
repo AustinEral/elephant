@@ -144,6 +144,7 @@ impl TestHarness {
             reranker::build_reranker(&RerankerConfig {
                 provider: RerankerProvider::None,
                 model_path: None,
+                max_seq_len: 512,
                 api_key: None,
                 api_url: None,
                 api_model: None,
@@ -164,6 +165,7 @@ impl TestHarness {
             opinion_mgr,
             self.llm.clone() as Arc<dyn elephant::LlmClient>,
             store_arc.clone(),
+            5,
         ));
 
         // Consolidation

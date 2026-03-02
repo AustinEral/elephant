@@ -24,6 +24,8 @@ pub struct GraphRetrieverConfig {
     pub max_seeds: usize,
     /// Maximum facts to return.
     pub max_results: usize,
+    /// Boost multiplier for causal links.
+    pub causal_boost: f32,
 }
 
 impl Default for GraphRetrieverConfig {
@@ -34,6 +36,7 @@ impl Default for GraphRetrieverConfig {
             activation_threshold: 0.1,
             max_seeds: 10,
             max_results: 50,
+            causal_boost: 1.5,
         }
     }
 }
@@ -94,8 +97,13 @@ impl Retriever for GraphRetriever {
             }
 
             let neighbors = self.store.get_neighbors(fact_id, None).await?;
-            for (neighbor_id, edge_weight) in neighbors {
-                let propagated = activation * edge_weight * self.config.decay_factor;
+            for (neighbor_id, edge_weight, link_type) in neighbors {
+                let boost = if link_type == crate::types::LinkType::Causal {
+                    self.config.causal_boost
+                } else {
+                    1.0
+                };
+                let propagated = activation * edge_weight * boost * self.config.decay_factor;
                 if propagated < self.config.activation_threshold {
                     continue;
                 }
@@ -196,10 +204,9 @@ mod tests {
 
         let config = GraphRetrieverConfig {
             max_hops: 2,
-            decay_factor: 0.7,
             activation_threshold: 0.01,
             max_seeds: 5,
-            max_results: 50,
+            ..Default::default()
         };
 
         let retriever = GraphRetriever::new(store, embeddings, config);

@@ -43,7 +43,7 @@ fn extraction_request(content: &str, speaker: Option<&str>) -> CompletionRequest
     }
     user_msg.push_str(content);
     CompletionRequest {
-        model: String::new(), // AnthropicClient uses its default
+        model: String::new(),
         messages: vec![Message {
             role: "user".into(),
             content: user_msg,
@@ -51,6 +51,7 @@ fn extraction_request(content: &str, speaker: Option<&str>) -> CompletionRequest
         max_tokens: None,
         temperature: Some(0.0),
         system: Some(system),
+        ..Default::default()
     }
 }
 
@@ -69,6 +70,9 @@ fn reflect_request(context: &str, opinions: &str, question: &str) -> CompletionR
         max_tokens: None,
         temperature: Some(0.3),
         system: None,
+        tools: None,
+        tool_choice: None,
+        tool_results: vec![],
     }
 }
 
@@ -86,6 +90,9 @@ fn synthesize_observation_request(entity_name: &str, facts: &str) -> CompletionR
         max_tokens: None,
         temperature: Some(0.3),
         system: None,
+        tools: None,
+        tool_choice: None,
+        tool_results: vec![],
     }
 }
 
@@ -101,6 +108,9 @@ fn merge_opinions_request(opinions: &str) -> CompletionRequest {
         max_tokens: None,
         temperature: Some(0.0),
         system: None,
+        tools: None,
+        tool_choice: None,
+        tool_results: vec![],
     }
 }
 

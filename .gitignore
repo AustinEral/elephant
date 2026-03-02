@@ -4,5 +4,6 @@
 .env
 hindsight.sh
 docs/HINDSIGHT.md
+docs/agentic-reflect-improvements.md
 data/
 

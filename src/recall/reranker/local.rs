@@ -26,7 +26,9 @@ impl LocalReranker {
     /// Load the ONNX cross-encoder model and tokenizer from `model_dir`.
     ///
     /// Expects `model_dir/model.onnx` and `model_dir/tokenizer.json`.
-    pub fn new(model_dir: &Path) -> Result<Self> {
+    /// `max_seq_len` truncates inputs to fit the model's context window
+    /// (e.g. 512 for MiniLM).
+    pub fn new(model_dir: &Path, max_seq_len: usize) -> Result<Self> {
         let model_path = model_dir.join("model.onnx");
         let tokenizer_path = model_dir.join("tokenizer.json");
 
@@ -37,8 +39,15 @@ impl LocalReranker {
             .commit_from_file(&model_path)
             .map_err(|e| Error::Reranker(format!("model load error: {e}")))?;
 
-        let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path)
+        let mut tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| Error::Reranker(format!("tokenizer load error: {e}")))?;
+
+        tokenizer
+            .with_truncation(Some(tokenizers::TruncationParams {
+                max_length: max_seq_len,
+                ..Default::default()
+            }))
+            .map_err(|e| Error::Reranker(format!("truncation config error: {e}")))?;
 
         Ok(Self {
             session: Arc::new(Mutex::new(session)),
@@ -163,7 +172,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires cross-encoder model files"]
     async fn rerank_orders_by_relevance() {
-        let reranker = LocalReranker::new(&model_dir()).unwrap();
+        let reranker = LocalReranker::new(&model_dir(), 512).unwrap();
 
         let facts = vec![
             make_scored("The python snake is large"),
@@ -187,7 +196,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires cross-encoder model files"]
     async fn rerank_truncates() {
-        let reranker = LocalReranker::new(&model_dir()).unwrap();
+        let reranker = LocalReranker::new(&model_dir(), 512).unwrap();
 
         let facts = vec![
             make_scored("fact one"),
@@ -202,7 +211,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires cross-encoder model files"]
     async fn rerank_empty_input() {
-        let reranker = LocalReranker::new(&model_dir()).unwrap();
+        let reranker = LocalReranker::new(&model_dir(), 512).unwrap();
         let result = reranker.rerank("query", vec![], 10).await.unwrap();
         assert!(result.is_empty());
     }

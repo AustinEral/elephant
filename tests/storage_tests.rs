@@ -271,11 +271,13 @@ async fn graph_neighbors() {
     assert_eq!(semantic.len(), 1);
     assert_eq!(semantic[0].0, fact_b.id);
     assert!((semantic[0].1 - 0.8).abs() < f32::EPSILON);
+    assert_eq!(semantic[0].2, LinkType::Semantic);
 
     // B should see A as neighbor (bidirectional lookup)
     let b_neighbors = store.get_neighbors(fact_b.id, None).await.unwrap();
     assert_eq!(b_neighbors.len(), 1);
     assert_eq!(b_neighbors[0].0, fact_a.id);
+    assert_eq!(b_neighbors[0].2, LinkType::Semantic);
 }
 
 #[tokio::test]

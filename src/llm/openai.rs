@@ -4,9 +4,9 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::llm::LlmClient;
-use crate::types::llm::{CompletionRequest, CompletionResponse};
+use crate::types::llm::{CompletionRequest, CompletionResponse, ToolCall, ToolChoice};
 
 const API_URL: &str = "https://api.openai.com/v1";
 
@@ -40,12 +40,52 @@ struct OpenAiRequest {
     max_tokens: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<OpenAiTool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<OpenAiToolChoice>,
 }
 
 #[derive(Serialize)]
 struct OpenAiMessage {
     role: String,
-    content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct OpenAiTool {
+    #[serde(rename = "type")]
+    tool_type: String,
+    function: OpenAiFunction,
+}
+
+#[derive(Serialize)]
+struct OpenAiFunction {
+    name: String,
+    description: String,
+    parameters: serde_json::Value,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum OpenAiToolChoice {
+    String(String),
+    Specific(OpenAiToolChoiceSpecific),
+}
+
+#[derive(Serialize)]
+struct OpenAiToolChoiceSpecific {
+    #[serde(rename = "type")]
+    tool_type: String,
+    function: OpenAiToolChoiceFunction,
+}
+
+#[derive(Serialize)]
+struct OpenAiToolChoiceFunction {
+    name: String,
 }
 
 #[derive(Deserialize)]
@@ -62,6 +102,20 @@ struct OpenAiChoice {
 #[derive(Deserialize)]
 struct OpenAiMessageResp {
     content: Option<String>,
+    #[serde(default)]
+    tool_calls: Vec<OpenAiRespToolCall>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiRespToolCall {
+    id: String,
+    function: OpenAiRespFunctionCall,
+}
+
+#[derive(Deserialize)]
+struct OpenAiRespFunctionCall {
+    name: String,
+    arguments: String,
 }
 
 #[derive(Deserialize)]
@@ -70,100 +124,120 @@ struct OpenAiUsage {
     completion_tokens: usize,
 }
 
-#[derive(Deserialize)]
-struct OpenAiError {
-    error: OpenAiErrorDetail,
-}
-
-#[derive(Deserialize)]
-struct OpenAiErrorDetail {
-    message: String,
-}
-
 #[async_trait]
 impl LlmClient for OpenAiClient {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
-        let model = if request.model.is_empty() {
-            self.default_model.clone()
-        } else {
-            request.model
-        };
+        let model = super::resolve_model(request.model, &self.default_model);
 
         // Build messages: system prompt goes as a system message in the array
         let mut messages: Vec<OpenAiMessage> = Vec::new();
         if let Some(system) = request.system {
             messages.push(OpenAiMessage {
                 role: "system".into(),
-                content: system,
+                content: Some(system),
+                tool_call_id: None,
             });
         }
-        for m in request.messages {
+        for m in &request.messages {
             messages.push(OpenAiMessage {
-                role: m.role,
-                content: m.content,
+                role: m.role.clone(),
+                content: Some(m.content.clone()),
+                tool_call_id: None,
             });
         }
+
+        // Append tool results as tool messages
+        for tr in &request.tool_results {
+            messages.push(OpenAiMessage {
+                role: "tool".into(),
+                content: Some(tr.content.clone()),
+                tool_call_id: Some(tr.tool_call_id.clone()),
+            });
+        }
+
+        // Map tools
+        let tools = request.tools.map(|defs| {
+            defs.into_iter()
+                .map(|t| OpenAiTool {
+                    tool_type: "function".into(),
+                    function: OpenAiFunction {
+                        name: t.name,
+                        description: t.description,
+                        parameters: t.input_schema,
+                    },
+                })
+                .collect()
+        });
+
+        let tool_choice = request.tool_choice.map(|tc| match tc {
+            ToolChoice::Auto => OpenAiToolChoice::String("auto".into()),
+            ToolChoice::Required => OpenAiToolChoice::String("required".into()),
+            ToolChoice::None => OpenAiToolChoice::String("none".into()),
+            ToolChoice::Specific(name) => OpenAiToolChoice::Specific(OpenAiToolChoiceSpecific {
+                tool_type: "function".into(),
+                function: OpenAiToolChoiceFunction { name },
+            }),
+        });
 
         let body = OpenAiRequest {
             model,
             messages,
             max_tokens: request.max_tokens,
             temperature: request.temperature,
+            tools,
+            tool_choice,
         };
 
         let url = format!("{}/chat/completions", self.base_url);
 
-        let resp = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Error::Llm(format!("OpenAI request failed: {e}")))?;
+        let resp_text = super::send_and_check(
+            "OpenAI",
+            self.client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("Content-Type", "application/json")
+                .json(&body),
+        )
+        .await?;
 
-        let status = resp.status();
-        let resp_text = resp
-            .text()
-            .await
-            .map_err(|e| Error::Llm(format!("failed to read OpenAI response: {e}")))?;
+        let parsed: OpenAiResponse = serde_json::from_str(&resp_text)
+            .map_err(|e| crate::error::Error::Llm(format!("failed to parse OpenAI response: {e}")))?;
 
-        if status.is_success() {
-            let parsed: OpenAiResponse = serde_json::from_str(&resp_text)
-                .map_err(|e| Error::Llm(format!("failed to parse OpenAI response: {e}")))?;
+        let choice = parsed.choices.into_iter().next();
+        let content = choice
+            .as_ref()
+            .and_then(|c| c.message.content.clone())
+            .unwrap_or_default();
 
-            let content = parsed
-                .choices
-                .into_iter()
-                .next()
-                .and_then(|c| c.message.content)
-                .unwrap_or_default();
+        let tool_calls: Vec<ToolCall> = choice
+            .map(|c| {
+                c.message
+                    .tool_calls
+                    .into_iter()
+                    .filter_map(|tc| {
+                        let arguments: serde_json::Value =
+                            serde_json::from_str(&tc.function.arguments).ok()?;
+                        Some(ToolCall {
+                            id: tc.id,
+                            name: tc.function.name,
+                            arguments,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
 
-            let (input_tokens, output_tokens) = parsed
-                .usage
-                .map(|u| (u.prompt_tokens, u.completion_tokens))
-                .unwrap_or((0, 0));
+        let (input_tokens, output_tokens) = parsed
+            .usage
+            .map(|u| (u.prompt_tokens, u.completion_tokens))
+            .unwrap_or((0, 0));
 
-            return Ok(CompletionResponse {
-                content,
-                input_tokens,
-                output_tokens,
-            });
-        }
-
-        let msg = serde_json::from_str::<OpenAiError>(&resp_text)
-            .map(|e| e.error.message)
-            .unwrap_or_else(|_| resp_text);
-
-        if status.as_u16() == 429 {
-            return Err(Error::RateLimit(format!("OpenAI API ({status}): {msg}")));
-        }
-        if status.is_server_error() {
-            return Err(Error::ServerError(format!("OpenAI API ({status}): {msg}")));
-        }
-
-        Err(Error::Llm(format!("OpenAI API error ({status}): {msg}")))
+        Ok(CompletionResponse {
+            content,
+            input_tokens,
+            output_tokens,
+            tool_calls,
+        })
     }
 }
 
@@ -180,14 +254,13 @@ mod tests {
         let client = OpenAiClient::new(api_key, std::env::var("LLM_MODEL").expect("LLM_MODEL must be set"), None);
 
         let request = CompletionRequest {
-            model: String::new(),
             messages: vec![Message {
                 role: "user".into(),
                 content: "Say hello in exactly 3 words.".into(),
             }],
             max_tokens: Some(64),
             temperature: Some(0.0),
-            system: None,
+            ..Default::default()
         };
 
         let resp = client.complete(request).await.unwrap();
@@ -211,14 +284,13 @@ mod tests {
         }
 
         let request = CompletionRequest {
-            model: String::new(),
             messages: vec![Message {
                 role: "user".into(),
                 content: "Return a JSON object with fields \"name\" and \"hex\" for the color blue. Only output JSON, nothing else.".into(),
             }],
             max_tokens: Some(64),
             temperature: Some(0.0),
-            system: None,
+            ..Default::default()
         };
 
         let color: Color = complete_structured(&client, request).await.unwrap();

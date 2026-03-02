@@ -40,7 +40,7 @@ pub trait MemoryStore: Send + Sync {
         &self,
         fact_id: FactId,
         link_type: Option<LinkType>,
-    ) -> Result<Vec<(FactId, f32)>>;
+    ) -> Result<Vec<(FactId, f32, LinkType)>>;
 
     /// Find facts by vector similarity. Returns scored results ordered by descending similarity.
     async fn vector_search(

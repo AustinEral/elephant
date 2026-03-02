@@ -26,6 +26,8 @@ pub struct RerankerConfig {
     pub provider: RerankerProvider,
     /// Path to local ONNX model directory (for [`RerankerProvider::Local`]).
     pub model_path: Option<String>,
+    /// Max sequence length for local tokenizer truncation (e.g. 512 for MiniLM).
+    pub max_seq_len: usize,
     /// API key (for [`RerankerProvider::Api`]).
     pub api_key: Option<String>,
     /// API base URL (for [`RerankerProvider::Api`]).
@@ -43,7 +45,7 @@ pub fn build_reranker(config: &RerankerConfig) -> Result<Box<dyn Reranker>> {
                 .model_path
                 .as_deref()
                 .ok_or_else(|| Error::Reranker("RERANKER_MODEL_PATH must be set for local reranker".into()))?;
-            let reranker = local::LocalReranker::new(std::path::Path::new(model_path))?;
+            let reranker = local::LocalReranker::new(std::path::Path::new(model_path), config.max_seq_len)?;
             Ok(Box::new(reranker))
         }
         RerankerProvider::Api => {
@@ -210,6 +212,7 @@ mod tests {
         let config = RerankerConfig {
             provider: RerankerProvider::None,
             model_path: None,
+            max_seq_len: 512,
             api_key: None,
             api_url: None,
             api_model: None,
@@ -222,6 +225,7 @@ mod tests {
         let config = RerankerConfig {
             provider: RerankerProvider::Local,
             model_path: None,
+            max_seq_len: 512,
             api_key: None,
             api_url: None,
             api_model: None,
@@ -234,6 +238,7 @@ mod tests {
         let config = RerankerConfig {
             provider: RerankerProvider::Api,
             model_path: None,
+            max_seq_len: 512,
             api_key: None,
             api_url: None,
             api_model: None,
@@ -266,6 +271,7 @@ mod tests {
         let config = RerankerConfig {
             provider: RerankerProvider::Api,
             model_path: None,
+            max_seq_len: 512,
             api_key: Some("key".into()),
             api_url: Some("https://api.example.com/v1".into()),
             api_model: Some("rerank-v1".into()),

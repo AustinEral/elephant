@@ -11,8 +11,40 @@ pub struct Message {
     pub content: String,
 }
 
-/// A request to an LLM for completion.
+/// A tool definition sent in a completion request.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ToolDef {
+    pub name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+}
+
+/// A tool invocation returned by the LLM.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
+/// A tool result to feed back to the LLM.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ToolResult {
+    pub tool_call_id: String,
+    pub content: String,
+}
+
+/// Controls which tool the LLM should use.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ToolChoice {
+    Auto,
+    Required,
+    None,
+    Specific(String),
+}
+
+/// A request to an LLM for completion.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct CompletionRequest {
     /// The model to use.
     pub model: String,
@@ -24,10 +56,19 @@ pub struct CompletionRequest {
     pub temperature: Option<f32>,
     /// Optional system prompt.
     pub system: Option<String>,
+    /// Tool definitions for tool-calling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<ToolDef>>,
+    /// Which tool the LLM should use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<ToolChoice>,
+    /// Results from previous tool calls.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_results: Vec<ToolResult>,
 }
 
 /// A response from an LLM completion.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CompletionResponse {
     /// The generated text content.
     pub content: String,
@@ -35,6 +76,9 @@ pub struct CompletionResponse {
     pub input_tokens: usize,
     /// Number of output tokens generated.
     pub output_tokens: usize,
+    /// Tool calls requested by the LLM.
+    #[serde(default)]
+    pub tool_calls: Vec<ToolCall>,
 }
 
 #[cfg(test)]
@@ -52,6 +96,7 @@ mod tests {
             max_tokens: Some(1024),
             temperature: Some(0.7),
             system: Some("You are a helpful assistant.".into()),
+            ..Default::default()
         };
         let json = serde_json::to_string(&req).unwrap();
         let back: CompletionRequest = serde_json::from_str(&json).unwrap();
@@ -64,6 +109,7 @@ mod tests {
             content: "Hello! How can I help?".into(),
             input_tokens: 10,
             output_tokens: 6,
+            tool_calls: vec![],
         };
         let json = serde_json::to_string(&resp).unwrap();
         let back: CompletionResponse = serde_json::from_str(&json).unwrap();

@@ -128,6 +128,7 @@ impl OpinionMerger for DefaultOpinionMerger {
                 max_tokens: Some(1024),
                 temperature: Some(0.3),
                 system: None,
+                ..Default::default()
             };
 
             let resp: MergeResponse = complete_structured(self.llm.as_ref(), request).await?;

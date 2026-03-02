@@ -126,6 +126,7 @@ mod tests {
                     content: "ok".into(),
                     input_tokens: 1,
                     output_tokens: 1,
+                    tool_calls: vec![],
                 })
             }
         }
@@ -147,6 +148,7 @@ mod tests {
             max_tokens: None,
             temperature: None,
             system: None,
+            ..Default::default()
         }
     }
 

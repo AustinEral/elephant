@@ -130,7 +130,7 @@ impl MemoryStore for MockMemoryStore {
         &self,
         fact_id: FactId,
         link_type: Option<LinkType>,
-    ) -> Result<Vec<(FactId, f32)>> {
+    ) -> Result<Vec<(FactId, f32, LinkType)>> {
         let store = self.links.lock().unwrap();
         Ok(store
             .iter()
@@ -140,7 +140,7 @@ impl MemoryStore for MockMemoryStore {
             })
             .map(|l| {
                 let other = if l.source_id == fact_id { l.target_id } else { l.source_id };
-                (other, l.weight)
+                (other, l.weight, l.link_type)
             })
             .collect())
     }

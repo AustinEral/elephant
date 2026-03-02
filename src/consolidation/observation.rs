@@ -175,6 +175,7 @@ impl Consolidator for DefaultConsolidator {
                 max_tokens: Some(max_tokens()),
                 temperature: Some(0.3),
                 system: None,
+                ..Default::default()
             };
 
             let resp: ConsolidateResponse =

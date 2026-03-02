@@ -383,14 +383,14 @@ impl MemoryStore for PgMemoryStore {
         &self,
         fact_id: FactId,
         link_type: Option<LinkType>,
-    ) -> Result<Vec<(FactId, f32)>> {
+    ) -> Result<Vec<(FactId, f32, LinkType)>> {
         let rows = if let Some(lt) = link_type {
             let lt_str = enum_to_sql(&lt)?;
             sqlx::query(
-                "SELECT target_id, weight FROM graph_links
+                "SELECT target_id, weight, link_type FROM graph_links
                  WHERE source_id = $1 AND link_type = $2
                  UNION ALL
-                 SELECT source_id, weight FROM graph_links
+                 SELECT source_id, weight, link_type FROM graph_links
                  WHERE target_id = $1 AND link_type = $2",
             )
             .bind(fact_id)
@@ -399,9 +399,9 @@ impl MemoryStore for PgMemoryStore {
             .await?
         } else {
             sqlx::query(
-                "SELECT target_id, weight FROM graph_links WHERE source_id = $1
+                "SELECT target_id, weight, link_type FROM graph_links WHERE source_id = $1
                  UNION ALL
-                 SELECT source_id, weight FROM graph_links WHERE target_id = $1",
+                 SELECT source_id, weight, link_type FROM graph_links WHERE target_id = $1",
             )
             .bind(fact_id)
             .fetch_all(&self.pool)
@@ -412,7 +412,15 @@ impl MemoryStore for PgMemoryStore {
         for row in &rows {
             let uuid: uuid::Uuid = row.get(0);
             let weight: f32 = row.get(1);
-            neighbors.push((FactId::from_uuid(uuid), weight));
+            let lt_str: String = row.get(2);
+            let lt = match lt_str.as_str() {
+                "semantic" => LinkType::Semantic,
+                "temporal" => LinkType::Temporal,
+                "causal" => LinkType::Causal,
+                "entity" => LinkType::Entity,
+                other => return Err(Error::Llm(format!("unknown link type in graph_links: {other}"))),
+            };
+            neighbors.push((FactId::from_uuid(uuid), weight, lt));
         }
         Ok(neighbors)
     }

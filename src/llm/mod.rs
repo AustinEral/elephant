@@ -137,6 +137,77 @@ pub fn extract_json(text: &str) -> Result<String> {
     Ok(candidate.to_string())
 }
 
+/// Map an HTTP error response to the appropriate error variant.
+///
+/// Shared by both provider implementations — the error classification logic
+/// (429 → RateLimit, 5xx → ServerError, else → Llm) is the same regardless
+/// of wire format.
+pub(crate) fn classify_api_error(
+    provider: &str,
+    status: reqwest::StatusCode,
+    message: String,
+) -> Error {
+    if status.as_u16() == 429 {
+        Error::RateLimit(format!("{provider} API ({status}): {message}"))
+    } else if status.is_server_error() {
+        Error::ServerError(format!("{provider} API ({status}): {message}"))
+    } else {
+        Error::Llm(format!("{provider} API error ({status}): {message}"))
+    }
+}
+
+/// Shared API error response shape: `{"error": {"message": "..."}}`.
+///
+/// Both OpenAI and Anthropic use this identical structure for error responses.
+#[derive(serde::Deserialize)]
+pub(crate) struct ApiErrorBody {
+    pub error: ApiErrorDetail,
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct ApiErrorDetail {
+    pub message: String,
+}
+
+/// Resolve the model: use the request's model if set, otherwise the client default.
+pub(crate) fn resolve_model(request_model: String, default_model: &str) -> String {
+    if request_model.is_empty() {
+        default_model.to_string()
+    } else {
+        request_model
+    }
+}
+
+/// Send a request and handle the response/error boilerplate shared by all providers.
+///
+/// On success, returns the raw response text for provider-specific parsing.
+/// On failure, parses the `{"error": {"message": ...}}` body and classifies the error.
+pub(crate) async fn send_and_check(
+    provider: &str,
+    request_builder: reqwest::RequestBuilder,
+) -> Result<String> {
+    let resp = request_builder
+        .send()
+        .await
+        .map_err(|e| Error::Llm(format!("{provider} request failed: {e}")))?;
+
+    let status = resp.status();
+    let resp_text = resp
+        .text()
+        .await
+        .map_err(|e| Error::Llm(format!("failed to read {provider} response: {e}")))?;
+
+    if status.is_success() {
+        return Ok(resp_text);
+    }
+
+    let msg = serde_json::from_str::<ApiErrorBody>(&resp_text)
+        .map(|e| e.error.message)
+        .unwrap_or(resp_text);
+
+    Err(classify_api_error(provider, status, msg))
+}
+
 /// LLM provider selection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Provider {

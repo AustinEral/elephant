@@ -74,6 +74,7 @@ impl FactExtractor for LlmFactExtractor {
             }],
             temperature: Some(0.1),
             max_tokens: Some(4096),
+            ..Default::default()
         };
 
         crate::llm::complete_structured::<Vec<ExtractedFact>>(&*self.llm, request).await

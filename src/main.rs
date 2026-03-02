@@ -125,6 +125,10 @@ async fn main() {
             other => panic!("unknown RERANKER_PROVIDER: {other} (expected 'local', 'api', or 'none')"),
         },
         model_path: env::var("RERANKER_MODEL_PATH").ok(),
+        max_seq_len: env::var("RERANKER_MAX_SEQ_LEN")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(512),
         api_key: env::var("RERANKER_API_KEY").ok(),
         api_url: env::var("RERANKER_API_URL").ok(),
         api_model: env::var("RERANKER_API_MODEL").ok(),
@@ -149,11 +153,16 @@ async fn main() {
     ));
 
     // 5. Reflect pipeline — uses reflect-tier LLM (synthesis, quality-sensitive)
+    let reflect_max_iter: usize = env::var("REFLECT_MAX_ITERATIONS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5);
     let reflect = Arc::new(DefaultReflectPipeline::new(
         Box::new(DefaultHierarchyAssembler::new(recall.clone())),
         Box::new(DefaultOpinionManager::new(store.clone(), embeddings.clone())),
         reflect_llm.clone(),
         store.clone(),
+        reflect_max_iter,
     ));
 
     // 6. Consolidation workers — synthesis like reflect, same tier

@@ -4,9 +4,9 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::llm::LlmClient;
-use crate::types::llm::{CompletionRequest, CompletionResponse};
+use crate::types::llm::{CompletionRequest, CompletionResponse, ToolCall, ToolChoice};
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -40,12 +40,59 @@ struct AnthropicRequest {
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<AnthropicTool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<AnthropicToolChoice>,
 }
 
 #[derive(Serialize)]
+struct AnthropicTool {
+    name: String,
+    description: String,
+    input_schema: serde_json::Value,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type")]
+enum AnthropicToolChoice {
+    #[serde(rename = "auto")]
+    Auto,
+    #[serde(rename = "any")]
+    Any,
+    #[serde(rename = "tool")]
+    Tool { name: String },
+}
+
+#[derive(Serialize, Deserialize)]
 struct AnthropicMessage {
     role: String,
-    content: String,
+    content: AnthropicContent,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum AnthropicContent {
+    Text(String),
+    Blocks(Vec<ContentBlock>),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type")]
+enum ContentBlock {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "tool_use")]
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    #[serde(rename = "tool_result")]
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -55,43 +102,60 @@ struct AnthropicResponse {
 }
 
 #[derive(Deserialize)]
-struct ContentBlock {
-    text: String,
-}
-
-#[derive(Deserialize)]
 struct AnthropicUsage {
     input_tokens: usize,
     output_tokens: usize,
 }
 
-#[derive(Deserialize)]
-struct AnthropicError {
-    error: AnthropicErrorDetail,
-}
-
-#[derive(Deserialize)]
-struct AnthropicErrorDetail {
-    message: String,
-}
 
 #[async_trait]
 impl LlmClient for AnthropicClient {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
-        let model = if request.model.is_empty() {
-            self.default_model.clone()
-        } else {
-            request.model
-        };
+        let model = super::resolve_model(request.model, &self.default_model);
 
-        let messages: Vec<AnthropicMessage> = request
-            .messages
-            .into_iter()
-            .map(|m| AnthropicMessage {
-                role: m.role,
-                content: m.content,
-            })
-            .collect();
+        // Build messages, including tool results if present
+        let mut messages: Vec<AnthropicMessage> = Vec::new();
+
+        for m in &request.messages {
+            messages.push(AnthropicMessage {
+                role: m.role.clone(),
+                content: AnthropicContent::Text(m.content.clone()),
+            });
+        }
+
+        // Append tool results as a user message with tool_result content blocks
+        if !request.tool_results.is_empty() {
+            let blocks: Vec<ContentBlock> = request
+                .tool_results
+                .iter()
+                .map(|tr| ContentBlock::ToolResult {
+                    tool_use_id: tr.tool_call_id.clone(),
+                    content: tr.content.clone(),
+                })
+                .collect();
+            messages.push(AnthropicMessage {
+                role: "user".into(),
+                content: AnthropicContent::Blocks(blocks),
+            });
+        }
+
+        // Map tools
+        let tools = request.tools.map(|defs| {
+            defs.into_iter()
+                .map(|t| AnthropicTool {
+                    name: t.name,
+                    description: t.description,
+                    input_schema: t.input_schema,
+                })
+                .collect()
+        });
+
+        let tool_choice = request.tool_choice.map(|tc| match tc {
+            ToolChoice::Auto => AnthropicToolChoice::Auto,
+            ToolChoice::Required => AnthropicToolChoice::Any,
+            ToolChoice::None => AnthropicToolChoice::Auto, // Anthropic has no "none"; auto is closest
+            ToolChoice::Specific(name) => AnthropicToolChoice::Tool { name },
+        });
 
         let body = AnthropicRequest {
             model,
@@ -99,55 +163,52 @@ impl LlmClient for AnthropicClient {
             max_tokens: request.max_tokens.unwrap_or(4096),
             temperature: request.temperature,
             system: request.system,
+            tools,
+            tool_choice,
         };
 
-        let resp = self
-            .client
-            .post(ANTHROPIC_API_URL)
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Error::Llm(format!("Anthropic request failed: {e}")))?;
+        let resp_text = super::send_and_check(
+            "Anthropic",
+            self.client
+                .post(ANTHROPIC_API_URL)
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION)
+                .header("content-type", "application/json")
+                .json(&body),
+        )
+        .await?;
 
-        let status = resp.status();
-        let resp_text = resp
-            .text()
-            .await
-            .map_err(|e| Error::Llm(format!("failed to read Anthropic response: {e}")))?;
+        let parsed: AnthropicResponse = serde_json::from_str(&resp_text)
+            .map_err(|e| crate::error::Error::Llm(format!("failed to parse Anthropic response: {e}")))?;
 
-        if status.is_success() {
-            let parsed: AnthropicResponse = serde_json::from_str(&resp_text)
-                .map_err(|e| Error::Llm(format!("failed to parse Anthropic response: {e}")))?;
+        let mut content = String::new();
+        let mut tool_calls = Vec::new();
 
-            let content = parsed
-                .content
-                .into_iter()
-                .next()
-                .map(|b| b.text)
-                .unwrap_or_default();
-
-            return Ok(CompletionResponse {
-                content,
-                input_tokens: parsed.usage.input_tokens,
-                output_tokens: parsed.usage.output_tokens,
-            });
+        for block in parsed.content {
+            match block {
+                ContentBlock::Text { text } => {
+                    if !content.is_empty() {
+                        content.push('\n');
+                    }
+                    content.push_str(&text);
+                }
+                ContentBlock::ToolUse { id, name, input } => {
+                    tool_calls.push(ToolCall {
+                        id,
+                        name,
+                        arguments: input,
+                    });
+                }
+                ContentBlock::ToolResult { .. } => {}
+            }
         }
 
-        let msg = serde_json::from_str::<AnthropicError>(&resp_text)
-            .map(|e| e.error.message)
-            .unwrap_or_else(|_| resp_text);
-
-        if status.as_u16() == 429 {
-            return Err(Error::RateLimit(format!("Anthropic API ({status}): {msg}")));
-        }
-        if status.is_server_error() {
-            return Err(Error::ServerError(format!("Anthropic API ({status}): {msg}")));
-        }
-
-        Err(Error::Llm(format!("Anthropic API error ({status}): {msg}")))
+        Ok(CompletionResponse {
+            content,
+            input_tokens: parsed.usage.input_tokens,
+            output_tokens: parsed.usage.output_tokens,
+            tool_calls,
+        })
     }
 }
 
@@ -173,6 +234,7 @@ mod tests {
             max_tokens: Some(64),
             temperature: Some(0.0),
             system: None,
+            ..Default::default()
         };
 
         let resp = client.complete(request).await.unwrap();
@@ -207,6 +269,7 @@ mod tests {
             max_tokens: Some(64),
             temperature: Some(0.0),
             system: None,
+            ..Default::default()
         };
 
         let color: Color = complete_structured(&client, request).await.unwrap();

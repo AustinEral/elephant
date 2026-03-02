@@ -318,6 +318,7 @@ async fn llm_judge(
         max_tokens: Some(200),
         temperature: Some(0.0),
         system: None,
+        ..Default::default()
     };
 
     // RetryingLlmClient handles rate-limit/server-error retries.
