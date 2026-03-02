@@ -94,6 +94,7 @@ impl OpinionManager for DefaultOpinionManager {
             source_turn_id: None,
             created_at: now,
             updated_at: now,
+            consolidated_at: None,
         };
         let ids = self.store.insert_facts(&[fact]).await?;
         Ok(ids[0])
@@ -228,6 +229,7 @@ mod tests {
             source_turn_id: None,
             created_at: now,
             updated_at: now,
+            consolidated_at: None,
         };
         store.insert_facts(&[world_fact]).await.unwrap();
 

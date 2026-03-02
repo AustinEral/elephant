@@ -1,39 +1,32 @@
-//! Observation consolidator — synthesizes entity-level observations from raw facts.
+//! Topic-scoped observation consolidator — produces multiple focused observations
+//! from batches of raw facts, Vectorize-style.
 //!
-//! Matches the paper's approach (§4.1.5): `o_e = SummarizeLLM(F_e)` where F_e is
-//! ALL facts mentioning entity e. When new facts arrive, the observation is
-//! recomputed from the full fact set — not incrementally updated.
+//! Instead of one monolithic observation per entity, facts are processed in batches.
+//! For each batch the LLM decides whether to CREATE new or UPDATE existing observations,
+//! keeping each observation focused on a single topic/facet.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use serde::Deserialize;
 
 use crate::embedding::EmbeddingClient;
 use crate::error::Result;
 use crate::llm::{complete_structured, LlmClient};
 use crate::storage::MemoryStore;
-use crate::types::id::{BankId, EntityId, FactId};
+use crate::types::id::{BankId, FactId};
 use crate::types::llm::{CompletionRequest, Message};
-use crate::types::{ConsolidationReport, Fact, FactFilter, FactType, NetworkType};
+use crate::types::{ConsolidationReport, Fact, FactFilter, FactType, NetworkType, TemporalRange};
 
-/// Consolidates raw facts into entity-level observations.
+/// Consolidates raw facts into topic-scoped observations.
 #[async_trait]
 pub trait Consolidator: Send + Sync {
-    /// Process new facts since `since` and create/update observations.
-    async fn consolidate(
-        &self,
-        bank_id: BankId,
-        since: DateTime<Utc>,
-    ) -> Result<ConsolidationReport>;
+    /// Process unconsolidated facts and create/update observations.
+    async fn consolidate(&self, bank_id: BankId) -> Result<ConsolidationReport>;
 }
 
-/// Default implementation using LLM for synthesis.
-///
-/// Follows the paper's observation paradigm: for each entity with new facts,
-/// re-summarize ALL facts about that entity into a single observation.
+/// Default implementation using LLM for topic-scoped synthesis.
 pub struct DefaultConsolidator {
     store: Arc<dyn MemoryStore>,
     llm: Arc<dyn LlmClient>,
@@ -56,96 +49,122 @@ impl DefaultConsolidator {
 }
 
 #[derive(Deserialize)]
-struct SynthesizeResponse {
-    observation: String,
+struct ConsolidateResponse {
+    actions: Vec<ConsolidateAction>,
 }
 
-const SYNTHESIZE_PROMPT: &str = include_str!("../../prompts/synthesize_observation.txt");
+#[derive(Deserialize)]
+struct ConsolidateAction {
+    action: String,
+    content: String,
+    fact_indices: Vec<usize>,
+    observation_id: Option<String>,
+}
+
+const CONSOLIDATE_PROMPT: &str = include_str!("../../prompts/consolidate_topics.txt");
+
+fn batch_size() -> usize {
+    std::env::var("CONSOLIDATION_BATCH_SIZE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8)
+}
+
+fn max_tokens() -> usize {
+    std::env::var("CONSOLIDATION_MAX_TOKENS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4096)
+}
+
+/// Merge temporal ranges from source facts into an existing range using LEAST(start)/GREATEST(end).
+fn merge_temporal(existing: Option<&TemporalRange>, facts: &[&Fact]) -> Option<TemporalRange> {
+    let mut start = existing.and_then(|r| r.start);
+    let mut end = existing.and_then(|r| r.end);
+
+    for f in facts {
+        if let Some(ref tr) = f.temporal_range {
+            start = match (start, tr.start) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            end = match (end, tr.end) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (a, b) => a.or(b),
+            };
+        }
+    }
+
+    match (start, end) {
+        (None, None) => None,
+        _ => Some(TemporalRange { start, end }),
+    }
+}
 
 #[async_trait]
 impl Consolidator for DefaultConsolidator {
-    async fn consolidate(
-        &self,
-        bank_id: BankId,
-        since: DateTime<Utc>,
-    ) -> Result<ConsolidationReport> {
+    async fn consolidate(&self, bank_id: BankId) -> Result<ConsolidationReport> {
         let mut report = ConsolidationReport::default();
 
-        // 1. Fetch new World/Experience facts since `since`
-        //    (only raw fact networks — not Observation/Opinion)
-        let new_facts = self
+        // 1. Fetch unconsolidated World/Experience facts
+        let unconsolidated = self
             .store
             .get_facts_by_bank(
                 bank_id,
                 FactFilter {
                     network: Some(vec![NetworkType::World, NetworkType::Experience]),
-                    created_since: Some(since),
+                    unconsolidated_only: true,
                     ..Default::default()
                 },
             )
             .await?;
 
-        if new_facts.is_empty() {
+        if unconsolidated.is_empty() {
             return Ok(report);
         }
 
-        // 2. Collect unique entity IDs from new facts
-        let entity_ids: HashSet<EntityId> =
-            new_facts.iter().flat_map(|f| &f.entity_ids).copied().collect();
+        // 2. Process in batches
+        let bs = batch_size();
+        for batch in unconsolidated.chunks(bs) {
+            // 3a. Per-fact recall: search for related observations using each fact's embedding,
+            // then union/dedup the results.
+            let mut seen_obs_ids = std::collections::HashSet::new();
+            let mut related_observations = Vec::new();
 
-        // 3. Load all entities in the bank for name resolution
-        let all_entities = self.store.list_entities(bank_id).await?;
-
-        // 4. For each entity with new facts, re-summarize ALL facts (paper: o_e = SummarizeLLM(F_e))
-        for entity_id in entity_ids {
-            // Resolve entity canonical name for the prompt
-            let entity_name = all_entities
-                .iter()
-                .find(|e| e.id == entity_id)
-                .map(|e| e.canonical_name.as_str())
-                .unwrap_or("unknown entity");
-
-            // Get ALL World/Experience facts about this entity (not just new ones)
-            let all_entity_facts = self
-                .store
-                .get_facts_by_bank(
-                    bank_id,
-                    FactFilter {
-                        network: Some(vec![NetworkType::World, NetworkType::Experience]),
-                        entity_ids: Some(vec![entity_id]),
-                        ..Default::default()
-                    },
-                )
-                .await?;
-
-            if all_entity_facts.is_empty() {
-                continue;
+            for fact in batch {
+                if let Some(ref emb) = fact.embedding {
+                    let results = self.store.vector_search(emb, bank_id, 5).await?;
+                    for sf in results {
+                        if sf.fact.network == NetworkType::Observation
+                            && seen_obs_ids.insert(sf.fact.id)
+                        {
+                            related_observations.push(sf.fact);
+                        }
+                    }
+                }
             }
 
-            // Get existing observation for this entity
-            let existing_observations = self
-                .store
-                .get_facts_by_bank(
-                    bank_id,
-                    FactFilter {
-                        network: Some(vec![NetworkType::Observation]),
-                        entity_ids: Some(vec![entity_id]),
-                        ..Default::default()
-                    },
-                )
-                .await?;
-
-            // Synthesize observation from ALL facts
-            let facts_text = all_entity_facts
+            // 3b. Format prompt
+            let facts_text = batch
                 .iter()
                 .enumerate()
-                .map(|(i, f)| format!("{}. {}", i + 1, f.content))
+                .map(|(i, f)| format!("[{i}] {}", f.content))
                 .collect::<Vec<_>>()
                 .join("\n");
 
-            let prompt = SYNTHESIZE_PROMPT
-                .replace("{entity_name}", entity_name)
-                .replace("{facts}", &facts_text);
+            let obs_text = if related_observations.is_empty() {
+                "(none)".to_string()
+            } else {
+                related_observations
+                    .iter()
+                    .map(|o| format!("[{}] {}", o.id, o.content))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+
+            let prompt = CONSOLIDATE_PROMPT
+                .replace("{facts}", &facts_text)
+                .replace("{observations}", &obs_text);
 
             let request = CompletionRequest {
                 model: String::new(),
@@ -153,50 +172,89 @@ impl Consolidator for DefaultConsolidator {
                     role: "user".into(),
                     content: prompt,
                 }],
-                max_tokens: Some(1024),
+                max_tokens: Some(max_tokens()),
                 temperature: Some(0.3),
                 system: None,
             };
 
-            let resp: SynthesizeResponse =
+            let resp: ConsolidateResponse =
                 complete_structured(self.llm.as_ref(), request).await?;
 
-            let emb = self.embeddings.embed(&[&resp.observation]).await?;
-            let evidence_ids: Vec<FactId> = all_entity_facts.iter().map(|f| f.id).collect();
+            // 3c. Execute actions
+            for action in &resp.actions {
+                let emb_vec = self.embeddings.embed(&[&action.content]).await?;
+                let embedding = emb_vec.into_iter().next();
 
-            if let Some(existing) = existing_observations.into_iter().next() {
-                // Update existing observation in place
-                let mut updated = existing;
-                updated.content = resp.observation;
-                updated.confidence = None; // Paper: observations lack confidence
-                updated.embedding = emb.into_iter().next();
-                updated.evidence_ids = evidence_ids;
-                updated.updated_at = Utc::now();
+                // Collect source facts referenced by this action
+                let source_facts: Vec<&Fact> = action
+                    .fact_indices
+                    .iter()
+                    .filter_map(|&i| batch.get(i))
+                    .collect();
+                let evidence_ids: Vec<FactId> = source_facts.iter().map(|f| f.id).collect();
 
-                self.store.update_fact(&updated).await?;
-                report.observations_updated += 1;
-            } else {
-                // Create new observation
-                let now = Utc::now();
-                let observation = Fact {
-                    id: FactId::new(),
-                    bank_id,
-                    content: resp.observation,
-                    fact_type: FactType::World,
-                    network: NetworkType::Observation,
-                    entity_ids: vec![entity_id],
-                    temporal_range: None,
-                    embedding: emb.into_iter().next(),
-                    confidence: None, // Paper: observations lack confidence
-                    evidence_ids,
-                    source_turn_id: None,
-                    created_at: now,
-                    updated_at: now,
+                // Does the LLM want to update an existing observation?
+                let updated_existing = if action.action == "update" {
+                    if let Some(ref obs_id_str) = action.observation_id {
+                        if let Some(existing) = related_observations
+                            .iter()
+                            .find(|o| o.id.to_string() == *obs_id_str)
+                        {
+                            let mut updated = existing.clone();
+                            updated.content = action.content.clone();
+                            updated.embedding = embedding.clone();
+                            for eid in &evidence_ids {
+                                if !updated.evidence_ids.contains(eid) {
+                                    updated.evidence_ids.push(*eid);
+                                }
+                            }
+                            updated.temporal_range = merge_temporal(
+                                updated.temporal_range.as_ref(),
+                                &source_facts,
+                            );
+                            updated.updated_at = Utc::now();
+                            self.store.update_fact(&updated).await?;
+                            report.observations_updated += 1;
+                            true
+                        } else {
+                            eprintln!(
+                                "consolidation: LLM referenced unknown observation ID {obs_id_str}, creating new instead"
+                            );
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
                 };
 
-                self.store.insert_facts(&[observation]).await?;
-                report.observations_created += 1;
+                if !updated_existing {
+                    let now = Utc::now();
+                    let obs = Fact {
+                        id: FactId::new(),
+                        bank_id,
+                        content: action.content.clone(),
+                        fact_type: FactType::World,
+                        network: NetworkType::Observation,
+                        entity_ids: vec![],
+                        temporal_range: merge_temporal(None, &source_facts),
+                        embedding,
+                        confidence: None,
+                        evidence_ids,
+                        source_turn_id: None,
+                        created_at: now,
+                        updated_at: now,
+                        consolidated_at: None,
+                    };
+                    self.store.insert_facts(&[obs]).await?;
+                    report.observations_created += 1;
+                }
             }
+
+            // 3d. Mark batch facts as consolidated
+            let batch_ids: Vec<FactId> = batch.iter().map(|f| f.id).collect();
+            self.store.mark_consolidated(&batch_ids, Utc::now()).await?;
         }
 
         Ok(report)
@@ -209,8 +267,6 @@ mod tests {
     use crate::embedding::mock::MockEmbeddings;
     use crate::llm::mock::MockLlmClient;
     use crate::storage::mock::MockMemoryStore;
-    use crate::types::Entity;
-    use crate::types::entity::EntityType;
 
     fn setup() -> (Arc<MockMemoryStore>, Arc<MockLlmClient>, Arc<MockEmbeddings>) {
         (
@@ -220,7 +276,7 @@ mod tests {
         )
     }
 
-    fn make_fact(bank_id: BankId, entity_id: EntityId, content: &str) -> Fact {
+    fn make_fact(bank_id: BankId, content: &str) -> Fact {
         let now = Utc::now();
         Fact {
             id: FactId::new(),
@@ -228,7 +284,7 @@ mod tests {
             content: content.into(),
             fact_type: FactType::World,
             network: NetworkType::World,
-            entity_ids: vec![entity_id],
+            entity_ids: vec![],
             temporal_range: None,
             embedding: Some(vec![0.1; 384]),
             confidence: None,
@@ -236,47 +292,40 @@ mod tests {
             source_turn_id: None,
             created_at: now,
             updated_at: now,
+            consolidated_at: None,
         }
     }
 
-    async fn insert_entity(store: &MockMemoryStore, bank_id: BankId, entity_id: EntityId, name: &str) {
-        store
-            .upsert_entity(&Entity {
-                id: entity_id,
-                canonical_name: name.into(),
-                aliases: vec![],
-                entity_type: EntityType::Concept,
-                bank_id,
-            })
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn new_facts_create_observation() {
-        let (store, llm, embeddings) = setup();
-        let bank_id = BankId::new();
-        let entity_id = EntityId::new();
-
-        insert_entity(&store, bank_id, entity_id, "Rust").await;
-
-        let fact = make_fact(bank_id, entity_id, "Rust uses ownership for memory safety");
-        store.insert_facts(&[fact]).await.unwrap();
-
-        llm.push_response(
-            r#"{"observation": "Rust employs an ownership system for memory safety."}"#,
-        );
-
-        let consolidator = DefaultConsolidator::new(
+    fn make_consolidator(
+        store: &Arc<MockMemoryStore>,
+        llm: &Arc<MockLlmClient>,
+        embeddings: &Arc<MockEmbeddings>,
+    ) -> DefaultConsolidator {
+        DefaultConsolidator::new(
             store.clone() as Arc<dyn MemoryStore>,
             llm.clone() as Arc<dyn LlmClient>,
             embeddings.clone() as Arc<dyn EmbeddingClient>,
-        );
+        )
+    }
 
-        let since = Utc::now() - chrono::Duration::hours(1);
-        let report = consolidator.consolidate(bank_id, since).await.unwrap();
+    #[tokio::test]
+    async fn new_facts_create_observations() {
+        let (store, llm, embeddings) = setup();
+        let bank_id = BankId::new();
 
-        assert_eq!(report.observations_created, 1);
+        let f1 = make_fact(bank_id, "Caroline works at Google");
+        let f2 = make_fact(bank_id, "Caroline has a son named James");
+        store.insert_facts(&[f1, f2]).await.unwrap();
+
+        llm.push_response(r#"{"actions": [
+            {"action": "create", "content": "Caroline works at Google.", "fact_indices": [0]},
+            {"action": "create", "content": "Caroline has a son named James.", "fact_indices": [1]}
+        ]}"#);
+
+        let consolidator = make_consolidator(&store, &llm, &embeddings);
+        let report = consolidator.consolidate(bank_id).await.unwrap();
+
+        assert_eq!(report.observations_created, 2);
         assert_eq!(report.observations_updated, 0);
 
         let observations = store
@@ -289,79 +338,48 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(observations.len(), 1);
-        assert_eq!(
-            observations[0].content,
-            "Rust employs an ownership system for memory safety."
-        );
-        assert_eq!(observations[0].entity_ids, vec![entity_id]);
-        // Paper: observations lack confidence
-        assert!(observations[0].confidence.is_none());
+        assert_eq!(observations.len(), 2);
     }
 
     #[tokio::test]
-    async fn re_summarizes_all_facts_on_update() {
+    async fn incremental_update() {
         let (store, llm, embeddings) = setup();
         let bank_id = BankId::new();
-        let entity_id = EntityId::new();
 
-        insert_entity(&store, bank_id, entity_id, "Rust").await;
+        // First batch: create an observation
+        let f1 = make_fact(bank_id, "Caroline works at Google");
+        store.insert_facts(&[f1]).await.unwrap();
 
-        // Insert old fact + existing observation
-        let now = Utc::now();
-        let old_fact = Fact {
-            id: FactId::new(),
-            bank_id,
-            content: "Rust uses ownership.".into(),
-            fact_type: FactType::World,
-            network: NetworkType::World,
-            entity_ids: vec![entity_id],
-            temporal_range: None,
-            embedding: Some(vec![0.1; 384]),
-            confidence: None,
-            evidence_ids: vec![],
-            source_turn_id: None,
-            created_at: now - chrono::Duration::hours(3),
-            updated_at: now - chrono::Duration::hours(3),
-        };
-        let existing_obs = Fact {
-            id: FactId::new(),
-            bank_id,
-            content: "Rust uses ownership.".into(),
-            fact_type: FactType::World,
-            network: NetworkType::Observation,
-            entity_ids: vec![entity_id],
-            temporal_range: None,
-            embedding: Some(vec![0.1; 384]),
-            confidence: None,
-            evidence_ids: vec![old_fact.id],
-            source_turn_id: None,
-            created_at: now - chrono::Duration::hours(2),
-            updated_at: now - chrono::Duration::hours(2),
-        };
-        store
-            .insert_facts(&[old_fact.clone(), existing_obs])
+        llm.push_response(r#"{"actions": [
+            {"action": "create", "content": "Caroline works at Google.", "fact_indices": [0]}
+        ]}"#);
+
+        let consolidator = make_consolidator(&store, &llm, &embeddings);
+        let report = consolidator.consolidate(bank_id).await.unwrap();
+        assert_eq!(report.observations_created, 1);
+
+        // Get the created observation ID
+        let observations = store
+            .get_facts_by_bank(
+                bank_id,
+                FactFilter {
+                    network: Some(vec![NetworkType::Observation]),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
+        let obs_id = observations[0].id.to_string();
 
-        // Insert a new fact (within the `since` window)
-        let new_fact = make_fact(bank_id, entity_id, "Rust's borrow checker enforces ownership rules");
-        store.insert_facts(std::slice::from_ref(&new_fact)).await.unwrap();
+        // Second batch: update the existing observation
+        let f2 = make_fact(bank_id, "Caroline got promoted to senior engineer");
+        store.insert_facts(&[f2]).await.unwrap();
 
-        // LLM gets ALL facts (old + new) and produces a full re-summary
-        llm.push_response(
-            r#"{"observation": "Rust uses an ownership system enforced by the borrow checker for memory safety."}"#,
-        );
+        llm.push_response(&format!(r#"{{"actions": [
+            {{"action": "update", "observation_id": "{obs_id}", "content": "Caroline works as a senior engineer at Google, having recently been promoted.", "fact_indices": [0]}}
+        ]}}"#));
 
-        let consolidator = DefaultConsolidator::new(
-            store.clone() as Arc<dyn MemoryStore>,
-            llm.clone() as Arc<dyn LlmClient>,
-            embeddings.clone() as Arc<dyn EmbeddingClient>,
-        );
-
-        let since = now - chrono::Duration::hours(1);
-        let report = consolidator.consolidate(bank_id, since).await.unwrap();
-
+        let report = consolidator.consolidate(bank_id).await.unwrap();
         assert_eq!(report.observations_updated, 1);
 
         let observations = store
@@ -375,26 +393,25 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(observations.len(), 1);
-        assert!(observations[0].content.contains("borrow checker"));
-        // evidence_ids should include BOTH the old and new fact
-        assert_eq!(observations[0].evidence_ids.len(), 2);
-        assert!(observations[0].evidence_ids.contains(&old_fact.id));
-        assert!(observations[0].evidence_ids.contains(&new_fact.id));
+        assert!(observations[0].content.contains("senior engineer"));
     }
 
     #[tokio::test]
-    async fn idempotent_no_new_facts() {
+    async fn idempotent_no_unconsolidated() {
         let (store, llm, embeddings) = setup();
         let bank_id = BankId::new();
 
-        let consolidator = DefaultConsolidator::new(
-            store.clone() as Arc<dyn MemoryStore>,
-            llm.clone() as Arc<dyn LlmClient>,
-            embeddings.clone() as Arc<dyn EmbeddingClient>,
-        );
+        // Insert a fact and mark it consolidated
+        let f1 = make_fact(bank_id, "Some fact");
+        let f1_id = f1.id;
+        store.insert_facts(&[f1]).await.unwrap();
+        store
+            .mark_consolidated(&[f1_id], Utc::now())
+            .await
+            .unwrap();
 
-        let since = Utc::now();
-        let report = consolidator.consolidate(bank_id, since).await.unwrap();
+        let consolidator = make_consolidator(&store, &llm, &embeddings);
+        let report = consolidator.consolidate(bank_id).await.unwrap();
 
         assert_eq!(report.observations_created, 0);
         assert_eq!(report.observations_updated, 0);
@@ -402,55 +419,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn multiple_facts_single_observation() {
+    async fn batch_size_respected() {
+        // With batch_size=8 (default), 12 facts should produce 2 LLM calls
         let (store, llm, embeddings) = setup();
         let bank_id = BankId::new();
-        let entity_id = EntityId::new();
 
-        insert_entity(&store, bank_id, entity_id, "PostgreSQL").await;
+        for i in 0..12 {
+            let f = make_fact(bank_id, &format!("Fact number {i}"));
+            store.insert_facts(&[f]).await.unwrap();
+        }
 
-        let f1 = make_fact(bank_id, entity_id, "Postgres supports JSON");
-        let f2 = make_fact(bank_id, entity_id, "Postgres has good full-text search");
-        store.insert_facts(&[f1, f2]).await.unwrap();
+        // First batch of 8
+        llm.push_response(r#"{"actions": [
+            {"action": "create", "content": "Batch 1 observation.", "fact_indices": [0,1,2,3,4,5,6,7]}
+        ]}"#);
+        // Second batch of 4
+        llm.push_response(r#"{"actions": [
+            {"action": "create", "content": "Batch 2 observation.", "fact_indices": [0,1,2,3]}
+        ]}"#);
 
-        llm.push_response(
-            r#"{"observation": "PostgreSQL supports JSON storage and full-text search."}"#,
-        );
+        let consolidator = make_consolidator(&store, &llm, &embeddings);
+        let report = consolidator.consolidate(bank_id).await.unwrap();
 
-        let consolidator = DefaultConsolidator::new(
-            store.clone() as Arc<dyn MemoryStore>,
-            llm.clone() as Arc<dyn LlmClient>,
-            embeddings.clone() as Arc<dyn EmbeddingClient>,
-        );
-
-        let since = Utc::now() - chrono::Duration::hours(1);
-        let report = consolidator.consolidate(bank_id, since).await.unwrap();
-
-        assert_eq!(report.observations_created, 1);
-
-        let observations = store
-            .get_facts_by_bank(
-                bank_id,
-                FactFilter {
-                    network: Some(vec![NetworkType::Observation]),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(observations.len(), 1);
-        assert_eq!(observations[0].evidence_ids.len(), 2);
+        assert_eq!(report.observations_created, 2);
+        assert_eq!(llm.remaining(), 0);
     }
 
     #[tokio::test]
-    async fn only_processes_world_and_experience_facts() {
+    async fn only_world_and_experience() {
         let (store, llm, embeddings) = setup();
         let bank_id = BankId::new();
-        let entity_id = EntityId::new();
 
-        insert_entity(&store, bank_id, entity_id, "Rust").await;
-
-        // Insert an Opinion fact (should NOT trigger consolidation)
+        // Insert an Opinion fact — should NOT be consolidated
         let now = Utc::now();
         let opinion = Fact {
             id: FactId::new(),
@@ -458,7 +458,7 @@ mod tests {
             content: "Rust is the best language.".into(),
             fact_type: FactType::Experience,
             network: NetworkType::Opinion,
-            entity_ids: vec![entity_id],
+            entity_ids: vec![],
             temporal_range: None,
             embedding: Some(vec![0.1; 384]),
             confidence: Some(0.8),
@@ -466,19 +466,13 @@ mod tests {
             source_turn_id: None,
             created_at: now,
             updated_at: now,
+            consolidated_at: None,
         };
         store.insert_facts(&[opinion]).await.unwrap();
 
-        let consolidator = DefaultConsolidator::new(
-            store.clone() as Arc<dyn MemoryStore>,
-            llm.clone() as Arc<dyn LlmClient>,
-            embeddings.clone() as Arc<dyn EmbeddingClient>,
-        );
+        let consolidator = make_consolidator(&store, &llm, &embeddings);
+        let report = consolidator.consolidate(bank_id).await.unwrap();
 
-        let since = now - chrono::Duration::hours(1);
-        let report = consolidator.consolidate(bank_id, since).await.unwrap();
-
-        // No observations created — the only new fact was an Opinion
         assert_eq!(report.observations_created, 0);
         assert_eq!(llm.remaining(), 0);
     }

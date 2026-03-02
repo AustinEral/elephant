@@ -268,6 +268,7 @@ mod tests {
             source_turn_id: None,
             created_at: now,
             updated_at: now,
+            consolidated_at: None,
         }
     }
 

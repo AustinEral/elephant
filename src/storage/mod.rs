@@ -4,6 +4,7 @@ pub mod mock;
 pub mod pg;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 
 use crate::error::Result;
 use crate::types::{
@@ -73,4 +74,7 @@ pub trait MemoryStore: Send + Sync {
 
     /// List all memory banks.
     async fn list_banks(&self) -> Result<Vec<MemoryBank>>;
+
+    /// Mark facts as consolidated.
+    async fn mark_consolidated(&self, ids: &[FactId], at: DateTime<Utc>) -> Result<()>;
 }

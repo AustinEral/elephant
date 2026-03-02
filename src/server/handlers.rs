@@ -2,7 +2,6 @@
 
 use axum::extract::{Path, State};
 use axum::Json;
-use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
@@ -44,12 +43,9 @@ pub struct DispositionInput {
     pub bias_strength: f32,
 }
 
-/// Request body for the consolidate endpoint.
+/// Request body for the consolidate endpoint (empty — consolidates all unconsolidated facts).
 #[derive(Debug, Deserialize)]
-pub struct ConsolidateRequest {
-    /// Only consolidate facts created since this timestamp.
-    pub since: DateTime<Utc>,
-}
+pub struct ConsolidateRequest {}
 
 // --- Helpers ---
 
@@ -172,10 +168,9 @@ pub async fn entity_facts(
 pub async fn consolidate(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(body): Json<ConsolidateRequest>,
 ) -> Result<Json<ConsolidationReport>> {
     let bank_id = parse_bank_id(&id)?;
-    let report = state.consolidator.consolidate(bank_id, body.since).await?;
+    let report = state.consolidator.consolidate(bank_id).await?;
     Ok(Json(report))
 }
 

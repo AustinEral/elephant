@@ -28,6 +28,9 @@ impl PgMemoryStore {
         sqlx::raw_sql(include_str!("../../migrations/001_init.sql"))
             .execute(&self.pool)
             .await?;
+        sqlx::raw_sql(include_str!("../../migrations/002_consolidated_at.sql"))
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 }
@@ -49,6 +52,7 @@ fn row_to_fact(row: &PgRow) -> Result<Fact> {
     let source_turn_id: Option<uuid::Uuid> = row.get("source_turn_id");
     let created_at: chrono::DateTime<chrono::Utc> = row.get("created_at");
     let updated_at: chrono::DateTime<chrono::Utc> = row.get("updated_at");
+    let consolidated_at: Option<chrono::DateTime<chrono::Utc>> = row.get("consolidated_at");
 
     let fact_type: FactType =
         serde_json::from_value(serde_json::Value::String(fact_type_str))?;
@@ -76,6 +80,7 @@ fn row_to_fact(row: &PgRow) -> Result<Fact> {
         source_turn_id: source_turn_id.map(TurnId::from_uuid),
         created_at,
         updated_at,
+        consolidated_at,
     })
 }
 
@@ -188,8 +193,8 @@ impl MemoryStore for PgMemoryStore {
             sqlx::query(
                 "INSERT INTO facts (id, bank_id, content, fact_type, network, entity_ids,
                  temporal_start, temporal_end, embedding, confidence, evidence_ids,
-                 source_turn_id, created_at, updated_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+                 source_turn_id, created_at, updated_at, consolidated_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
             )
             .bind(fact.id)
             .bind(fact.bank_id)
@@ -205,6 +210,7 @@ impl MemoryStore for PgMemoryStore {
             .bind(source_turn_uuid)
             .bind(fact.created_at)
             .bind(fact.updated_at)
+            .bind(fact.consolidated_at)
             .execute(&self.pool)
             .await?;
             ids.push(fact.id);
@@ -220,7 +226,7 @@ impl MemoryStore for PgMemoryStore {
         let rows = sqlx::query(
             "SELECT id, bank_id, content, fact_type, network, entity_ids,
                     temporal_start, temporal_end, embedding, confidence,
-                    evidence_ids, source_turn_id, created_at, updated_at
+                    evidence_ids, source_turn_id, created_at, updated_at, consolidated_at
              FROM facts WHERE id = ANY($1)",
         )
         .bind(&uuids)
@@ -233,7 +239,7 @@ impl MemoryStore for PgMemoryStore {
         let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new(
             "SELECT id, bank_id, content, fact_type, network, entity_ids,
                     temporal_start, temporal_end, embedding, confidence,
-                    evidence_ids, source_turn_id, created_at, updated_at
+                    evidence_ids, source_turn_id, created_at, updated_at, consolidated_at
              FROM facts WHERE bank_id = ",
         );
         qb.push_bind(bank);
@@ -271,6 +277,10 @@ impl MemoryStore for PgMemoryStore {
         if let Some(since) = filter.created_since {
             qb.push(" AND created_at >= ");
             qb.push_bind(since);
+        }
+
+        if filter.unconsolidated_only {
+            qb.push(" AND consolidated_at IS NULL");
         }
 
         if let Some(ref eids) = filter.entity_ids
@@ -341,7 +351,7 @@ impl MemoryStore for PgMemoryStore {
         let rows = sqlx::query(
             "SELECT id, bank_id, content, fact_type, network, entity_ids,
                     temporal_start, temporal_end, embedding, confidence,
-                    evidence_ids, source_turn_id, created_at, updated_at
+                    evidence_ids, source_turn_id, created_at, updated_at, consolidated_at
              FROM facts WHERE entity_ids @> $1::jsonb",
         )
         .bind(&entity_json)
@@ -417,7 +427,7 @@ impl MemoryStore for PgMemoryStore {
         let rows = sqlx::query(
             "SELECT id, bank_id, content, fact_type, network, entity_ids,
                     temporal_start, temporal_end, embedding, confidence,
-                    evidence_ids, source_turn_id, created_at, updated_at,
+                    evidence_ids, source_turn_id, created_at, updated_at, consolidated_at,
                     1.0 - (embedding <=> $1::vector) AS score
              FROM facts
              WHERE bank_id = $2 AND embedding IS NOT NULL
@@ -461,7 +471,8 @@ impl MemoryStore for PgMemoryStore {
                 embedding = $6,
                 temporal_start = $7,
                 temporal_end = $8,
-                updated_at = $9
+                updated_at = $9,
+                consolidated_at = $10
              WHERE id = $1",
         )
         .bind(fact.id)
@@ -473,6 +484,7 @@ impl MemoryStore for PgMemoryStore {
         .bind(temporal_start)
         .bind(temporal_end)
         .bind(fact.updated_at)
+        .bind(fact.consolidated_at)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -488,7 +500,7 @@ impl MemoryStore for PgMemoryStore {
         let rows = sqlx::query(
             "SELECT id, bank_id, content, fact_type, network, entity_ids,
                     temporal_start, temporal_end, embedding, confidence,
-                    evidence_ids, source_turn_id, created_at, updated_at,
+                    evidence_ids, source_turn_id, created_at, updated_at, consolidated_at,
                     ts_rank(to_tsvector('english', content), plainto_tsquery('english', $1)) AS score
              FROM facts
              WHERE bank_id = $2
@@ -525,6 +537,23 @@ impl MemoryStore for PgMemoryStore {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(row_to_entity).collect()
+    }
+
+    async fn mark_consolidated(
+        &self,
+        ids: &[FactId],
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let uuids: Vec<uuid::Uuid> = ids.iter().map(|id| id.to_uuid()).collect();
+        sqlx::query("UPDATE facts SET consolidated_at = $1 WHERE id = ANY($2)")
+            .bind(at)
+            .bind(&uuids)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     async fn list_banks(&self) -> Result<Vec<MemoryBank>> {

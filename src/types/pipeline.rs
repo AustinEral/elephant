@@ -158,6 +158,9 @@ pub struct FactFilter {
     /// Only return facts created at or after this timestamp.
     #[serde(default)]
     pub created_since: Option<DateTime<Utc>>,
+    /// Only return facts that have not been consolidated yet.
+    #[serde(default)]
+    pub unconsolidated_only: bool,
 }
 
 // --- Entity resolution ---

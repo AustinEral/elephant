@@ -104,9 +104,7 @@ struct ServerInfoResponse {
 }
 
 #[derive(Debug, Serialize)]
-struct ConsolidateRequest {
-    since: String,
-}
+struct ConsolidateRequest {}
 
 #[derive(Debug, Deserialize)]
 struct ConsolidateResponse {
@@ -673,9 +671,6 @@ async fn run_conversation(
         let ingest_start = Instant::now();
         let mut total_facts = 0usize;
         let mut session_times: Vec<f64> = Vec::new();
-        let mut last_consolidation: DateTime<Utc> = DateTime::parse_from_rfc3339("2000-01-01T00:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
 
         for idx in 1..=ingest_sessions {
             let turns = get_session_turns(conv, idx);
@@ -714,14 +709,11 @@ async fn run_conversation(
 
             // Per-session consolidation (incremental edit path)
             if consolidate_per_session && resp.facts_stored > 0 {
-                let since_str = last_consolidation.to_rfc3339();
                 let consolidate_url = format!("{api_url}/v1/banks/{}/consolidate", bank.id);
                 match api_post::<ConsolidateResponse>(
                     &http,
                     &consolidate_url,
-                    &ConsolidateRequest {
-                        since: since_str,
-                    },
+                    &ConsolidateRequest {},
                 )
                 .await
                 {
@@ -735,7 +727,6 @@ async fn run_conversation(
                         eprintln!("[{tag}]   consolidate failed: {e}");
                     }
                 }
-                last_consolidation = Utc::now();
             }
         }
 
@@ -759,9 +750,7 @@ async fn run_conversation(
         match api_post::<ConsolidateResponse>(
             &http,
             &consolidate_url,
-            &ConsolidateRequest {
-                since: "2000-01-01T00:00:00Z".into(),
-            },
+            &ConsolidateRequest {},
         )
         .await
         {

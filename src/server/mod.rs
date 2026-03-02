@@ -116,6 +116,7 @@ mod tests {
                 source_turn_id: None,
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
+                consolidated_at: None,
             };
             let ids = self.store.insert_facts(&[fact]).await?;
             Ok(RetainOutput {
@@ -163,7 +164,6 @@ mod tests {
         async fn consolidate(
             &self,
             _bank_id: BankId,
-            _since: chrono::DateTime<Utc>,
         ) -> Result<ConsolidationReport> {
             Ok(ConsolidationReport::default())
         }
@@ -409,6 +409,7 @@ mod tests {
             source_turn_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            consolidated_at: None,
         };
         store.insert_facts(&[fact]).await.unwrap();
 
@@ -481,7 +482,7 @@ mod tests {
         let req = json_request(
             "POST",
             &format!("/v1/banks/{bank_id}/consolidate"),
-            json!({ "since": "2020-01-01T00:00:00Z" }),
+            json!({}),
         );
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);

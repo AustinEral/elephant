@@ -89,6 +89,9 @@ impl MemoryStore for MockMemoryStore {
                 {
                     return false;
                 }
+                if filter.unconsolidated_only && f.consolidated_at.is_some() {
+                    return false;
+                }
                 true
             })
             .cloned()
@@ -220,5 +223,15 @@ impl MemoryStore for MockMemoryStore {
     async fn list_banks(&self) -> Result<Vec<MemoryBank>> {
         let store = self.banks.lock().unwrap();
         Ok(store.clone())
+    }
+
+    async fn mark_consolidated(&self, ids: &[FactId], at: chrono::DateTime<chrono::Utc>) -> Result<()> {
+        let mut store = self.facts.lock().unwrap();
+        for fact in store.iter_mut() {
+            if ids.contains(&fact.id) {
+                fact.consolidated_at = Some(at);
+            }
+        }
+        Ok(())
     }
 }

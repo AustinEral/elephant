@@ -69,6 +69,7 @@ fn make_fact(bank_id: BankId) -> Fact {
         source_turn_id: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        consolidated_at: None,
     }
 }
 

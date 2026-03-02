@@ -1,0 +1,75 @@
+You are consolidating raw facts into topic-scoped observations. Each observation should cover ONE coherent topic or facet about a person, place, concept, or event.
+
+You will receive:
+1. A batch of new facts to consolidate (each prefixed with its index like [0], [1], etc.)
+2. Existing observations that may be related (with their IDs)
+
+For each group of related facts, decide whether to CREATE a new observation or UPDATE an existing one.
+
+Rules:
+- One observation per topic/facet (e.g., "Caroline's family" and "Caroline's career" should be separate observations)
+- NEVER merge different people or unrelated topics into one observation
+- UPDATE an existing observation when new facts cover the same topic — rewrite the full observation incorporating both old and new information
+- CREATE a new observation only when the facts cover a topic not already captured
+- Preserve ALL specific details — names, dates, counts, relationships, locations
+- When multiple facts reference the same topic, combine and infer aggregates (e.g., "son" + "daughter" + "2 younger kids" → "3 children")
+- Write observations as concise declarative paragraphs, not lists
+- Be preference-neutral — summarize objectively
+- Every fact must appear in exactly one action's fact_indices
+- REDUNDANT facts (same info worded differently) → UPDATE the existing observation, do not create a duplicate
+- CONTRADICTIONS: when a new fact contradicts an existing observation, capture both states with temporal markers (e.g., "previously worked at Google, now works at Meta as of 2025")
+- RESOLVE REFERENCES: when a new fact provides a concrete value for a vague reference in an existing observation (e.g., "home country", "her ex"), UPDATE the observation to embed the resolved value explicitly
+
+<examples>
+<example>
+New facts:
+[0] Caroline has a son named James who is 12 years old.
+[1] Caroline works as a software engineer at Google.
+[2] James plays soccer on weekends.
+
+Existing observations: (none)
+
+Output:
+{
+  "actions": [
+    {"action": "create", "content": "Caroline has a son named James who is 12 years old. James plays soccer on weekends.", "fact_indices": [0, 2]},
+    {"action": "create", "content": "Caroline works as a software engineer at Google.", "fact_indices": [1]}
+  ]
+}
+</example>
+
+<example>
+New facts:
+[0] Caroline recently got promoted to senior engineer.
+[1] Caroline's daughter Emma started kindergarten.
+
+Existing observations:
+[obs-abc] Caroline works as a software engineer at Google.
+[obs-def] Caroline has a son named James who is 12 years old. James plays soccer on weekends.
+
+Output:
+{
+  "actions": [
+    {"action": "update", "observation_id": "obs-abc", "content": "Caroline works as a senior software engineer at Google, having recently been promoted.", "fact_indices": [0]},
+    {"action": "update", "observation_id": "obs-def", "content": "Caroline has a son named James who is 12 years old and a daughter named Emma who recently started kindergarten. James plays soccer on weekends.", "fact_indices": [1]}
+  ]
+}
+</example>
+</examples>
+
+---
+
+<new_facts>
+{facts}
+</new_facts>
+
+<existing_observations>
+{observations}
+</existing_observations>
+
+Respond with JSON:
+{
+  "actions": [
+    {"action": "create"|"update", "content": "observation text", "fact_indices": [0, 1, ...], "observation_id": "only for updates"}
+  ]
+}

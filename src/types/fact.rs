@@ -36,6 +36,9 @@ pub struct Fact {
     pub created_at: DateTime<Utc>,
     /// When this fact was last updated.
     pub updated_at: DateTime<Utc>,
+    /// When this fact was consolidated into an observation (None = not yet consolidated).
+    #[serde(default)]
+    pub consolidated_at: Option<DateTime<Utc>>,
 }
 
 /// Source classification for a fact.
@@ -92,6 +95,7 @@ mod tests {
             source_turn_id: Some(TurnId::new()),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            consolidated_at: None,
         }
     }
 
@@ -181,6 +185,7 @@ mod tests {
                     source_turn_id: None,
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
+                    consolidated_at: None,
                 })
         }
 

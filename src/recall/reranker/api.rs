@@ -137,6 +137,7 @@ mod tests {
                 source_turn_id: None,
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
+                consolidated_at: None,
             },
             score,
             sources: vec![RetrievalSource::Semantic],

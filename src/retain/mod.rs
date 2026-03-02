@@ -254,6 +254,7 @@ impl RetainPipeline for DefaultRetainPipeline {
                     source_turn_id: input.turn_id,
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
+                    consolidated_at: None,
                 };
                 facts.push(fact);
             }

@@ -25,18 +25,27 @@ pub trait LlmClient: Send + Sync {
 ///
 /// Calls [`LlmClient::complete`], extracts JSON from the response text
 /// (handling markdown fences and surrounding prose), then deserializes with serde.
+///
+/// Parses through `serde_json::Value` first so that duplicate keys (which LLMs
+/// occasionally produce) are silently resolved via last-wins semantics instead of
+/// causing a hard parse error.
 pub async fn complete_structured<T: DeserializeOwned>(
     client: &dyn LlmClient,
     request: CompletionRequest,
 ) -> Result<T> {
     let response = client.complete(request).await?;
-    // Fast path: try parsing the whole response directly
-    if let Ok(value) = serde_json::from_str::<T>(&response.content) {
-        return Ok(value);
-    }
-    // Slow path: extract JSON from surrounding text
-    let json_str = extract_json(&response.content)?;
-    serde_json::from_str::<T>(&json_str).map_err(|e| Error::Llm(format!("JSON parse error: {e}")))
+    // Fast path: parse via Value (tolerates duplicate keys)
+    let value: serde_json::Value = match serde_json::from_str(&response.content) {
+        Ok(v) => v,
+        Err(_) => {
+            // Slow path: extract JSON from surrounding text
+            let json_str = extract_json(&response.content)?;
+            serde_json::from_str(&json_str)
+                .map_err(|e| Error::Llm(format!("JSON parse error: {e}")))?
+        }
+    };
+    serde_json::from_value::<T>(value)
+        .map_err(|e| Error::Llm(format!("JSON structure error: {e}")))
 }
 
 /// Extract a JSON value from text that may contain markdown fences or surrounding prose.

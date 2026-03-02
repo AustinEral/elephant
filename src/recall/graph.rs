@@ -164,6 +164,7 @@ mod tests {
                 source_turn_id: None,
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
+                consolidated_at: None,
             },
             Fact {
                 id: neighbor_id,
@@ -179,6 +180,7 @@ mod tests {
                 source_turn_id: None,
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
+                consolidated_at: None,
             },
         ];
         store.insert_facts(&facts).await.unwrap();
