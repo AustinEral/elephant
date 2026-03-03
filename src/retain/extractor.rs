@@ -68,10 +68,7 @@ impl FactExtractor for LlmFactExtractor {
         let request = CompletionRequest {
             model: String::new(),
             system: Some(system),
-            messages: vec![Message {
-                role: "user".into(),
-                content: user_msg,
-            }],
+            messages: vec![Message::text("user", user_msg)],
             temperature: Some(0.1),
             max_tokens: Some(4096),
             ..Default::default()

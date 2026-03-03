@@ -142,10 +142,7 @@ impl DefaultRetainPipeline {
                 let request = CompletionRequest {
                     model: String::new(),
                     system: Some("You are an opinion reinforcement engine. Answer with one word: 'supports', 'contradicts', or 'unrelated'.".into()),
-                    messages: vec![Message {
-                        role: "user".into(),
-                        content: prompt,
-                    }],
+                    messages: vec![Message::text("user", prompt)],
                     temperature: Some(0.0),
                     max_tokens: Some(10),
                     ..Default::default()

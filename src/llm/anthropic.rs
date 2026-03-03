@@ -117,9 +117,26 @@ impl LlmClient for AnthropicClient {
         let mut messages: Vec<AnthropicMessage> = Vec::new();
 
         for m in &request.messages {
+            let mut blocks = Vec::new();
+            if !m.content.is_empty() {
+                blocks.push(ContentBlock::Text { text: m.content.clone() });
+            }
+            for tc in &m.tool_calls {
+                blocks.push(ContentBlock::ToolUse {
+                    id: tc.id.clone(),
+                    name: tc.name.clone(),
+                    input: tc.arguments.clone(),
+                });
+            }
+            for tr in &m.tool_results {
+                blocks.push(ContentBlock::ToolResult {
+                    tool_use_id: tr.tool_call_id.clone(),
+                    content: tr.content.clone(),
+                });
+            }
             messages.push(AnthropicMessage {
                 role: m.role.clone(),
-                content: AnthropicContent::Text(m.content.clone()),
+                content: AnthropicContent::Blocks(blocks),
             });
         }
 
@@ -227,10 +244,7 @@ mod tests {
 
         let request = CompletionRequest {
             model: String::new(),
-            messages: vec![Message {
-                role: "user".into(),
-                content: "Say hello in exactly 3 words.".into(),
-            }],
+            messages: vec![Message::text("user", "Say hello in exactly 3 words.")],
             max_tokens: Some(64),
             temperature: Some(0.0),
             system: None,
@@ -262,10 +276,7 @@ mod tests {
 
         let request = CompletionRequest {
             model: String::new(),
-            messages: vec![Message {
-                role: "user".into(),
-                content: "Return a JSON object with fields \"name\" and \"hex\" for the color red. Only output JSON, nothing else.".into(),
-            }],
+            messages: vec![Message::text("user", "Return a JSON object with fields \"name\" and \"hex\" for the color red. Only output JSON, nothing else.")],
             max_tokens: Some(64),
             temperature: Some(0.0),
             system: None,

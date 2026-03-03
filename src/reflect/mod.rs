@@ -122,10 +122,7 @@ impl DefaultReflectPipeline {
         let system_prompt = system_parts.join("\n\n");
 
         // Conversation messages for the agent loop
-        let mut messages: Vec<Message> = vec![Message {
-            role: "user".into(),
-            content: query.question.clone(),
-        }];
+        let mut messages: Vec<Message> = vec![Message::text("user", query.question.clone())];
 
         let mut seen_fact_ids: HashSet<FactId> = HashSet::new();
 
@@ -289,11 +286,15 @@ impl DefaultReflectPipeline {
             // Append assistant message with tool calls, then user message with results
             messages.push(Message {
                 role: "assistant".into(),
-                content: format_tool_calls_for_history(&response.tool_calls),
+                content: response.content.clone(),
+                tool_calls: response.tool_calls.clone(),
+                tool_results: vec![],
             });
             messages.push(Message {
                 role: "user".into(),
-                content: format_tool_results_for_history(&tool_results),
+                content: String::new(),
+                tool_calls: vec![],
+                tool_results: tool_results,
             });
         }
 
@@ -325,24 +326,6 @@ impl DefaultReflectPipeline {
             confidence: 0.85,
         })
     }
-}
-
-/// Format tool calls into a text representation for message history.
-fn format_tool_calls_for_history(tool_calls: &[ToolCall]) -> String {
-    tool_calls
-        .iter()
-        .map(|tc| format!("[tool_call: {}({})]", tc.name, tc.arguments))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Format tool results into a text representation for message history.
-fn format_tool_results_for_history(results: &[ToolResult]) -> String {
-    results
-        .iter()
-        .map(|tr| tr.content.clone())
-        .collect::<Vec<_>>()
-        .join("\n\n")
 }
 
 /// Build system prompt from bank profile components.

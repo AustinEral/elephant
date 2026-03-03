@@ -121,10 +121,7 @@ impl OpinionMerger for DefaultOpinionMerger {
 
             let request = CompletionRequest {
                 model: String::new(),
-                messages: vec![Message {
-                    role: "user".into(),
-                    content: prompt,
-                }],
+                messages: vec![Message::text("user", prompt)],
                 max_tokens: Some(1024),
                 temperature: Some(0.3),
                 system: None,

@@ -245,10 +245,7 @@ impl DefaultGraphBuilder {
             let request = CompletionRequest {
                 model: String::new(),
                 system: Some("You are a causal relationship detector. Answer only 'yes' or 'no'.".into()),
-                messages: vec![Message {
-                    role: "user".into(),
-                    content: prompt,
-                }],
+                messages: vec![Message::text("user", prompt)],
                 temperature: Some(0.0),
                 max_tokens: Some(10),
                 ..Default::default()

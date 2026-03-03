@@ -46,13 +46,29 @@ struct OpenAiRequest {
     tool_choice: Option<OpenAiToolChoice>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 struct OpenAiMessage {
     role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<OpenAiReqToolCall>>,
+}
+
+#[derive(Serialize)]
+struct OpenAiReqToolCall {
+    id: String,
+    #[serde(rename = "type")]
+    tool_type: String,
+    function: OpenAiReqFunctionCall,
+}
+
+#[derive(Serialize)]
+struct OpenAiReqFunctionCall {
+    name: String,
+    arguments: String,
 }
 
 #[derive(Serialize)]
@@ -132,26 +148,42 @@ impl LlmClient for OpenAiClient {
         // Build messages: system prompt goes as a system message in the array
         let mut messages: Vec<OpenAiMessage> = Vec::new();
         if let Some(system) = request.system {
-            messages.push(OpenAiMessage {
-                role: "system".into(),
-                content: Some(system),
-                tool_call_id: None,
-            });
+            messages.push(OpenAiMessage { role: "system".into(), content: Some(system), ..Default::default() });
         }
         for m in &request.messages {
+            let tool_calls = if m.tool_calls.is_empty() { None } else {
+                Some(m.tool_calls.iter().map(|tc| OpenAiReqToolCall {
+                    id: tc.id.clone(),
+                    tool_type: "function".into(),
+                    function: OpenAiReqFunctionCall {
+                        name: tc.name.clone(),
+                        arguments: tc.arguments.to_string(),
+                    },
+                }).collect())
+            };
             messages.push(OpenAiMessage {
                 role: m.role.clone(),
-                content: Some(m.content.clone()),
-                tool_call_id: None,
+                content: if m.content.is_empty() { None } else { Some(m.content.clone()) },
+                tool_calls,
+                ..Default::default()
             });
+            // OpenAI requires tool_results as separate role="tool" messages
+            for tr in &m.tool_results {
+                messages.push(OpenAiMessage {
+                    role: "tool".into(),
+                    content: Some(tr.content.clone()),
+                    tool_call_id: Some(tr.tool_call_id.clone()),
+                    ..Default::default()
+                });
+            }
         }
-
-        // Append tool results as tool messages
+        // Append legacy tool_results from CompletionRequest
         for tr in &request.tool_results {
             messages.push(OpenAiMessage {
                 role: "tool".into(),
                 content: Some(tr.content.clone()),
                 tool_call_id: Some(tr.tool_call_id.clone()),
+                ..Default::default()
             });
         }
 
@@ -254,10 +286,7 @@ mod tests {
         let client = OpenAiClient::new(api_key, std::env::var("LLM_MODEL").expect("LLM_MODEL must be set"), None);
 
         let request = CompletionRequest {
-            messages: vec![Message {
-                role: "user".into(),
-                content: "Say hello in exactly 3 words.".into(),
-            }],
+            messages: vec![Message::text("user", "Say hello in exactly 3 words.")],
             max_tokens: Some(64),
             temperature: Some(0.0),
             ..Default::default()
@@ -284,10 +313,7 @@ mod tests {
         }
 
         let request = CompletionRequest {
-            messages: vec![Message {
-                role: "user".into(),
-                content: "Return a JSON object with fields \"name\" and \"hex\" for the color blue. Only output JSON, nothing else.".into(),
-            }],
+            messages: vec![Message::text("user", "Return a JSON object with fields \"name\" and \"hex\" for the color blue. Only output JSON, nothing else.")],
             max_tokens: Some(64),
             temperature: Some(0.0),
             ..Default::default()

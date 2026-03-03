@@ -130,10 +130,7 @@ impl LayeredEntityResolver {
         let request = CompletionRequest {
             model: String::new(),
             system: Some("You are an entity resolution assistant. Answer only 'yes' or 'no'.".into()),
-            messages: vec![Message {
-                role: "user".into(),
-                content: prompt,
-            }],
+            messages: vec![Message::text("user", prompt)],
             temperature: Some(0.0),
             max_tokens: Some(10),
             ..Default::default()

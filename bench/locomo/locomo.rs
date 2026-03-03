@@ -311,10 +311,7 @@ async fn llm_judge(
 
     let request = CompletionRequest {
         model: String::new(),
-        messages: vec![Message {
-            role: "user".into(),
-            content: prompt,
-        }],
+        messages: vec![Message::text("user", prompt)],
         max_tokens: Some(200),
         temperature: Some(0.0),
         system: None,

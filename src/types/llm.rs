@@ -3,12 +3,30 @@
 use serde::{Deserialize, Serialize};
 
 /// A message in a conversation with an LLM.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Message {
     /// The role of the message sender.
     pub role: String,
     /// The content of the message.
     pub content: String,
+    /// Tool calls made by the assistant (only for role="assistant").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCall>,
+    /// Tool results returned to the assistant (only for role="user").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_results: Vec<ToolResult>,
+}
+
+impl Message {
+    /// Create a simple text message.
+    pub fn text(role: &str, content: impl Into<String>) -> Self {
+        Self {
+            role: role.into(),
+            content: content.into(),
+            tool_calls: vec![],
+            tool_results: vec![],
+        }
+    }
 }
 
 /// A tool definition sent in a completion request.
@@ -101,10 +119,7 @@ mod tests {
     fn completion_request_roundtrip() {
         let req = CompletionRequest {
             model: "test-model".into(),
-            messages: vec![Message {
-                role: "user".into(),
-                content: "hello".into(),
-            }],
+            messages: vec![Message::text("user", "hello")],
             max_tokens: Some(1024),
             temperature: Some(0.7),
             system: Some("You are a helpful assistant.".into()),
