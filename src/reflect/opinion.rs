@@ -61,7 +61,7 @@ impl OpinionManager for DefaultOpinionManager {
         let embeddings = self.embeddings.embed(&[topic]).await?;
         let scored = self
             .store
-            .vector_search(&embeddings[0], bank_id, 20)
+            .vector_search(&embeddings[0], bank_id, 20, None)
             .await?;
 
         Ok(scored

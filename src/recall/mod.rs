@@ -83,11 +83,6 @@ impl RecallPipeline for DefaultRecallPipeline {
         let rankings = [semantic_r, keyword_r, graph_r, temporal_r];
         let mut fused = fusion::fuse_rankings(&rankings, self.rrf_k);
 
-        // Step 2.5: Apply network filter (if set)
-        if let Some(ref networks) = query.network_filter {
-            fused.retain(|sf| networks.contains(&sf.fact.network));
-        }
-
         // Step 3: Rerank top N
         let reranked = self
             .reranker

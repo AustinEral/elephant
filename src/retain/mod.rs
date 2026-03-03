@@ -83,7 +83,7 @@ impl DefaultRetainPipeline {
         let mut kept = Vec::with_capacity(facts.len());
         for fact in facts {
             if let Some(ref emb) = fact.embedding {
-                let results = self.store.vector_search(emb, bank_id, 1).await?;
+                let results = self.store.vector_search(emb, bank_id, 1, None).await?;
                 if let Some(top) = results.first() {
                     if top.score >= threshold {
                         continue;

@@ -144,7 +144,7 @@ async fn vector_search_ranking() {
     query_emb[1] = 1.0;
 
     let results = store
-        .vector_search(&query_emb, bank.id, 10)
+        .vector_search(&query_emb, bank.id, 10, None)
         .await
         .unwrap();
     assert_eq!(results.len(), 2);

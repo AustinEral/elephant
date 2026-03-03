@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use crate::error::Result;
 use crate::types::{
     BankId, Entity, EntityId, Fact, FactFilter, FactId, GraphLink, LinkType, MemoryBank,
-    RetrievalSource, ScoredFact,
+    NetworkType, RetrievalSource, ScoredFact,
 };
 use crate::util::cosine_similarity;
 
@@ -150,11 +150,13 @@ impl MemoryStore for MockMemoryStore {
         embedding: &[f32],
         bank: BankId,
         limit: usize,
+        network_filter: Option<&[NetworkType]>,
     ) -> Result<Vec<ScoredFact>> {
         let store = self.facts.lock().unwrap();
         let mut scored: Vec<ScoredFact> = store
             .iter()
             .filter(|f| f.bank_id == bank)
+            .filter(|f| network_filter.is_none_or(|nets| nets.contains(&f.network)))
             .filter_map(|f| {
                 f.embedding.as_ref().map(|emb| {
                     let score = cosine_similarity(embedding, emb);
@@ -184,12 +186,14 @@ impl MemoryStore for MockMemoryStore {
         query: &str,
         bank: BankId,
         limit: usize,
+        network_filter: Option<&[NetworkType]>,
     ) -> Result<Vec<ScoredFact>> {
         let lower_query = query.to_lowercase();
         let store = self.facts.lock().unwrap();
         let mut scored: Vec<ScoredFact> = store
             .iter()
             .filter(|f| f.bank_id == bank && f.content.to_lowercase().contains(&lower_query))
+            .filter(|f| network_filter.is_none_or(|nets| nets.contains(&f.network)))
             .map(|f| ScoredFact {
                 fact: f.clone(),
                 score: 1.0,

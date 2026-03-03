@@ -53,7 +53,7 @@ impl Retriever for SemanticRetriever {
         let embedding = &vecs[0];
         let mut results = self
             .store
-            .vector_search(embedding, query.bank_id, self.limit)
+            .vector_search(embedding, query.bank_id, self.limit, query.network_filter.as_deref())
             .await?;
         for sf in &mut results {
             sf.sources = vec![RetrievalSource::Semantic];

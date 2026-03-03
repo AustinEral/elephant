@@ -133,7 +133,7 @@ impl Consolidator for DefaultConsolidator {
 
             for fact in batch {
                 if let Some(ref emb) = fact.embedding {
-                    let results = self.store.vector_search(emb, bank_id, 5).await?;
+                    let results = self.store.vector_search(emb, bank_id, 5, None).await?;
                     for sf in results {
                         if sf.fact.network == NetworkType::Observation
                             && seen_obs_ids.insert(sf.fact.id)

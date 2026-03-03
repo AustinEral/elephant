@@ -19,6 +19,18 @@ pub struct ToolDef {
     pub input_schema: serde_json::Value,
 }
 
+impl ToolDef {
+    /// Build a tool definition by deriving the input schema from a `JsonSchema` type.
+    pub fn from_schema<T: schemars::JsonSchema>(name: &str, description: &str) -> Self {
+        let schema = schemars::schema_for!(T);
+        Self {
+            name: name.into(),
+            description: description.into(),
+            input_schema: serde_json::to_value(schema).expect("schema serializes"),
+        }
+    }
+}
+
 /// A tool invocation returned by the LLM.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolCall {

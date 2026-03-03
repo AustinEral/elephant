@@ -430,23 +430,47 @@ impl MemoryStore for PgMemoryStore {
         embedding: &[f32],
         bank: BankId,
         limit: usize,
+        network_filter: Option<&[NetworkType]>,
     ) -> Result<Vec<ScoredFact>> {
         let vec = Vector::from(embedding.to_vec());
-        let rows = sqlx::query(
-            "SELECT id, bank_id, content, fact_type, network, entity_ids,
-                    temporal_start, temporal_end, embedding, confidence,
-                    evidence_ids, source_turn_id, created_at, updated_at, consolidated_at,
-                    1.0 - (embedding <=> $1::vector) AS score
-             FROM facts
-             WHERE bank_id = $2 AND embedding IS NOT NULL
-             ORDER BY embedding <=> $1::vector
-             LIMIT $3",
-        )
-        .bind(&vec)
-        .bind(bank)
-        .bind(limit as i64)
-        .fetch_all(&self.pool)
-        .await?;
+        let rows = if let Some(networks) = network_filter {
+            let network_strs: Vec<String> = networks
+                .iter()
+                .map(enum_to_sql)
+                .collect::<Result<_>>()?;
+            sqlx::query(
+                "SELECT id, bank_id, content, fact_type, network, entity_ids,
+                        temporal_start, temporal_end, embedding, confidence,
+                        evidence_ids, source_turn_id, created_at, updated_at, consolidated_at,
+                        1.0 - (embedding <=> $1::vector) AS score
+                 FROM facts
+                 WHERE bank_id = $2 AND embedding IS NOT NULL AND network = ANY($4)
+                 ORDER BY embedding <=> $1::vector
+                 LIMIT $3",
+            )
+            .bind(&vec)
+            .bind(bank)
+            .bind(limit as i64)
+            .bind(&network_strs)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT id, bank_id, content, fact_type, network, entity_ids,
+                        temporal_start, temporal_end, embedding, confidence,
+                        evidence_ids, source_turn_id, created_at, updated_at, consolidated_at,
+                        1.0 - (embedding <=> $1::vector) AS score
+                 FROM facts
+                 WHERE bank_id = $2 AND embedding IS NOT NULL
+                 ORDER BY embedding <=> $1::vector
+                 LIMIT $3",
+            )
+            .bind(&vec)
+            .bind(bank)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await?
+        };
 
         let mut results = Vec::with_capacity(rows.len());
         for row in &rows {
@@ -503,24 +527,50 @@ impl MemoryStore for PgMemoryStore {
         query: &str,
         bank: BankId,
         limit: usize,
+        network_filter: Option<&[NetworkType]>,
     ) -> Result<Vec<ScoredFact>> {
         // Use PostgreSQL full-text search with ts_rank for scoring.
-        let rows = sqlx::query(
-            "SELECT id, bank_id, content, fact_type, network, entity_ids,
-                    temporal_start, temporal_end, embedding, confidence,
-                    evidence_ids, source_turn_id, created_at, updated_at, consolidated_at,
-                    ts_rank(to_tsvector('english', content), plainto_tsquery('english', $1)) AS score
-             FROM facts
-             WHERE bank_id = $2
-               AND to_tsvector('english', content) @@ plainto_tsquery('english', $1)
-             ORDER BY score DESC
-             LIMIT $3",
-        )
-        .bind(query)
-        .bind(bank)
-        .bind(limit as i64)
-        .fetch_all(&self.pool)
-        .await?;
+        let rows = if let Some(networks) = network_filter {
+            let network_strs: Vec<String> = networks
+                .iter()
+                .map(enum_to_sql)
+                .collect::<Result<_>>()?;
+            sqlx::query(
+                "SELECT id, bank_id, content, fact_type, network, entity_ids,
+                        temporal_start, temporal_end, embedding, confidence,
+                        evidence_ids, source_turn_id, created_at, updated_at, consolidated_at,
+                        ts_rank(to_tsvector('english', content), plainto_tsquery('english', $1)) AS score
+                 FROM facts
+                 WHERE bank_id = $2
+                   AND to_tsvector('english', content) @@ plainto_tsquery('english', $1)
+                   AND network = ANY($4)
+                 ORDER BY score DESC
+                 LIMIT $3",
+            )
+            .bind(query)
+            .bind(bank)
+            .bind(limit as i64)
+            .bind(&network_strs)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT id, bank_id, content, fact_type, network, entity_ids,
+                        temporal_start, temporal_end, embedding, confidence,
+                        evidence_ids, source_turn_id, created_at, updated_at, consolidated_at,
+                        ts_rank(to_tsvector('english', content), plainto_tsquery('english', $1)) AS score
+                 FROM facts
+                 WHERE bank_id = $2
+                   AND to_tsvector('english', content) @@ plainto_tsquery('english', $1)
+                 ORDER BY score DESC
+                 LIMIT $3",
+            )
+            .bind(query)
+            .bind(bank)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await?
+        };
 
         let mut results = Vec::with_capacity(rows.len());
         for row in &rows {

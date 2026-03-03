@@ -16,8 +16,6 @@ use elephant::recall::reranker::{self, RerankerConfig, RerankerProvider};
 use elephant::recall::semantic::SemanticRetriever;
 use elephant::recall::temporal::TemporalRetriever;
 use elephant::recall::DefaultRecallPipeline;
-use elephant::reflect::hierarchy::DefaultHierarchyAssembler;
-use elephant::reflect::opinion::DefaultOpinionManager;
 use elephant::reflect::DefaultReflectPipeline;
 use elephant::retain::chunker::SimpleChunker;
 use elephant::retain::extractor::LlmFactExtractor;
@@ -137,9 +135,17 @@ async fn main() {
         .expect("failed to create reranker");
 
     // 5. Recall pipeline
+    let retriever_limit: usize = env::var("RETRIEVER_LIMIT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(40);
+    let rerank_top_n: usize = env::var("RERANK_TOP_N")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(50);
     let recall = Arc::new(DefaultRecallPipeline::new(
-        Box::new(SemanticRetriever::new(store.clone(), embeddings.clone(), 20)),
-        Box::new(KeywordRetriever::new(store.clone(), 20)),
+        Box::new(SemanticRetriever::new(store.clone(), embeddings.clone(), retriever_limit)),
+        Box::new(KeywordRetriever::new(store.clone(), retriever_limit)),
         Box::new(GraphRetriever::new(
             store.clone(),
             embeddings.clone(),
@@ -149,17 +155,16 @@ async fn main() {
         reranker,
         Box::new(EstimateTokenizer),
         60.0,
-        50,
+        rerank_top_n,
     ));
 
     // 5. Reflect pipeline — uses reflect-tier LLM (synthesis, quality-sensitive)
     let reflect_max_iter: usize = env::var("REFLECT_MAX_ITERATIONS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(5);
+        .unwrap_or(8);
     let reflect = Arc::new(DefaultReflectPipeline::new(
-        Box::new(DefaultHierarchyAssembler::new(recall.clone())),
-        Box::new(DefaultOpinionManager::new(store.clone(), embeddings.clone())),
+        recall.clone(),
         reflect_llm.clone(),
         store.clone(),
         reflect_max_iter,

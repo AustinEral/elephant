@@ -27,8 +27,6 @@ use elephant::recall::reranker::{self, RerankerConfig, RerankerProvider};
 use elephant::recall::semantic::SemanticRetriever;
 use elephant::recall::temporal::TemporalRetriever;
 use elephant::recall::DefaultRecallPipeline;
-use elephant::reflect::hierarchy::DefaultHierarchyAssembler;
-use elephant::reflect::opinion::DefaultOpinionManager;
 use elephant::reflect::DefaultReflectPipeline;
 use elephant::retain::chunker::SimpleChunker;
 use elephant::retain::extractor::LlmFactExtractor;
@@ -155,17 +153,11 @@ impl TestHarness {
         ));
 
         // Reflect pipeline
-        let assembler = Box::new(DefaultHierarchyAssembler::new(recall.clone()));
-        let opinion_mgr = Box::new(DefaultOpinionManager::new(
-            store_arc.clone(),
-            embed_arc.clone(),
-        ));
         let reflect = Arc::new(DefaultReflectPipeline::new(
-            assembler,
-            opinion_mgr,
+            recall.clone(),
             self.llm.clone() as Arc<dyn elephant::LlmClient>,
             store_arc.clone(),
-            5,
+            8,
         ));
 
         // Consolidation

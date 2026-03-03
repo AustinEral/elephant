@@ -28,7 +28,7 @@ impl Retriever for KeywordRetriever {
     async fn retrieve(&self, query: &RecallQuery) -> Result<Vec<ScoredFact>> {
         let mut results = self
             .store
-            .keyword_search(&query.query, query.bank_id, self.limit)
+            .keyword_search(&query.query, query.bank_id, self.limit, query.network_filter.as_deref())
             .await?;
         for sf in &mut results {
             sf.sources = vec![RetrievalSource::Keyword];

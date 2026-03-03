@@ -9,17 +9,17 @@ use std::fmt::Write;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::error::Result;
-use crate::llm::{complete_structured, LlmClient};
+use crate::llm::LlmClient;
+use crate::recall::RecallPipeline;
 use crate::storage::MemoryStore;
 use crate::types::llm::{CompletionRequest, Message, ToolCall, ToolChoice, ToolDef, ToolResult};
-use crate::types::{FactId, ReflectQuery, ReflectResult};
+use crate::types::{FactId, NetworkType, RecallQuery, ReflectQuery, ReflectResult};
 
 use disposition::verbalize_bank_profile;
-use hierarchy::HierarchyAssembler;
-use opinion::OpinionManager;
 
 /// The full reflect pipeline: assemble context → reason → persist opinions.
 #[async_trait]
@@ -28,10 +28,9 @@ pub trait ReflectPipeline: Send + Sync {
     async fn reflect(&self, query: &ReflectQuery) -> Result<ReflectResult>;
 }
 
-/// Default reflect pipeline wiring assembler, opinion manager, LLM, and store.
+/// Default reflect pipeline wiring recall, LLM, and store.
 pub struct DefaultReflectPipeline {
-    assembler: Box<dyn HierarchyAssembler>,
-    opinion_mgr: Box<dyn OpinionManager>,
+    recall: Arc<dyn RecallPipeline>,
     llm: Arc<dyn LlmClient>,
     store: Arc<dyn MemoryStore>,
     max_iterations: usize,
@@ -40,15 +39,13 @@ pub struct DefaultReflectPipeline {
 impl DefaultReflectPipeline {
     /// Create a new reflect pipeline.
     pub fn new(
-        assembler: Box<dyn HierarchyAssembler>,
-        opinion_mgr: Box<dyn OpinionManager>,
+        recall: Arc<dyn RecallPipeline>,
         llm: Arc<dyn LlmClient>,
         store: Arc<dyn MemoryStore>,
         max_iterations: usize,
     ) -> Self {
         Self {
-            assembler,
-            opinion_mgr,
+            recall,
             llm,
             store,
             max_iterations,
@@ -56,83 +53,40 @@ impl DefaultReflectPipeline {
     }
 }
 
-/// A new opinion formed during reflection.
-#[derive(Debug, Deserialize)]
-struct NewOpinion {
-    content: String,
-    evidence: Vec<String>,
-    confidence: f32,
-}
-
-/// Shared response structure for the `done` tool call and fallback synthesis.
-#[derive(Debug, Deserialize)]
-struct DoneArgs {
-    response: String,
-    #[serde(default)]
-    sources: Vec<String>,
-    #[serde(default)]
-    new_opinions: Vec<NewOpinion>,
-    confidence: f32,
-}
-
-/// Arguments for the `recall` tool call.
-#[derive(Debug, Deserialize)]
-struct RecallArgs {
+/// Arguments for a search tool call (`search_observations` or `recall`).
+#[derive(Debug, Deserialize, JsonSchema)]
+struct SearchArgs {
+    /// Semantic search query.
     query: String,
+    /// Why you are searching for this (guides LLM chain-of-thought).
+    #[allow(dead_code)]
+    reason: String,
+}
+
+/// Arguments for the `done` tool call — also used for fallback synthesis.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct DoneArgs {
+    /// The answer with inline [fact-ID] citations.
+    response: String,
+    /// Fact IDs referenced in the response.
+    #[serde(default)]
+    source_ids: Vec<String>,
 }
 
 fn tool_defs() -> Vec<ToolDef> {
     vec![
-        ToolDef {
-            name: "recall".into(),
-            description: "Search stored memories by semantic query. Returns matching facts.".into(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Semantic search query to find relevant memories"
-                    }
-                },
-                "required": ["query"]
-            }),
-        },
-        ToolDef {
-            name: "done".into(),
-            description: "Return the final answer. Must include response text and source citations.".into(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "response": {
-                        "type": "string",
-                        "description": "The answer with inline [fact-ID] citations"
-                    },
-                    "sources": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Array of fact IDs referenced"
-                    },
-                    "new_opinions": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "content": { "type": "string" },
-                                "evidence": { "type": "array", "items": { "type": "string" } },
-                                "confidence": { "type": "number" }
-                            },
-                            "required": ["content", "evidence", "confidence"]
-                        },
-                        "description": "New opinions formed (can be empty)"
-                    },
-                    "confidence": {
-                        "type": "number",
-                        "description": "Overall confidence 0.0-1.0"
-                    }
-                },
-                "required": ["response", "sources", "confidence"]
-            }),
-        },
+        ToolDef::from_schema::<SearchArgs>(
+            "search_observations",
+            "Search consolidated observations (high-level summaries). Use first for the big picture.",
+        ),
+        ToolDef::from_schema::<SearchArgs>(
+            "recall",
+            "Search raw memories (facts and experiences). Ground truth data. Use to verify or fill gaps.",
+        ),
+        ToolDef::from_schema::<DoneArgs>(
+            "done",
+            "Return the final answer with source citations.",
+        ),
     ]
 }
 
@@ -159,59 +113,79 @@ impl ReflectPipeline for DefaultReflectPipeline {
             content: query.question.clone(),
         }];
 
-        // Track all context accumulated across iterations
-        let mut all_context = String::new();
         let mut seen_fact_ids: HashSet<FactId> = HashSet::new();
 
         let tools = tool_defs();
 
+        let last_iteration = self.max_iterations - 1;
+        let done_only = vec![ToolDef::from_schema::<DoneArgs>(
+            "done",
+            "Return the final answer with source citations.",
+        )];
+
         for iteration in 0..self.max_iterations {
-            // First iteration: force recall. Later: auto.
-            let tool_choice = if iteration == 0 {
-                Some(ToolChoice::Required)
+            // Forced tool sequence:
+            //   0           → search_observations
+            //   1           → recall
+            //   2..last-1   → auto (all tools)
+            //   last        → done only, required
+            let (iter_tools, tool_choice) = if iteration == last_iteration {
+                (&done_only, Some(ToolChoice::Required))
             } else {
-                Some(ToolChoice::Auto)
+                let choice = match iteration {
+                    0 => Some(ToolChoice::Specific("search_observations".into())),
+                    1 => Some(ToolChoice::Specific("recall".into())),
+                    _ => Some(ToolChoice::Auto),
+                };
+                (&tools, choice)
             };
 
             let request = CompletionRequest {
                 messages: messages.clone(),
                 temperature: Some(0.3),
                 system: Some(system_prompt.clone()),
-                tools: Some(tools.clone()),
+                tools: Some(iter_tools.clone()),
                 tool_choice,
                 ..Default::default()
             };
 
             let response = self.llm.complete(request).await?;
 
-            // If no tool calls, fall back to synthesis from text content
+            // No tool calls — skip to next iteration (shouldn't happen with forced tool choices)
             if response.tool_calls.is_empty() {
-                return self
-                    .fallback_synthesis(query, &bank_profile, &response.content, &all_context)
-                    .await;
+                continue;
             }
 
             // Process tool calls
             let mut tool_results = Vec::new();
             for tc in &response.tool_calls {
                 match tc.name.as_str() {
-                    "recall" => {
-                        let args: RecallArgs = serde_json::from_value(tc.arguments.clone())
-                            .unwrap_or(RecallArgs { query: query.question.clone() });
+                    "search_observations" | "recall" => {
+                        let network_filter = if tc.name == "search_observations" {
+                            Some(vec![NetworkType::Observation])
+                        } else {
+                            Some(vec![NetworkType::World, NetworkType::Experience, NetworkType::Opinion])
+                        };
 
-                        let context = self
-                            .assembler
-                            .assemble(&args.query, query.bank_id, query.budget_tokens)
+                        let args: SearchArgs = serde_json::from_value(tc.arguments.clone())
+                            .unwrap_or(SearchArgs { query: query.question.clone(), reason: String::new() });
+
+                        let result = self
+                            .recall
+                            .recall(&RecallQuery {
+                                bank_id: query.bank_id,
+                                query: args.query,
+                                budget_tokens: query.budget_tokens,
+                                network_filter,
+                                temporal_anchor: None,
+                            })
                             .await?;
 
                         // Deduplicate facts across iterations
                         let mut new_facts = String::new();
-                        for f in context.observations.iter()
-                            .chain(context.raw_facts.iter())
-                            .chain(context.opinions.iter())
-                        {
-                            if seen_fact_ids.insert(f.id) {
-                                writeln!(new_facts, "[FACT {}] {}", f.id, f.content).unwrap();
+                        for sf in &result.facts {
+                            if seen_fact_ids.insert(sf.fact.id) {
+                                writeln!(new_facts, "[FACT {}] {}", sf.fact.id, sf.fact.content).unwrap();
                             }
                         }
 
@@ -219,21 +193,25 @@ impl ReflectPipeline for DefaultReflectPipeline {
                             new_facts = "No new memories found for this query.".into();
                         }
 
-                        all_context.push_str(&new_facts);
                         tool_results.push(ToolResult {
                             tool_call_id: tc.id.clone(),
                             content: new_facts,
                         });
                     }
                     "done" => {
-                        let args: DoneArgs = serde_json::from_value(tc.arguments.clone())
-                            .map_err(|e| crate::error::Error::Llm(
-                                format!("failed to parse done args: {e}"),
-                            ))?;
-
-                        return self
-                            .finalize(query, args)
-                            .await;
+                        let args: DoneArgs = match serde_json::from_value(tc.arguments.clone()) {
+                            Ok(a) => a,
+                            Err(_) => {
+                                // LLM sometimes sends source_ids as a string instead of array.
+                                // Fall back to extracting just the response field.
+                                let response = tc.arguments.get("response")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                DoneArgs { response, source_ids: vec![] }
+                            }
+                        };
+                        return self.finalize(args, &seen_fact_ids);
                     }
                     _ => {
                         tool_results.push(ToolResult {
@@ -255,123 +233,32 @@ impl ReflectPipeline for DefaultReflectPipeline {
             });
         }
 
-        // Max iterations hit — force synthesis
-        self.fallback_synthesis(query, &bank_profile, "", &all_context).await
+        // Should not be reachable — last iteration forces done() — but handle gracefully.
+        Err(crate::error::Error::Llm("reflect agent exhausted all iterations without calling done()".into()))
     }
 }
 
 impl DefaultReflectPipeline {
     /// Finalize a reflect result from a `done` tool call.
-    async fn finalize(
+    fn finalize(
         &self,
-        query: &ReflectQuery,
         args: DoneArgs,
+        seen_fact_ids: &HashSet<FactId>,
     ) -> Result<ReflectResult> {
+        // Validate source_ids against seen_fact_ids (drop hallucinated IDs)
         let sources: Vec<FactId> = args
-            .sources
+            .source_ids
             .iter()
             .filter_map(|s| s.parse::<FactId>().ok())
+            .filter(|id| seen_fact_ids.contains(id))
             .collect();
-
-        let mut opinion_ids = Vec::new();
-        for op in &args.new_opinions {
-            let evidence: Vec<FactId> = op
-                .evidence
-                .iter()
-                .filter_map(|s| s.parse::<FactId>().ok())
-                .collect();
-            let id = self
-                .opinion_mgr
-                .form_opinion(query.bank_id, &op.content, &evidence, op.confidence)
-                .await?;
-            opinion_ids.push(id);
-        }
-
-        // Batch fetch all opinion facts at once
-        let new_opinion_facts = self.store.get_facts(&opinion_ids).await?;
 
         Ok(ReflectResult {
             response: args.response,
             sources,
-            new_opinions: new_opinion_facts,
-            confidence: args.confidence,
+            new_opinions: vec![],
+            confidence: 0.85,
         })
-    }
-
-    /// Fallback: synthesize answer from accumulated context using the original reflect prompt.
-    async fn fallback_synthesis(
-        &self,
-        query: &ReflectQuery,
-        bank_profile: &crate::types::BankPromptContext,
-        llm_text: &str,
-        accumulated_context: &str,
-    ) -> Result<ReflectResult> {
-        // If the LLM already gave a text response (no tool calls), try parsing it as JSON
-        if !llm_text.is_empty() {
-            if let Ok(args) = serde_json::from_str::<DoneArgs>(llm_text)
-                .or_else(|_| {
-                    crate::llm::extract_json(llm_text)
-                        .and_then(|j| serde_json::from_str(&j).map_err(|e| crate::error::Error::Llm(e.to_string())))
-                })
-            {
-                return self.finalize(query, args).await;
-            }
-        }
-
-        // Get existing opinions
-        let existing_opinions = self
-            .opinion_mgr
-            .get_opinions(query.bank_id, &query.question)
-            .await
-            .unwrap_or_default();
-
-        let opinions_text = if existing_opinions.is_empty() {
-            "No existing opinions on this topic.".to_string()
-        } else {
-            existing_opinions
-                .iter()
-                .map(|o| {
-                    format!(
-                        "- [{}] (confidence: {:.2}) {}",
-                        o.id,
-                        o.confidence.unwrap_or(0.5),
-                        o.content
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-
-        // Use accumulated context if available, otherwise do a fresh recall
-        let context = if accumulated_context.is_empty() {
-            let ctx = self
-                .assembler
-                .assemble(&query.question, query.bank_id, query.budget_tokens)
-                .await?;
-            ctx.formatted
-        } else {
-            accumulated_context.to_string()
-        };
-
-        let user_prompt = build_fallback_prompt(&context, &opinions_text, &query.question);
-        let system_prompt = build_profile_prompt(bank_profile);
-
-        let request = CompletionRequest {
-            messages: vec![Message {
-                role: "user".into(),
-                content: user_prompt,
-            }],
-            temperature: Some(0.3),
-            system: if system_prompt.is_empty() {
-                None
-            } else {
-                Some(system_prompt)
-            },
-            ..Default::default()
-        };
-
-        let llm_response: DoneArgs = complete_structured(&*self.llm, request).await?;
-        self.finalize(query, llm_response).await
     }
 }
 
@@ -408,13 +295,6 @@ fn build_profile_prompt(profile: &crate::types::BankPromptContext) -> String {
     parts.join("\n\n")
 }
 
-/// Build the fallback user prompt from the reflect template.
-fn build_fallback_prompt(context: &str, opinions: &str, question: &str) -> String {
-    include_str!("../../prompts/reflect.txt")
-        .replace("{context}", context)
-        .replace("{opinions}", opinions)
-        .replace("{question}", question)
-}
 
 #[cfg(test)]
 mod tests {
@@ -428,7 +308,7 @@ mod tests {
     use crate::recall::reranker::NoOpReranker;
     use crate::recall::semantic::SemanticRetriever;
     use crate::recall::temporal::TemporalRetriever;
-    use crate::recall::DefaultRecallPipeline;
+    use crate::recall::{DefaultRecallPipeline, RecallPipeline};
     use crate::storage::mock::MockMemoryStore;
     use crate::storage::MemoryStore;
     use crate::types::*;
@@ -489,7 +369,7 @@ mod tests {
         }
 
         fn build_pipeline(&self) -> DefaultReflectPipeline {
-            let recall = Arc::new(DefaultRecallPipeline::new(
+            let recall: Arc<dyn RecallPipeline> = Arc::new(DefaultRecallPipeline::new(
                 Box::new(SemanticRetriever::new(
                     self.store.clone(),
                     self.embeddings.clone(),
@@ -508,19 +388,11 @@ mod tests {
                 50,
             ));
 
-            let assembler = Box::new(hierarchy::DefaultHierarchyAssembler::new(recall));
-
-            let opinion_mgr = Box::new(opinion::DefaultOpinionManager::new(
-                self.store.clone(),
-                self.embeddings.clone(),
-            ));
-
             DefaultReflectPipeline::new(
-                assembler,
-                opinion_mgr,
+                recall,
                 self.llm.clone(),
                 self.store.clone(),
-                5,
+                8,
             )
         }
     }
@@ -539,31 +411,41 @@ mod tests {
         let fact_id = fact.id;
         h.store.insert_facts(&[fact]).await.unwrap();
 
-        // Iteration 0: LLM calls recall
+        // Iteration 0: forced search_observations
         h.llm.push_response_full(CompletionResponse {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_1".into(),
-                name: "recall".into(),
-                arguments: serde_json::json!({"query": "Rust memory"}),
+                name: "search_observations".into(),
+                arguments: serde_json::json!({"query": "Rust memory", "reason": "overview"}),
             }],
         });
 
-        // Iteration 1: LLM calls done
+        // Iteration 1: forced recall
         h.llm.push_response_full(CompletionResponse {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_2".into(),
+                name: "recall".into(),
+                arguments: serde_json::json!({"query": "Rust memory safety", "reason": "details"}),
+            }],
+        });
+
+        // Iteration 2: done
+        h.llm.push_response_full(CompletionResponse {
+            content: String::new(),
+            input_tokens: 10,
+            output_tokens: 20,
+            tool_calls: vec![crate::types::llm::ToolCall {
+                id: "call_3".into(),
                 name: "done".into(),
                 arguments: serde_json::json!({
                     "response": format!("Rust uses ownership for memory safety [{}].", fact_id),
-                    "sources": [fact_id.to_string()],
-                    "new_opinions": [],
-                    "confidence": 0.9
+                    "source_ids": [fact_id.to_string()]
                 }),
             }],
         });
@@ -580,50 +462,89 @@ mod tests {
 
         assert!(result.response.contains("ownership"));
         assert!(result.sources.contains(&fact_id));
-        assert!((result.confidence - 0.9).abs() < f32::EPSILON);
     }
 
     #[tokio::test]
-    async fn reflect_fallback_when_no_tool_calls() {
+    async fn last_iteration_forces_done() {
+        // Use max_iterations=3 so iteration 2 is the last and forces done.
         let h = TestHarness::new().await;
-        let emb = h.embeddings.embed(&["Rust programming"]).await.unwrap();
+        let emb = h.embeddings.embed(&["data"]).await.unwrap();
 
         let fact = make_fact_with_embedding(
             h.bank_id,
-            "Rust uses ownership for memory safety",
+            "Important data fact",
             NetworkType::World,
             emb[0].clone(),
         );
-        let fact_id = fact.id;
         h.store.insert_facts(&[fact]).await.unwrap();
 
-        // LLM returns text (no tool calls) — triggers fallback
-        h.llm.push_response(format!(
-            r#"{{
-                "response": "Based on the context, Rust uses ownership for memory safety [{}].",
-                "sources": ["{}"],
-                "new_opinions": [],
-                "confidence": 0.9
-            }}"#,
-            fact_id, fact_id
-        ));
+        // Iteration 0: forced search_observations
+        h.llm.push_response_full(CompletionResponse {
+            content: String::new(),
+            input_tokens: 10,
+            output_tokens: 20,
+            tool_calls: vec![crate::types::llm::ToolCall {
+                id: "call_1".into(),
+                name: "search_observations".into(),
+                arguments: serde_json::json!({"query": "data", "reason": "overview"}),
+            }],
+        });
 
-        let pipeline = h.build_pipeline();
+        // Iteration 1: forced recall
+        h.llm.push_response_full(CompletionResponse {
+            content: String::new(),
+            input_tokens: 10,
+            output_tokens: 20,
+            tool_calls: vec![crate::types::llm::ToolCall {
+                id: "call_2".into(),
+                name: "recall".into(),
+                arguments: serde_json::json!({"query": "data", "reason": "details"}),
+            }],
+        });
+
+        // Iteration 2 (last): forced done — LLM must synthesize
+        h.llm.push_response_full(CompletionResponse {
+            content: String::new(),
+            input_tokens: 10,
+            output_tokens: 20,
+            tool_calls: vec![crate::types::llm::ToolCall {
+                id: "call_3".into(),
+                name: "done".into(),
+                arguments: serde_json::json!({
+                    "response": "Here is the data summary.",
+                    "source_ids": []
+                }),
+            }],
+        });
+
+        // Build pipeline with max_iterations=3
+        let recall: Arc<dyn RecallPipeline> = Arc::new(DefaultRecallPipeline::new(
+            Box::new(SemanticRetriever::new(h.store.clone(), h.embeddings.clone(), 20)),
+            Box::new(KeywordRetriever::new(h.store.clone(), 20)),
+            Box::new(GraphRetriever::new(h.store.clone(), h.embeddings.clone(), GraphRetrieverConfig::default())),
+            Box::new(TemporalRetriever::new(h.store.clone())),
+            Box::new(NoOpReranker),
+            Box::new(EstimateTokenizer),
+            60.0,
+            50,
+        ));
+        let pipeline = DefaultReflectPipeline::new(recall, h.llm.clone(), h.store.clone(), 3);
+
         let result = pipeline
             .reflect(&ReflectQuery {
                 bank_id: h.bank_id,
-                question: "How does Rust handle memory?".into(),
+                question: "Tell me about data".into(),
                 budget_tokens: 2000,
             })
             .await
             .unwrap();
 
-        assert!(result.response.contains("ownership"));
-        assert!(result.sources.contains(&fact_id));
+        assert!(result.response.contains("data summary"));
+        assert_eq!(h.llm.remaining(), 0);
     }
 
     #[tokio::test]
-    async fn reflect_triggers_opinion_formation() {
+    async fn reflect_done_validates_source_ids() {
         let h = TestHarness::new().await;
         let emb = h.embeddings.embed(&["testing"]).await.unwrap();
 
@@ -636,34 +557,41 @@ mod tests {
         let fact_id = fact.id;
         h.store.insert_facts(&[fact]).await.unwrap();
 
-        // recall then done with opinions
+        // Iteration 0: search_observations
         h.llm.push_response_full(CompletionResponse {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_1".into(),
-                name: "recall".into(),
-                arguments: serde_json::json!({"query": "testing"}),
+                name: "search_observations".into(),
+                arguments: serde_json::json!({"query": "testing", "reason": "overview"}),
             }],
         });
 
+        // Iteration 1: recall (finds the world fact)
         h.llm.push_response_full(CompletionResponse {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_2".into(),
+                name: "recall".into(),
+                arguments: serde_json::json!({"query": "testing", "reason": "details"}),
+            }],
+        });
+
+        // Iteration 2: done with one real ID and one hallucinated ID
+        h.llm.push_response_full(CompletionResponse {
+            content: String::new(),
+            input_tokens: 10,
+            output_tokens: 20,
+            tool_calls: vec![crate::types::llm::ToolCall {
+                id: "call_3".into(),
                 name: "done".into(),
                 arguments: serde_json::json!({
-                    "response": format!("Testing is valuable [{}].", fact_id),
-                    "sources": [fact_id.to_string()],
-                    "new_opinions": [{
-                        "content": "Automated testing is essential for quality software",
-                        "evidence": [fact_id.to_string()],
-                        "confidence": 0.85
-                    }],
-                    "confidence": 0.8
+                    "response": format!("Testing is important [{}].", fact_id),
+                    "source_ids": [fact_id.to_string(), FactId::new().to_string()]
                 }),
             }],
         });
@@ -678,41 +606,50 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(result.new_opinions.len(), 1);
-        assert_eq!(result.new_opinions[0].network, NetworkType::Opinion);
-        assert!(result.new_opinions[0]
-            .content
-            .contains("Automated testing"));
+        // Hallucinated ID should be dropped, only the real one kept
+        assert_eq!(result.sources.len(), 1);
+        assert!(result.sources.contains(&fact_id));
     }
 
     #[tokio::test]
     async fn empty_memory_graceful_response() {
         let h = TestHarness::new().await;
 
-        // recall then done with empty sources
+        // Iteration 0: forced search_observations (empty bank)
         h.llm.push_response_full(CompletionResponse {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_1".into(),
-                name: "recall".into(),
-                arguments: serde_json::json!({"query": "meaning of life"}),
+                name: "search_observations".into(),
+                arguments: serde_json::json!({"query": "meaning of life", "reason": "overview"}),
             }],
         });
 
+        // Iteration 1: forced recall (empty bank)
         h.llm.push_response_full(CompletionResponse {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_2".into(),
+                name: "recall".into(),
+                arguments: serde_json::json!({"query": "meaning of life", "reason": "details"}),
+            }],
+        });
+
+        // Iteration 2: done (empty bank, nothing found)
+        h.llm.push_response_full(CompletionResponse {
+            content: String::new(),
+            input_tokens: 10,
+            output_tokens: 20,
+            tool_calls: vec![crate::types::llm::ToolCall {
+                id: "call_3".into(),
                 name: "done".into(),
                 arguments: serde_json::json!({
                     "response": "I don't have enough information to answer this question.",
-                    "sources": [],
-                    "new_opinions": [],
-                    "confidence": 0.1
+                    "source_ids": []
                 }),
             }],
         });
@@ -748,29 +685,39 @@ mod tests {
         };
         h.store.create_bank(&bank).await.unwrap();
 
-        // recall then done
+        // Iteration 0: search_observations
         h.llm.push_response_full(CompletionResponse {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_1".into(),
-                name: "recall".into(),
-                arguments: serde_json::json!({"query": "analysis"}),
+                name: "search_observations".into(),
+                arguments: serde_json::json!({"query": "analysis", "reason": "overview"}),
             }],
         });
+        // Iteration 1: recall
         h.llm.push_response_full(CompletionResponse {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_2".into(),
+                name: "recall".into(),
+                arguments: serde_json::json!({"query": "analysis", "reason": "details"}),
+            }],
+        });
+        // Iteration 2: done
+        h.llm.push_response_full(CompletionResponse {
+            content: String::new(),
+            input_tokens: 10,
+            output_tokens: 20,
+            tool_calls: vec![crate::types::llm::ToolCall {
+                id: "call_3".into(),
                 name: "done".into(),
                 arguments: serde_json::json!({
                     "response": "Based on available context, here is my analysis.",
-                    "sources": [],
-                    "new_opinions": [],
-                    "confidence": 0.5
+                    "source_ids": []
                 }),
             }],
         });
@@ -835,17 +782,18 @@ mod tests {
         let id2 = fact2.id;
         h.store.insert_facts(&[fact1, fact2]).await.unwrap();
 
-        // Two recall calls, then done
+        // Iteration 0: forced search_observations (World facts won't match Observation filter)
         h.llm.push_response_full(CompletionResponse {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_1".into(),
-                name: "recall".into(),
-                arguments: serde_json::json!({"query": "first data"}),
+                name: "search_observations".into(),
+                arguments: serde_json::json!({"query": "data", "reason": "overview"}),
             }],
         });
+        // Iteration 1: forced recall (finds World facts)
         h.llm.push_response_full(CompletionResponse {
             content: String::new(),
             input_tokens: 10,
@@ -853,21 +801,31 @@ mod tests {
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_2".into(),
                 name: "recall".into(),
-                arguments: serde_json::json!({"query": "second data"}),
+                arguments: serde_json::json!({"query": "first data", "reason": "details"}),
             }],
         });
+        // Iteration 2: another recall to cover second angle
         h.llm.push_response_full(CompletionResponse {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_3".into(),
+                name: "recall".into(),
+                arguments: serde_json::json!({"query": "second data", "reason": "more details"}),
+            }],
+        });
+        // Iteration 3: done
+        h.llm.push_response_full(CompletionResponse {
+            content: String::new(),
+            input_tokens: 10,
+            output_tokens: 20,
+            tool_calls: vec![crate::types::llm::ToolCall {
+                id: "call_4".into(),
                 name: "done".into(),
                 arguments: serde_json::json!({
                     "response": format!("Facts [{id1}] and [{id2}] about data."),
-                    "sources": [id1.to_string(), id2.to_string()],
-                    "new_opinions": [],
-                    "confidence": 0.7
+                    "source_ids": [id1.to_string(), id2.to_string()]
                 }),
             }],
         });

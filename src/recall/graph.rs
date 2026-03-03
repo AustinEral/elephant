@@ -71,7 +71,7 @@ impl Retriever for GraphRetriever {
         let embedding = &vecs[0];
         let seeds = self
             .store
-            .vector_search(embedding, query.bank_id, self.config.max_seeds)
+            .vector_search(embedding, query.bank_id, self.config.max_seeds, query.network_filter.as_deref())
             .await?;
 
         if seeds.is_empty() {

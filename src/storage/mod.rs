@@ -8,7 +8,8 @@ use chrono::{DateTime, Utc};
 
 use crate::error::Result;
 use crate::types::{
-    BankId, Entity, EntityId, Fact, FactFilter, FactId, GraphLink, LinkType, MemoryBank, ScoredFact,
+    BankId, Entity, EntityId, Fact, FactFilter, FactId, GraphLink, LinkType, MemoryBank,
+    NetworkType, ScoredFact,
 };
 
 /// Trait for persistent storage of memory engine data.
@@ -48,6 +49,7 @@ pub trait MemoryStore: Send + Sync {
         embedding: &[f32],
         bank: BankId,
         limit: usize,
+        network_filter: Option<&[NetworkType]>,
     ) -> Result<Vec<ScoredFact>>;
 
     /// Update a fact's mutable fields (confidence, evidence_ids, updated_at).
@@ -61,6 +63,7 @@ pub trait MemoryStore: Send + Sync {
         query: &str,
         bank: BankId,
         limit: usize,
+        network_filter: Option<&[NetworkType]>,
     ) -> Result<Vec<ScoredFact>>;
 
     /// List all entities in a bank.

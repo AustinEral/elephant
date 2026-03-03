@@ -25,8 +25,6 @@ use elephant::recall::reranker::{self, RerankerConfig, RerankerProvider};
 use elephant::recall::semantic::SemanticRetriever;
 use elephant::recall::temporal::TemporalRetriever;
 use elephant::recall::DefaultRecallPipeline;
-use elephant::reflect::hierarchy::DefaultHierarchyAssembler;
-use elephant::reflect::opinion::DefaultOpinionManager;
 use elephant::reflect::DefaultReflectPipeline;
 use elephant::retain::chunker::SimpleChunker;
 use elephant::retain::extractor::LlmFactExtractor;
@@ -198,11 +196,10 @@ impl RealTestHarness {
         ));
 
         let reflect = Arc::new(DefaultReflectPipeline::new(
-            Box::new(DefaultHierarchyAssembler::new(recall.clone())),
-            Box::new(DefaultOpinionManager::new(store_arc.clone(), embed_arc.clone())),
+            recall.clone(),
             self.llm.clone(),
             store_arc.clone(),
-            5,
+            8,
         ));
 
         let consolidator = Arc::new(DefaultConsolidator::new(store_arc.clone(), self.llm.clone(), self.embeddings.clone()));
