@@ -79,11 +79,11 @@ impl DefaultRetainPipeline {
     }
 
     /// Remove facts that are near-duplicates of existing facts in the bank.
-    async fn dedup_facts(&self, facts: Vec<Fact>, bank_id: crate::types::BankId, threshold: f32) -> Result<Vec<Fact>> {
+    async fn dedup_facts(&self, facts: Vec<Fact>, bank_id: crate::types::BankId, threshold: f32, store: &dyn MemoryStore) -> Result<Vec<Fact>> {
         let mut kept = Vec::with_capacity(facts.len());
         for fact in facts {
             if let Some(ref emb) = fact.embedding {
-                let results = self.store.vector_search(emb, bank_id, 1, None).await?;
+                let results = store.vector_search(emb, bank_id, 1, None).await?;
                 if let Some(top) = results.first()
                     && top.score >= threshold {
                         continue;
@@ -285,7 +285,7 @@ impl RetainPipeline for DefaultRetainPipeline {
 
             // 2d. Dedup against existing facts (reads through txn to see prior chunks)
             let facts = if let Some(threshold) = self.dedup_threshold {
-                let deduped = self.dedup_facts(facts, input.bank_id, threshold).await?;
+                let deduped = self.dedup_facts(facts, input.bank_id, threshold, &*txn).await?;
                 if deduped.is_empty() {
                     continue;
                 }
