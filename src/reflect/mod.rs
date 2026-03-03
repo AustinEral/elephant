@@ -149,7 +149,7 @@ impl DefaultReflectPipeline {
             //   2..last-1   → auto (all tools)
             //   last        → done only, required
             let (iter_tools, tool_choice) = if iteration == last_iteration {
-                (&done_only, Some(ToolChoice::Required))
+                (&done_only, Some(ToolChoice::Specific("done".into())))
             } else {
                 let choice = match iteration {
                     0 => Some(ToolChoice::Specific("search_observations".into())),
