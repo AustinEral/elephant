@@ -10,6 +10,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::Deserialize;
+use tracing::{debug, info, warn, info_span, Instrument};
 
 use crate::embedding::EmbeddingClient;
 use crate::error::Result;
@@ -104,6 +105,18 @@ fn merge_temporal(existing: Option<&TemporalRange>, facts: &[&Fact]) -> Option<T
 #[async_trait]
 impl Consolidator for DefaultConsolidator {
     async fn consolidate(&self, bank_id: BankId) -> Result<ConsolidationReport> {
+        let consolidate_span = info_span!("consolidate",
+            bank_id = %bank_id,
+            unconsolidated = tracing::field::Empty,
+            created = tracing::field::Empty,
+            updated = tracing::field::Empty,
+        );
+        self.consolidate_inner(bank_id).instrument(consolidate_span).await
+    }
+}
+
+impl DefaultConsolidator {
+    async fn consolidate_inner(&self, bank_id: BankId) -> Result<ConsolidationReport> {
         let mut report = ConsolidationReport::default();
 
         // 1. Fetch unconsolidated World/Experience facts
@@ -120,12 +133,18 @@ impl Consolidator for DefaultConsolidator {
             .await?;
 
         if unconsolidated.is_empty() {
+            debug!("no unconsolidated facts");
             return Ok(report);
         }
 
+        tracing::Span::current().record("unconsolidated", unconsolidated.len());
+        debug!(facts = unconsolidated.len(), "fetched unconsolidated facts");
+
         // 2. Process in batches
         let bs = batch_size();
-        for batch in unconsolidated.chunks(bs) {
+        let total_batches = unconsolidated.len().div_ceil(bs);
+        for (batch_idx, batch) in unconsolidated.chunks(bs).enumerate() {
+            debug!(batch = batch_idx + 1, total_batches, facts = batch.len(), "processing batch");
             // 3a. Per-fact recall: search for related observations using each fact's embedding,
             // then union/dedup the results.
             let mut seen_obs_ids = std::collections::HashSet::new();
@@ -217,9 +236,7 @@ impl Consolidator for DefaultConsolidator {
                             report.observations_updated += 1;
                             true
                         } else {
-                            eprintln!(
-                                "consolidation: LLM referenced unknown observation ID {obs_id_str}, creating new instead"
-                            );
+                            warn!(obs_id = %obs_id_str, "LLM referenced unknown observation ID, creating new instead");
                             false
                         }
                     } else {
@@ -258,7 +275,12 @@ impl Consolidator for DefaultConsolidator {
 
             // Commit the batch transaction
             txn.commit().await?;
+            debug!(batch = batch_idx + 1, created = report.observations_created, updated = report.observations_updated, "batch committed");
         }
+
+        info!(created = report.observations_created, updated = report.observations_updated, "consolidate_complete");
+        tracing::Span::current().record("created", report.observations_created);
+        tracing::Span::current().record("updated", report.observations_updated);
 
         Ok(report)
     }

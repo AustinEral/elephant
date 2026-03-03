@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
+use tracing::{debug, info, info_span, Instrument};
 
 use crate::embedding::EmbeddingClient;
 use crate::error::Result;
@@ -179,6 +180,19 @@ impl DefaultRetainPipeline {
 #[async_trait]
 impl RetainPipeline for DefaultRetainPipeline {
     async fn retain(&self, input: &RetainInput) -> Result<RetainOutput> {
+        let retain_span = info_span!("retain",
+            bank_id = %input.bank_id,
+            content_len = input.content.len(),
+            facts_stored = tracing::field::Empty,
+            entities_resolved = tracing::field::Empty,
+            links_created = tracing::field::Empty,
+        );
+        self.retain_inner(input).instrument(retain_span).await
+    }
+}
+
+impl DefaultRetainPipeline {
+    async fn retain_inner(&self, input: &RetainInput) -> Result<RetainOutput> {
         // 0. Validate embedding dimensions match the bank's config
         let bank = self.store.get_bank(input.bank_id).await?;
         if bank.embedding_dimensions > 0 {
@@ -194,6 +208,7 @@ impl RetainPipeline for DefaultRetainPipeline {
 
         // 1. Chunk the input
         let chunks = self.chunker.chunk(&input.content, &self.chunk_config);
+        debug!(chunks = chunks.len(), "chunked");
 
         let mut all_fact_ids = Vec::new();
         let mut all_new_entities = Vec::new();
@@ -209,7 +224,7 @@ impl RetainPipeline for DefaultRetainPipeline {
         let txn = self.store.begin().await?;
 
         // 2. Process each chunk
-        for chunk in &chunks {
+        for (chunk_idx, chunk) in chunks.iter().enumerate() {
             // 2a. Extract facts (LLM call)
             let extraction_input = ExtractionInput {
                 content: chunk.content.clone(),
@@ -221,6 +236,7 @@ impl RetainPipeline for DefaultRetainPipeline {
                 speaker: input.speaker.clone(),
             };
             let extracted = self.extractor.extract(&extraction_input).await?;
+            debug!(chunk = chunk_idx, extracted = extracted.len(), "extracted");
 
             if extracted.is_empty() {
                 continue;
@@ -284,15 +300,20 @@ impl RetainPipeline for DefaultRetainPipeline {
             }
 
             // 2d. Dedup against existing facts (reads through txn to see prior chunks)
+            let pre_dedup = facts.len();
             let facts = if let Some(threshold) = self.dedup_threshold {
                 let deduped = self.dedup_facts(facts, input.bank_id, threshold, &*txn).await?;
                 if deduped.is_empty() {
+                    debug!(chunk = chunk_idx, deduped_all = pre_dedup, "all facts deduped, skipping chunk");
                     continue;
                 }
                 deduped
             } else {
                 facts
             };
+            if facts.len() < pre_dedup {
+                debug!(chunk = chunk_idx, before = pre_dedup, after = facts.len(), "dedup");
+            }
 
             // 2e. Store facts
             let ids = txn.insert_facts(&facts).await?;
@@ -318,9 +339,15 @@ impl RetainPipeline for DefaultRetainPipeline {
         // Commit — all writes for the entire retain call become visible
         txn.commit().await?;
 
+        let facts_stored = all_fact_ids.len();
+        info!(facts_stored, entities_resolved = total_entities_resolved, links_created = total_links, "retain_complete");
+        tracing::Span::current().record("facts_stored", facts_stored);
+        tracing::Span::current().record("entities_resolved", total_entities_resolved);
+        tracing::Span::current().record("links_created", total_links);
+
         Ok(RetainOutput {
             fact_ids: all_fact_ids.clone(),
-            facts_stored: all_fact_ids.len(),
+            facts_stored,
             new_entities: all_new_entities,
             entities_resolved: total_entities_resolved,
             links_created: total_links,
