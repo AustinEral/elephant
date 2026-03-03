@@ -84,11 +84,10 @@ impl DefaultRetainPipeline {
         for fact in facts {
             if let Some(ref emb) = fact.embedding {
                 let results = self.store.vector_search(emb, bank_id, 1, None).await?;
-                if let Some(top) = results.first() {
-                    if top.score >= threshold {
+                if let Some(top) = results.first()
+                    && top.score >= threshold {
                         continue;
                     }
-                }
             }
             kept.push(fact);
         }

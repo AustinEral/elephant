@@ -71,13 +71,12 @@ pub fn build_reranker(config: &RerankerConfig) -> Result<Box<dyn Reranker>> {
 /// Prepends date information so the cross-encoder can judge temporal relevance
 /// (e.g. "what happened last week?").
 pub fn format_reranker_input(fact: &crate::types::ScoredFact) -> String {
-    if let Some(ref tr) = fact.fact.temporal_range {
-        if let Some(start) = tr.start {
+    if let Some(ref tr) = fact.fact.temporal_range
+        && let Some(start) = tr.start {
             let date_iso = start.format("%Y-%m-%d");
             let date_readable = start.format("%B %d, %Y");
             return format!("[Date: {date_readable} ({date_iso})] {}", fact.fact.content);
         }
-    }
     fact.fact.content.clone()
 }
 

@@ -18,7 +18,7 @@ use crate::error::Result;
 use crate::llm::LlmClient;
 use crate::recall::RecallPipeline;
 use crate::storage::MemoryStore;
-use crate::types::llm::{CompletionRequest, Message, ToolCall, ToolChoice, ToolDef, ToolResult};
+use crate::types::llm::{CompletionRequest, Message, ToolChoice, ToolDef, ToolResult};
 use crate::types::{FactId, NetworkType, RecallQuery, ReflectQuery, ReflectResult};
 
 use disposition::verbalize_bank_profile;
@@ -294,7 +294,7 @@ impl DefaultReflectPipeline {
                 role: "user".into(),
                 content: String::new(),
                 tool_calls: vec![],
-                tool_results: tool_results,
+                tool_results,
             });
         }
 

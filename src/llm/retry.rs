@@ -68,8 +68,8 @@ impl LlmClient for RetryingLlmClient {
                         _ => None,
                     };
 
-                    if let Some(secs) = wait {
-                        if attempt < self.policy.max_retries {
+                    if let Some(secs) = wait
+                        && attempt < self.policy.max_retries {
                             eprintln!(
                                 "LLM retry {}/{}: {e}, waiting {secs}s",
                                 attempt + 1,
@@ -79,7 +79,6 @@ impl LlmClient for RetryingLlmClient {
                             last_err = Some(e);
                             continue;
                         }
-                    }
 
                     return Err(e);
                 }

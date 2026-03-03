@@ -385,6 +385,7 @@ fn fmt_elapsed(seconds: f64) -> String {
 
 // --- Incremental results flushing ---
 
+#[allow(clippy::too_many_arguments)]
 fn flush_results(results: &[QuestionResult], banks: &HashMap<String, String>, output_path: &Path, judge_label: &str, tag: &Option<String>, retain_model: &str, reflect_model: &str, embedding_model: &str, reranker_model: &str, consolidation_strategy: &str, bench_start: Instant) {
     let bench_elapsed = bench_start.elapsed().as_secs_f64();
     let total_questions = results.len();
@@ -637,6 +638,7 @@ impl SharedResults {
 
 // --- Per-conversation worker ---
 
+#[allow(clippy::too_many_arguments)]
 async fn run_conversation(
     tag: String,
     http: Client,
@@ -820,7 +822,6 @@ async fn run_conversation(
         let local_correct = local_correct.clone();
         let local_total = local_total.clone();
         let completed = completed.clone();
-        let qa_start = qa_start;
 
         qa_handles.push(tokio::spawn(async move {
             let _permit = sem.acquire().await.expect("semaphore closed");

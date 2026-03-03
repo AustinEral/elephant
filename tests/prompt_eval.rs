@@ -44,10 +44,7 @@ fn extraction_request(content: &str, speaker: Option<&str>) -> CompletionRequest
     user_msg.push_str(content);
     CompletionRequest {
         model: String::new(),
-        messages: vec![Message {
-            role: "user".into(),
-            content: user_msg,
-        }],
+        messages: vec![Message::text("user", user_msg)],
         max_tokens: None,
         temperature: Some(0.0),
         system: Some(system),
@@ -63,10 +60,7 @@ fn reflect_request(context: &str, opinions: &str, question: &str) -> CompletionR
         .replace("{question}", question);
     CompletionRequest {
         model: String::new(),
-        messages: vec![Message {
-            role: "user".into(),
-            content: user_prompt,
-        }],
+        messages: vec![Message::text("user", user_prompt)],
         max_tokens: None,
         temperature: Some(0.3),
         system: None,
@@ -83,10 +77,7 @@ fn synthesize_observation_request(entity_name: &str, facts: &str) -> CompletionR
         .replace("{facts}", facts);
     CompletionRequest {
         model: String::new(),
-        messages: vec![Message {
-            role: "user".into(),
-            content: user_prompt,
-        }],
+        messages: vec![Message::text("user", user_prompt)],
         max_tokens: None,
         temperature: Some(0.3),
         system: None,
@@ -101,10 +92,7 @@ fn merge_opinions_request(opinions: &str) -> CompletionRequest {
     let user_prompt = template.replace("{opinions}", opinions);
     CompletionRequest {
         model: String::new(),
-        messages: vec![Message {
-            role: "user".into(),
-            content: user_prompt,
-        }],
+        messages: vec![Message::text("user", user_prompt)],
         max_tokens: None,
         temperature: Some(0.0),
         system: None,

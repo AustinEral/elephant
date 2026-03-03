@@ -32,8 +32,11 @@ impl Message {
 /// A tool definition sent in a completion request.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolDef {
+    /// The name of the tool.
     pub name: String,
+    /// A description of what the tool does.
     pub description: String,
+    /// The JSON schema describing the tool's input parameters.
     pub input_schema: serde_json::Value,
 }
 
@@ -52,24 +55,33 @@ impl ToolDef {
 /// A tool invocation returned by the LLM.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolCall {
+    /// The unique identifier for this tool call.
     pub id: String,
+    /// The name of the tool being invoked.
     pub name: String,
+    /// The arguments passed to the tool as a JSON value.
     pub arguments: serde_json::Value,
 }
 
 /// A tool result to feed back to the LLM.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolResult {
+    /// The ID of the tool call this result corresponds to.
     pub tool_call_id: String,
+    /// The result content returned by the tool.
     pub content: String,
 }
 
 /// Controls which tool the LLM should use.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ToolChoice {
+    /// Let the LLM choose whether to call a tool.
     Auto,
+    /// The LLM must call a tool.
     Required,
+    /// The LLM must not call any tool.
     None,
+    /// The LLM must call the specified tool by name.
     Specific(String),
 }
 

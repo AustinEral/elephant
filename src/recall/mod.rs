@@ -92,7 +92,7 @@ impl RecallPipeline for DefaultRecallPipeline {
 
         // Step 2: RRF fusion
         let rankings = [semantic_r, keyword_r, graph_r, temporal_r];
-        let mut fused = fusion::fuse_rankings(&rankings, self.rrf_k);
+        let fused = fusion::fuse_rankings(&rankings, self.rrf_k);
 
         // Step 3: Rerank top N
         let reranked = self

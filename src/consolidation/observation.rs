@@ -373,7 +373,7 @@ mod tests {
         let f2 = make_fact(bank_id, "Caroline got promoted to senior engineer");
         store.insert_facts(&[f2]).await.unwrap();
 
-        llm.push_response(&format!(r#"{{"actions": [
+        llm.push_response(format!(r#"{{"actions": [
             {{"action": "update", "observation_id": "{obs_id}", "content": "Caroline works as a senior engineer at Google, having recently been promoted.", "fact_indices": [0]}}
         ]}}"#));
 
