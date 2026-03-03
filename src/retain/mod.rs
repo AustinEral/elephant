@@ -99,9 +99,9 @@ impl DefaultRetainPipeline {
         &self,
         new_facts: &[Fact],
         bank_id: crate::types::BankId,
+        store: &dyn MemoryStore,
     ) -> Result<(usize, usize)> {
-        let opinions = self
-            .store
+        let opinions = store
             .get_facts_by_bank(
                 bank_id,
                 FactFilter {
@@ -156,7 +156,7 @@ impl DefaultRetainPipeline {
                     opinion.confidence = Some((current + 0.1).min(1.0));
                     opinion.evidence_ids.push(new_facts[i].id);
                     opinion.updated_at = Utc::now();
-                    self.store.update_fact(&opinion).await?;
+                    store.update_fact(&opinion).await?;
                     reinforced += 1;
                     break; // One reinforcement per opinion per retain
                 } else if answer.starts_with("contradict") {
@@ -165,7 +165,7 @@ impl DefaultRetainPipeline {
                     opinion.confidence = Some((current - 0.1).max(0.0));
                     opinion.evidence_ids.push(new_facts[i].id);
                     opinion.updated_at = Utc::now();
-                    self.store.update_fact(&opinion).await?;
+                    store.update_fact(&opinion).await?;
                     weakened += 1;
                     break;
                 }
@@ -201,9 +201,16 @@ impl RetainPipeline for DefaultRetainPipeline {
         let mut all_stored_facts = Vec::new();
         let mut total_links = 0usize;
 
+        let mut total_reinforced = 0usize;
+        let mut total_weakened = 0usize;
+
+        // Single transaction for the entire retain call — either all chunks
+        // commit or nothing is written.
+        let txn = self.store.begin().await?;
+
         // 2. Process each chunk
         for chunk in &chunks {
-            // 2a. Extract facts
+            // 2a. Extract facts (LLM call)
             let extraction_input = ExtractionInput {
                 content: chunk.content.clone(),
                 bank_id: input.bank_id,
@@ -226,7 +233,7 @@ impl RetainPipeline for DefaultRetainPipeline {
                 .collect();
 
             let resolved = if !all_mentions.is_empty() {
-                self.resolver.resolve(&all_mentions, input.bank_id).await?
+                self.resolver.resolve(&all_mentions, input.bank_id, &*txn).await?
             } else {
                 Vec::new()
             };
@@ -276,7 +283,7 @@ impl RetainPipeline for DefaultRetainPipeline {
                 facts.push(fact);
             }
 
-            // 2d. Dedup against existing facts
+            // 2d. Dedup against existing facts (reads through txn to see prior chunks)
             let facts = if let Some(threshold) = self.dedup_threshold {
                 let deduped = self.dedup_facts(facts, input.bank_id, threshold).await?;
                 if deduped.is_empty() {
@@ -288,23 +295,28 @@ impl RetainPipeline for DefaultRetainPipeline {
             };
 
             // 2e. Store facts
-            let ids = self.store.insert_facts(&facts).await?;
+            let ids = txn.insert_facts(&facts).await?;
             all_fact_ids.extend_from_slice(&ids);
 
             // 2f. Build graph links
             let links = self
                 .graph_builder
-                .build_links(&facts, input.bank_id)
+                .build_links(&facts, input.bank_id, &*txn)
                 .await?;
             total_links += links.len();
+
+            // 2g. Opinion reinforcement
+            let (reinforced, weakened) = self
+                .reinforce_opinions(&facts, input.bank_id, &*txn)
+                .await?;
+            total_reinforced += reinforced;
+            total_weakened += weakened;
 
             all_stored_facts.extend(facts);
         }
 
-        // 3. Opinion reinforcement
-        let (opinions_reinforced, opinions_weakened) = self
-            .reinforce_opinions(&all_stored_facts, input.bank_id)
-            .await?;
+        // Commit — all writes for the entire retain call become visible
+        txn.commit().await?;
 
         Ok(RetainOutput {
             fact_ids: all_fact_ids.clone(),
@@ -312,8 +324,8 @@ impl RetainPipeline for DefaultRetainPipeline {
             new_entities: all_new_entities,
             entities_resolved: total_entities_resolved,
             links_created: total_links,
-            opinions_reinforced,
-            opinions_weakened,
+            opinions_reinforced: total_reinforced,
+            opinions_weakened: total_weakened,
         })
     }
 }

@@ -43,6 +43,10 @@ pub enum Error {
     #[error("reranker error: {0}")]
     Reranker(String),
 
+    /// An internal/logic error.
+    #[error("internal error: {0}")]
+    Internal(String),
+
     /// The bank's embedding config doesn't match the current embedding client.
     #[error("embedding dimension mismatch: bank expects {expected} dims ({model}), but client produces {actual} dims")]
     EmbeddingDimensionMismatch {

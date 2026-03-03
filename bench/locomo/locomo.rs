@@ -375,6 +375,29 @@ async fn api_post<T: serde::de::DeserializeOwned>(
     serde_json::from_str(&text).map_err(|e| format!("parse error: {e}\nbody: {text}"))
 }
 
+async fn api_post_retry<T: serde::de::DeserializeOwned>(
+    client: &Client,
+    url: &str,
+    body: &impl Serialize,
+    max_retries: usize,
+) -> Result<T, String> {
+    let mut last_err = String::new();
+    for attempt in 0..=max_retries {
+        match api_post(client, url, body).await {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                last_err = e;
+                if attempt < max_retries {
+                    let delay = 1 << attempt; // 1s, 2s, 4s
+                    eprintln!("  retry {}/{max_retries} in {delay}s: {last_err}", attempt + 1);
+                    tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+                }
+            }
+        }
+    }
+    Err(last_err)
+}
+
 // --- Time formatting ---
 
 fn fmt_elapsed(seconds: f64) -> String {
@@ -689,7 +712,7 @@ async fn run_conversation(
             let text = format_session(&turns, &date_str);
 
             let t0 = Instant::now();
-            let resp: RetainResponse = api_post(
+            let resp: RetainResponse = api_post_retry(
                 &http,
                 &format!("{api_url}/v1/banks/{}/retain", bank.id),
                 &RetainRequest {
@@ -697,9 +720,10 @@ async fn run_conversation(
                     content: text,
                     timestamp,
                 },
+                3,
             )
             .await
-            .expect("retain failed");
+            .expect("retain failed after retries");
 
             let elapsed = t0.elapsed().as_secs_f64();
             session_times.push(elapsed);
@@ -720,10 +744,11 @@ async fn run_conversation(
             // Per-session consolidation (incremental edit path)
             if consolidate_per_session && resp.facts_stored > 0 {
                 let consolidate_url = format!("{api_url}/v1/banks/{}/consolidate", bank.id);
-                match api_post::<ConsolidateResponse>(
+                match api_post_retry::<ConsolidateResponse>(
                     &http,
                     &consolidate_url,
                     &ConsolidateRequest {},
+                    3,
                 )
                 .await
                 {
@@ -828,7 +853,7 @@ async fn run_conversation(
             let cat_name = category_name(category);
 
             let t0 = Instant::now();
-            let (hypothesis, confidence) = match api_post::<ReflectResponse>(
+            let (hypothesis, confidence) = match api_post_retry::<ReflectResponse>(
                 &http,
                 &format!("{api_url}/v1/banks/{bank_id}/reflect"),
                 &ReflectRequest {
@@ -836,12 +861,13 @@ async fn run_conversation(
                     question: question.clone(),
                     budget_tokens: 4096,
                 },
+                3,
             )
             .await
             {
                 Ok(resp) => (resp.response, resp.confidence),
                 Err(e) => {
-                    eprintln!("[{tag}] [{}/{}] ERROR: {e}", qa_idx + 1, qa_len);
+                    eprintln!("[{tag}] [{}/{}] ERROR after retries: {e}", qa_idx + 1, qa_len);
                     (String::new(), 0.0)
                 }
             };

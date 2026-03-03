@@ -12,9 +12,24 @@ use crate::types::{
     NetworkType, ScoredFact,
 };
 
+/// A database transaction that implements `MemoryStore`.
+///
+/// All writes through a `TransactionHandle` are atomic: they become visible
+/// only after [`commit`](TransactionHandle::commit) succeeds. If the handle
+/// is dropped without committing, the transaction is rolled back.
+#[async_trait]
+pub trait TransactionHandle: MemoryStore + Send {
+    /// Commit the transaction, making all writes permanent.
+    async fn commit(self: Box<Self>) -> Result<()>;
+}
+
 /// Trait for persistent storage of memory engine data.
 #[async_trait]
 pub trait MemoryStore: Send + Sync {
+    /// Begin a new transaction. The returned handle implements `MemoryStore`
+    /// so it can be used anywhere a store is expected.
+    async fn begin(&self) -> Result<Box<dyn TransactionHandle>>;
+
     /// Insert one or more facts into storage. Returns the IDs of the inserted facts.
     async fn insert_facts(&self, facts: &[Fact]) -> Result<Vec<FactId>>;
 

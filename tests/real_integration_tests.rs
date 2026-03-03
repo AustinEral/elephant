@@ -153,12 +153,10 @@ impl RealTestHarness {
             Box::new(SimpleChunker),
             Box::new(LlmFactExtractor::new(make_llm())),
             Box::new(LayeredEntityResolver::new(
-                Box::new(PgMemoryStore::new(self.pool.clone())),
                 make_emb(),
                 make_llm(),
             )),
             Box::new(DefaultGraphBuilder::new(
-                Box::new(PgMemoryStore::new(self.pool.clone())),
                 make_llm(),
                 GraphConfig::default(),
             )),

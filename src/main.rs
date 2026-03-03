@@ -112,12 +112,10 @@ async fn main() {
         Box::new(SimpleChunker),
         Box::new(LlmFactExtractor::new(retain_llm.clone())),
         Box::new(LayeredEntityResolver::new(
-            Box::new(PgMemoryStore::new(pool.clone())),
             embedding::build_client(&emb_config).expect("embedding client"),
             retain_llm.clone(),
         )),
         Box::new(DefaultGraphBuilder::new(
-            Box::new(PgMemoryStore::new(pool.clone())),
             retain_llm.clone(),
             GraphConfig::default(),
         )),

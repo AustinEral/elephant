@@ -21,10 +21,14 @@ pub trait EntityResolver: Send + Sync {
     ///
     /// Deduplicates within the batch: if the same entity appears multiple times,
     /// all mentions resolve to the same entity ID.
+    ///
+    /// The `store` parameter controls which store is used for reads/writes,
+    /// allowing callers to pass a transaction handle for atomic operations.
     async fn resolve(
         &self,
         mentions: &[String],
         bank_id: BankId,
+        store: &dyn MemoryStore,
     ) -> Result<Vec<ResolvedEntity>>;
 }
 
@@ -35,7 +39,6 @@ pub trait EntityResolver: Send + Sync {
 /// 3. LLM disambiguation for borderline cases
 /// 4. Create new entity if no match
 pub struct LayeredEntityResolver {
-    store: Box<dyn MemoryStore>,
     embeddings: Box<dyn EmbeddingClient>,
     llm: Arc<dyn LlmClient>,
     similarity_threshold: f32,
@@ -44,12 +47,10 @@ pub struct LayeredEntityResolver {
 impl LayeredEntityResolver {
     /// Create a new resolver.
     pub fn new(
-        store: Box<dyn MemoryStore>,
         embeddings: Box<dyn EmbeddingClient>,
         llm: Arc<dyn LlmClient>,
     ) -> Self {
         Self {
-            store,
             embeddings,
             llm,
             similarity_threshold: 0.75,
@@ -61,8 +62,9 @@ impl LayeredEntityResolver {
         &self,
         mention: &str,
         bank_id: BankId,
+        store: &dyn MemoryStore,
     ) -> Result<Option<ResolvedEntity>> {
-        if let Some(entity) = self.store.find_entity(bank_id, mention).await? {
+        if let Some(entity) = store.find_entity(bank_id, mention).await? {
             return Ok(Some(ResolvedEntity {
                 mention: mention.to_string(),
                 entity_id: entity.id,
@@ -80,8 +82,9 @@ impl LayeredEntityResolver {
         &self,
         mention: &str,
         bank_id: BankId,
+        store: &dyn MemoryStore,
     ) -> Result<Option<(Entity, f32)>> {
-        let entities = self.store.list_entities(bank_id).await?;
+        let entities = store.list_entities(bank_id).await?;
         if entities.is_empty() {
             return Ok(None);
         }
@@ -145,6 +148,7 @@ impl LayeredEntityResolver {
         &self,
         mention: &str,
         bank_id: BankId,
+        store: &dyn MemoryStore,
     ) -> Result<ResolvedEntity> {
         let entity = Entity {
             id: EntityId::new(),
@@ -153,7 +157,7 @@ impl LayeredEntityResolver {
             entity_type: EntityType::Concept, // Default; could use LLM to classify
             bank_id,
         };
-        self.store.upsert_entity(&entity).await?;
+        store.upsert_entity(&entity).await?;
 
         Ok(ResolvedEntity {
             mention: mention.to_string(),
@@ -172,6 +176,7 @@ impl EntityResolver for LayeredEntityResolver {
         &self,
         mentions: &[String],
         bank_id: BankId,
+        store: &dyn MemoryStore,
     ) -> Result<Vec<ResolvedEntity>> {
         // Local cache for within-batch deduplication
         let mut cache: HashMap<String, ResolvedEntity> = HashMap::new();
@@ -190,14 +195,14 @@ impl EntityResolver for LayeredEntityResolver {
             }
 
             // Layer 1: Exact match
-            if let Some(resolved) = self.try_exact_match(mention, bank_id).await? {
+            if let Some(resolved) = self.try_exact_match(mention, bank_id, store).await? {
                 cache.insert(normalized, resolved.clone());
                 results.push(resolved);
                 continue;
             }
 
             // Layer 2: Embedding similarity
-            if let Some((candidate, score)) = self.try_embedding_match(mention, bank_id).await? {
+            if let Some((candidate, score)) = self.try_embedding_match(mention, bank_id, store).await? {
                 // High similarity → accept directly
                 if score >= 0.9 {
                     let resolved = ResolvedEntity {
@@ -212,7 +217,7 @@ impl EntityResolver for LayeredEntityResolver {
                     let mut updated = candidate;
                     if !updated.aliases.contains(mention) {
                         updated.aliases.push(mention.clone());
-                        self.store.upsert_entity(&updated).await?;
+                        store.upsert_entity(&updated).await?;
                     }
                     cache.insert(normalized, resolved.clone());
                     results.push(resolved);
@@ -232,7 +237,7 @@ impl EntityResolver for LayeredEntityResolver {
                     let mut updated = candidate;
                     if !updated.aliases.contains(mention) {
                         updated.aliases.push(mention.clone());
-                        self.store.upsert_entity(&updated).await?;
+                        store.upsert_entity(&updated).await?;
                     }
                     cache.insert(normalized, resolved.clone());
                     results.push(resolved);
@@ -241,7 +246,7 @@ impl EntityResolver for LayeredEntityResolver {
             }
 
             // Layer 4: Create new entity
-            let resolved = self.create_entity(mention, bank_id).await?;
+            let resolved = self.create_entity(mention, bank_id, store).await?;
             cache.insert(normalized, resolved.clone());
             results.push(resolved);
         }
@@ -283,12 +288,10 @@ mod tests {
     }
 
     fn make_resolver(
-        store: &MockMemoryStore,
         embeddings: &MockEmbeddings,
         llm: Arc<MockLlmClient>,
     ) -> LayeredEntityResolver {
         LayeredEntityResolver::new(
-            Box::new(store.clone()),
             Box::new(embeddings.clone()),
             llm,
         )
@@ -308,8 +311,8 @@ mod tests {
         };
         store.upsert_entity(&entity).await.unwrap();
 
-        let resolver = make_resolver(&store, &embeddings, llm);
-        let results = resolver.resolve(&["Rust".into()], bank_id).await.unwrap();
+        let resolver = make_resolver(&embeddings, llm);
+        let results = resolver.resolve(&["Rust".into()], bank_id, &store).await.unwrap();
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].entity_id, entity.id);
@@ -330,8 +333,8 @@ mod tests {
         };
         store.upsert_entity(&entity).await.unwrap();
 
-        let resolver = make_resolver(&store, &embeddings, llm);
-        let results = resolver.resolve(&["rust-lang".into()], bank_id).await.unwrap();
+        let resolver = make_resolver(&embeddings, llm);
+        let results = resolver.resolve(&["rust-lang".into()], bank_id, &store).await.unwrap();
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].entity_id, entity.id);
@@ -342,8 +345,8 @@ mod tests {
     async fn no_match_creates_new_entity() {
         let (store, embeddings, llm, bank_id) = setup().await;
 
-        let resolver = make_resolver(&store, &embeddings, llm);
-        let results = resolver.resolve(&["Rust".into()], bank_id).await.unwrap();
+        let resolver = make_resolver(&embeddings, llm);
+        let results = resolver.resolve(&["Rust".into()], bank_id, &store).await.unwrap();
 
         assert_eq!(results.len(), 1);
         assert!(results[0].is_new);
@@ -358,9 +361,9 @@ mod tests {
     async fn batch_dedup_same_mention_twice() {
         let (store, embeddings, llm, bank_id) = setup().await;
 
-        let resolver = make_resolver(&store, &embeddings, llm);
+        let resolver = make_resolver(&embeddings, llm);
         let results = resolver
-            .resolve(&["Rust".into(), "rust".into(), "RUST".into()], bank_id)
+            .resolve(&["Rust".into(), "rust".into(), "RUST".into()], bank_id, &store)
             .await
             .unwrap();
 
@@ -386,7 +389,7 @@ mod tests {
             bank_id,
         };
 
-        let resolver = make_resolver(&store, &embeddings, llm.clone());
+        let resolver = make_resolver(&embeddings, llm.clone());
 
         // Test llm_confirm directly
         llm.push_response("yes");
@@ -402,9 +405,9 @@ mod tests {
     async fn multiple_distinct_entities() {
         let (store, embeddings, llm, bank_id) = setup().await;
 
-        let resolver = make_resolver(&store, &embeddings, llm);
+        let resolver = make_resolver(&embeddings, llm);
         let results = resolver
-            .resolve(&["Rust".into(), "Python".into(), "Go".into()], bank_id)
+            .resolve(&["Rust".into(), "Python".into(), "Go".into()], bank_id, &store)
             .await
             .unwrap();
 

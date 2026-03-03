@@ -80,6 +80,9 @@ impl OpinionMerger for DefaultOpinionMerger {
             return Ok(report);
         }
 
+        // All writes go through a single transaction
+        let txn = self.store.begin().await?;
+
         // 2. Cluster by embedding similarity (cosine > 0.85)
         // Ensure all opinions have embeddings (re-embed if needed)
         let mut full_embeddings: Vec<Vec<f32>> = Vec::with_capacity(active_opinions.len());
@@ -175,7 +178,7 @@ impl OpinionMerger for DefaultOpinionMerger {
                     winner.evidence_ids = combined_evidence;
                     winner.embedding = emb.into_iter().next();
                     winner.updated_at = Utc::now();
-                    self.store.update_fact(&winner).await?;
+                    txn.update_fact(&winner).await?;
 
                     // Set losers' confidence to 0.0
                     for (i, opinion) in cluster_opinions.iter().enumerate() {
@@ -183,7 +186,7 @@ impl OpinionMerger for DefaultOpinionMerger {
                             let mut loser = (*opinion).clone();
                             loser.confidence = Some(0.0);
                             loser.updated_at = Utc::now();
-                            self.store.update_fact(&loser).await?;
+                            txn.update_fact(&loser).await?;
                         }
                     }
 
@@ -208,7 +211,7 @@ impl OpinionMerger for DefaultOpinionMerger {
                     weakened.confidence =
                         Some(weakened.confidence.unwrap_or(0.5) * 0.7);
                     weakened.updated_at = Utc::now();
-                    self.store.update_fact(&weakened).await?;
+                    txn.update_fact(&weakened).await?;
 
                     report.opinions_conflicting += 1;
                 }
@@ -221,13 +224,15 @@ impl OpinionMerger for DefaultOpinionMerger {
                     superseded.confidence =
                         Some(superseded.confidence.unwrap_or(0.5) * 0.7);
                     superseded.updated_at = Utc::now();
-                    self.store.update_fact(&superseded).await?;
+                    txn.update_fact(&superseded).await?;
 
                     report.opinions_superseded += 1;
                 }
                 _ => {}
             }
         }
+
+        txn.commit().await?;
 
         Ok(report)
     }

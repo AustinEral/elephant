@@ -11,7 +11,7 @@ use crate::types::{
 };
 use crate::util::cosine_similarity;
 
-use super::MemoryStore;
+use super::{MemoryStore, TransactionHandle};
 
 /// A no-op memory store for unit tests that don't need real persistence.
 #[derive(Clone)]
@@ -42,6 +42,12 @@ impl Default for MockMemoryStore {
 
 #[async_trait]
 impl MemoryStore for MockMemoryStore {
+    async fn begin(&self) -> Result<Box<dyn TransactionHandle>> {
+        Ok(Box::new(MockTransactionHandle {
+            inner: self.clone(),
+        }))
+    }
+
     async fn insert_facts(&self, facts: &[Fact]) -> Result<Vec<FactId>> {
         let mut store = self.facts.lock().unwrap();
         let ids: Vec<FactId> = facts.iter().map(|f| f.id).collect();
@@ -237,5 +243,110 @@ impl MemoryStore for MockMemoryStore {
             }
         }
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MockTransactionHandle — transparent wrapper (mock writes are immediate)
+// ---------------------------------------------------------------------------
+
+/// Mock transaction handle. Since [`MockMemoryStore`] uses `Arc<Mutex<...>>`
+/// internally, writes are immediately visible. `commit()` is a no-op and
+/// drop without commit does NOT roll back (acceptable for tests).
+pub struct MockTransactionHandle {
+    inner: MockMemoryStore,
+}
+
+#[async_trait]
+impl TransactionHandle for MockTransactionHandle {
+    async fn commit(self: Box<Self>) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl MemoryStore for MockTransactionHandle {
+    async fn begin(&self) -> Result<Box<dyn TransactionHandle>> {
+        self.inner.begin().await
+    }
+
+    async fn insert_facts(&self, facts: &[Fact]) -> Result<Vec<FactId>> {
+        self.inner.insert_facts(facts).await
+    }
+
+    async fn get_facts(&self, ids: &[FactId]) -> Result<Vec<Fact>> {
+        self.inner.get_facts(ids).await
+    }
+
+    async fn get_facts_by_bank(&self, bank: BankId, filter: FactFilter) -> Result<Vec<Fact>> {
+        self.inner.get_facts_by_bank(bank, filter).await
+    }
+
+    async fn upsert_entity(&self, entity: &Entity) -> Result<EntityId> {
+        self.inner.upsert_entity(entity).await
+    }
+
+    async fn find_entity(&self, bank: BankId, name: &str) -> Result<Option<Entity>> {
+        self.inner.find_entity(bank, name).await
+    }
+
+    async fn get_entity_facts(&self, entity: EntityId) -> Result<Vec<Fact>> {
+        self.inner.get_entity_facts(entity).await
+    }
+
+    async fn insert_links(&self, links: &[GraphLink]) -> Result<()> {
+        self.inner.insert_links(links).await
+    }
+
+    async fn get_neighbors(
+        &self,
+        fact_id: FactId,
+        link_type: Option<LinkType>,
+    ) -> Result<Vec<(FactId, f32, LinkType)>> {
+        self.inner.get_neighbors(fact_id, link_type).await
+    }
+
+    async fn vector_search(
+        &self,
+        embedding: &[f32],
+        bank: BankId,
+        limit: usize,
+        network_filter: Option<&[NetworkType]>,
+    ) -> Result<Vec<ScoredFact>> {
+        self.inner.vector_search(embedding, bank, limit, network_filter).await
+    }
+
+    async fn update_fact(&self, fact: &Fact) -> Result<()> {
+        self.inner.update_fact(fact).await
+    }
+
+    async fn keyword_search(
+        &self,
+        query: &str,
+        bank: BankId,
+        limit: usize,
+        network_filter: Option<&[NetworkType]>,
+    ) -> Result<Vec<ScoredFact>> {
+        self.inner.keyword_search(query, bank, limit, network_filter).await
+    }
+
+    async fn list_entities(&self, bank: BankId) -> Result<Vec<Entity>> {
+        self.inner.list_entities(bank).await
+    }
+
+    async fn get_bank(&self, id: BankId) -> Result<MemoryBank> {
+        self.inner.get_bank(id).await
+    }
+
+    async fn create_bank(&self, bank: &MemoryBank) -> Result<BankId> {
+        self.inner.create_bank(bank).await
+    }
+
+    async fn list_banks(&self) -> Result<Vec<MemoryBank>> {
+        self.inner.list_banks().await
+    }
+
+    async fn mark_consolidated(&self, ids: &[FactId], at: chrono::DateTime<chrono::Utc>) -> Result<()> {
+        self.inner.mark_consolidated(ids, at).await
     }
 }

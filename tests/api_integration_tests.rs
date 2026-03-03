@@ -101,12 +101,10 @@ impl TestHarness {
             Arc::new(self.llm.as_ref().clone()),
         ));
         let resolver = Box::new(LayeredEntityResolver::new(
-            Box::new(PgMemoryStore::new(self.pool.clone())),
             Box::new(MockEmbeddings::new(EMBED_DIMS)),
             retain_llm_resolver,
         ));
         let graph_builder = Box::new(DefaultGraphBuilder::new(
-            Box::new(PgMemoryStore::new(self.pool.clone())),
             retain_llm_graph,
             GraphConfig {
                 enable_causal: false,

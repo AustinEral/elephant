@@ -178,7 +178,9 @@ impl Consolidator for DefaultConsolidator {
             let resp: ConsolidateResponse =
                 complete_structured(self.llm.as_ref(), request).await?;
 
-            // 3c. Execute actions
+            // 3c. Execute actions inside a transaction
+            let txn = self.store.begin().await?;
+
             for action in &resp.actions {
                 let emb_vec = self.embeddings.embed(&[&action.content]).await?;
                 let embedding = emb_vec.into_iter().next();
@@ -211,7 +213,7 @@ impl Consolidator for DefaultConsolidator {
                                 &source_facts,
                             );
                             updated.updated_at = Utc::now();
-                            self.store.update_fact(&updated).await?;
+                            txn.update_fact(&updated).await?;
                             report.observations_updated += 1;
                             true
                         } else {
@@ -245,14 +247,17 @@ impl Consolidator for DefaultConsolidator {
                         updated_at: now,
                         consolidated_at: None,
                     };
-                    self.store.insert_facts(&[obs]).await?;
+                    txn.insert_facts(&[obs]).await?;
                     report.observations_created += 1;
                 }
             }
 
             // 3d. Mark batch facts as consolidated
             let batch_ids: Vec<FactId> = batch.iter().map(|f| f.id).collect();
-            self.store.mark_consolidated(&batch_ids, Utc::now()).await?;
+            txn.mark_consolidated(&batch_ids, Utc::now()).await?;
+
+            // Commit the batch transaction
+            txn.commit().await?;
         }
 
         Ok(report)

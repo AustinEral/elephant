@@ -17,7 +17,10 @@ use crate::types::{
 #[async_trait]
 pub trait GraphBuilder: Send + Sync {
     /// Build links between new facts and the existing fact graph.
-    async fn build_links(&self, new_facts: &[Fact], bank_id: BankId) -> Result<Vec<GraphLink>>;
+    ///
+    /// The `store` parameter controls which store is used for reads/writes,
+    /// allowing callers to pass a transaction handle for atomic operations.
+    async fn build_links(&self, new_facts: &[Fact], bank_id: BankId, store: &dyn MemoryStore) -> Result<Vec<GraphLink>>;
 }
 
 /// Configuration for graph link construction thresholds.
@@ -43,7 +46,6 @@ impl Default for GraphConfig {
 
 /// Graph builder that constructs temporal, semantic, entity, and causal links.
 pub struct DefaultGraphBuilder {
-    store: Box<dyn MemoryStore>,
     llm: Arc<dyn LlmClient>,
     config: GraphConfig,
 }
@@ -51,12 +53,10 @@ pub struct DefaultGraphBuilder {
 impl DefaultGraphBuilder {
     /// Create a new graph builder.
     pub fn new(
-        store: Box<dyn MemoryStore>,
         llm: Arc<dyn LlmClient>,
         config: GraphConfig,
     ) -> Self {
         Self {
-            store,
             llm,
             config,
         }
@@ -268,14 +268,13 @@ impl DefaultGraphBuilder {
 
 #[async_trait]
 impl GraphBuilder for DefaultGraphBuilder {
-    async fn build_links(&self, new_facts: &[Fact], bank_id: BankId) -> Result<Vec<GraphLink>> {
+    async fn build_links(&self, new_facts: &[Fact], bank_id: BankId, store: &dyn MemoryStore) -> Result<Vec<GraphLink>> {
         if new_facts.is_empty() {
             return Ok(Vec::new());
         }
 
         // Fetch existing facts in the bank for comparison
-        let existing_facts = self
-            .store
+        let existing_facts = store
             .get_facts_by_bank(
                 bank_id,
                 FactFilter {
@@ -307,7 +306,7 @@ impl GraphBuilder for DefaultGraphBuilder {
 
         // Store all links
         if !all_links.is_empty() {
-            self.store.insert_links(&all_links).await?;
+            store.insert_links(&all_links).await?;
         }
 
         Ok(all_links)
@@ -344,7 +343,6 @@ mod tests {
     #[test]
     fn entity_links_shared_entities() {
         let builder = DefaultGraphBuilder {
-            store: Box::new(crate::storage::mock::MockMemoryStore::new()),
             llm: Arc::new(crate::llm::mock::MockLlmClient::new()),
             config: GraphConfig::default(),
         };
@@ -368,7 +366,6 @@ mod tests {
     #[test]
     fn temporal_links_close_facts() {
         let builder = DefaultGraphBuilder {
-            store: Box::new(crate::storage::mock::MockMemoryStore::new()),
             llm: Arc::new(crate::llm::mock::MockLlmClient::new()),
             config: GraphConfig::default(),
         };
@@ -397,7 +394,6 @@ mod tests {
     #[test]
     fn temporal_links_distant_facts_no_link() {
         let builder = DefaultGraphBuilder {
-            store: Box::new(crate::storage::mock::MockMemoryStore::new()),
             llm: Arc::new(crate::llm::mock::MockLlmClient::new()),
             config: GraphConfig {
                 temporal_max_days: 30,
