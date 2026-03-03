@@ -3,6 +3,8 @@
 use std::env;
 use std::sync::Arc;
 
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
+
 use elephant::consolidation::{DefaultConsolidator, DefaultOpinionMerger};
 use elephant::embedding::{self, EmbeddingClient, EmbeddingConfig, EmbeddingProvider};
 use elephant::llm::anthropic::AnthropicClient;
@@ -39,6 +41,22 @@ fn make_llm(provider: &str, api_key: &str, model: &str, base_url: Option<String>
 #[tokio::main]
 async fn main() {
     let _ = dotenvy::dotenv();
+
+    // Init tracing subscriber: LOG_FORMAT=json for machine-readable, default for human-readable
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("warn"));
+    let log_format = env::var("LOG_FORMAT").unwrap_or_default();
+    if log_format == "json" {
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt::layer().json())
+            .init();
+    } else {
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt::layer())
+            .init();
+    }
 
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let listen_addr = env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:3001".into());

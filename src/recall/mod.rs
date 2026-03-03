@@ -8,7 +8,10 @@ pub mod reranker;
 pub mod semantic;
 pub mod temporal;
 
+use std::time::Instant;
+
 use async_trait::async_trait;
+use tracing::debug;
 
 use crate::error::Result;
 use crate::types::{RecallQuery, RecallResult, ScoredFact};
@@ -71,6 +74,14 @@ impl DefaultRecallPipeline {
 #[async_trait]
 impl RecallPipeline for DefaultRecallPipeline {
     async fn recall(&self, query: &RecallQuery) -> Result<RecallResult> {
+        let start = Instant::now();
+        debug!(
+            bank_id = %query.bank_id,
+            query = query.query.as_str(),
+            network_filter = ?query.network_filter,
+            "recall_start"
+        );
+
         // Step 1: Parallel retrieval
         let (semantic_r, keyword_r, graph_r, temporal_r) = tokio::try_join!(
             self.semantic.retrieve(query),
@@ -96,6 +107,13 @@ impl RecallPipeline for DefaultRecallPipeline {
             .iter()
             .map(|sf| self.tokenizer.count_tokens(&sf.fact.content))
             .sum();
+
+        debug!(
+            elapsed_ms = start.elapsed().as_millis() as u64,
+            facts_returned = budgeted.len(),
+            total_tokens,
+            "recall_end"
+        );
 
         Ok(RecallResult {
             facts: budgeted,

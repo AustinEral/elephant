@@ -7,10 +7,12 @@ pub mod opinion;
 use std::collections::HashSet;
 use std::fmt::Write;
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use tracing::{debug, error, info, trace, info_span, Instrument};
 
 use crate::error::Result;
 use crate::llm::LlmClient;
@@ -93,6 +95,18 @@ fn tool_defs() -> Vec<ToolDef> {
 #[async_trait]
 impl ReflectPipeline for DefaultReflectPipeline {
     async fn reflect(&self, query: &ReflectQuery) -> Result<ReflectResult> {
+        let reflect_span = info_span!("reflect",
+            bank_id = %query.bank_id,
+            question = %query.question,
+            iterations = tracing::field::Empty,
+            source_count = tracing::field::Empty,
+        );
+        self.reflect_inner(query).instrument(reflect_span).await
+    }
+}
+
+impl DefaultReflectPipeline {
+    async fn reflect_inner(&self, query: &ReflectQuery) -> Result<ReflectResult> {
         // Load bank profile for system prompt
         let bank = self.store.get_bank(query.bank_id).await?;
         let bank_profile = verbalize_bank_profile(&bank);
@@ -124,6 +138,14 @@ impl ReflectPipeline for DefaultReflectPipeline {
         )];
 
         for iteration in 0..self.max_iterations {
+            let forced_tool = match iteration {
+                _ if iteration == last_iteration => "done",
+                0 => "search_observations",
+                1 => "recall",
+                _ => "auto",
+            };
+            debug!(iteration, forced_tool, "reflect_iter_start");
+
             // Forced tool sequence:
             //   0           → search_observations
             //   1           → recall
@@ -149,7 +171,17 @@ impl ReflectPipeline for DefaultReflectPipeline {
                 ..Default::default()
             };
 
+            let llm_start = Instant::now();
             let response = self.llm.complete(request).await?;
+            let llm_ms = llm_start.elapsed().as_millis() as u64;
+            debug!(
+                llm_ms,
+                input_tokens = response.input_tokens,
+                output_tokens = response.output_tokens,
+                tool_calls_count = response.tool_calls.len(),
+                content = response.content.as_str(),
+                "llm_complete"
+            );
 
             // No tool calls — skip to next iteration (shouldn't happen with forced tool choices)
             if response.tool_calls.is_empty() {
@@ -170,24 +202,46 @@ impl ReflectPipeline for DefaultReflectPipeline {
                         let args: SearchArgs = serde_json::from_value(tc.arguments.clone())
                             .unwrap_or(SearchArgs { query: query.question.clone(), reason: String::new() });
 
+                        let recall_start = Instant::now();
                         let result = self
                             .recall
                             .recall(&RecallQuery {
                                 bank_id: query.bank_id,
-                                query: args.query,
+                                query: args.query.clone(),
                                 budget_tokens: query.budget_tokens,
                                 network_filter,
                                 temporal_anchor: None,
                             })
                             .await?;
+                        let recall_ms = recall_start.elapsed().as_millis() as u64;
 
                         // Deduplicate facts across iterations
                         let mut new_facts = String::new();
+                        let mut facts_new = 0usize;
                         for sf in &result.facts {
-                            if seen_fact_ids.insert(sf.fact.id) {
+                            let is_new = seen_fact_ids.insert(sf.fact.id);
+                            trace!(
+                                fact_id = %sf.fact.id,
+                                is_new,
+                                score = sf.score,
+                                network = ?sf.fact.network,
+                                "fact"
+                            );
+                            if is_new {
+                                facts_new += 1;
                                 writeln!(new_facts, "[FACT {}] {}", sf.fact.id, sf.fact.content).unwrap();
                             }
                         }
+
+                        debug!(
+                            tool_name = tc.name.as_str(),
+                            query = args.query.as_str(),
+                            recall_ms,
+                            facts_returned = result.facts.len(),
+                            facts_new,
+                            total_tokens = result.total_tokens,
+                            "tool_call"
+                        );
 
                         if new_facts.is_empty() {
                             new_facts = "No new memories found for this query.".into();
@@ -211,7 +265,17 @@ impl ReflectPipeline for DefaultReflectPipeline {
                                 DoneArgs { response, source_ids: vec![] }
                             }
                         };
-                        return self.finalize(args, &seen_fact_ids);
+                        info!(
+                            response = args.response.as_str(),
+                            source_ids = ?args.source_ids,
+                            "done"
+                        );
+                        let result = self.finalize(args, &seen_fact_ids);
+                        if let Ok(ref r) = result {
+                            tracing::Span::current().record("iterations", iteration + 1);
+                            tracing::Span::current().record("source_count", r.sources.len());
+                        }
+                        return result;
                     }
                     _ => {
                         tool_results.push(ToolResult {
@@ -234,6 +298,7 @@ impl ReflectPipeline for DefaultReflectPipeline {
         }
 
         // Should not be reachable — last iteration forces done() — but handle gracefully.
+        error!("reflect agent exhausted all iterations without calling done()");
         Err(crate::error::Error::Llm("reflect agent exhausted all iterations without calling done()".into()))
     }
 }
