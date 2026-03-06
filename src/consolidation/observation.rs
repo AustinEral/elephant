@@ -212,6 +212,16 @@ impl DefaultConsolidator {
                     .collect();
                 let evidence_ids: Vec<FactId> = source_facts.iter().map(|f| f.id).collect();
 
+                // Union entity IDs from all source facts
+                let mut entity_ids = Vec::new();
+                for f in &source_facts {
+                    for eid in &f.entity_ids {
+                        if !entity_ids.contains(eid) {
+                            entity_ids.push(*eid);
+                        }
+                    }
+                }
+
                 // Does the LLM want to update an existing observation?
                 let updated_existing = if action.action == "update" {
                     if let Some(ref obs_id_str) = action.observation_id {
@@ -225,6 +235,11 @@ impl DefaultConsolidator {
                             for eid in &evidence_ids {
                                 if !updated.evidence_ids.contains(eid) {
                                     updated.evidence_ids.push(*eid);
+                                }
+                            }
+                            for eid in &entity_ids {
+                                if !updated.entity_ids.contains(eid) {
+                                    updated.entity_ids.push(*eid);
                                 }
                             }
                             updated.temporal_range = merge_temporal(
@@ -254,7 +269,7 @@ impl DefaultConsolidator {
                         content: action.content.clone(),
                         fact_type: FactType::World,
                         network: NetworkType::Observation,
-                        entity_ids: vec![],
+                        entity_ids,
                         temporal_range: merge_temporal(None, &source_facts),
                         embedding,
                         confidence: None,
