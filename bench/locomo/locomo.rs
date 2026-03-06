@@ -676,7 +676,7 @@ async fn run_conversation(
     reuse_bank: Option<String>,
     ingest_only: bool,
     shared: Arc<Mutex<SharedResults>>,
-) {
+) -> Result<(), String> {
     let conv = &entry.conversation;
     let total_sessions = session_count(conv);
 
@@ -696,7 +696,7 @@ async fn run_conversation(
             },
         )
         .await
-        .expect("failed to create bank");
+        .map_err(|e| format!("[{tag}] failed to create bank: {e}"))?;
 
         let ingest_sessions = max_sessions.map(|m| m.min(total_sessions)).unwrap_or(total_sessions);
         println!("[{tag}] Bank: {} | Ingesting {ingest_sessions}/{total_sessions} sessions...", bank.id);
@@ -712,7 +712,7 @@ async fn run_conversation(
             let text = format_session(&turns, &date_str);
 
             let t0 = Instant::now();
-            let resp: RetainResponse = api_post_retry(
+            let resp: RetainResponse = match api_post_retry(
                 &http,
                 &format!("{api_url}/v1/banks/{}/retain", bank.id),
                 &RetainRequest {
@@ -723,7 +723,13 @@ async fn run_conversation(
                 3,
             )
             .await
-            .expect("retain failed after retries");
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("[{tag}] ingest [{idx}/{ingest_sessions}] FAILED: {e}");
+                    continue;
+                }
+            };
 
             let elapsed = t0.elapsed().as_secs_f64();
             session_times.push(elapsed);
@@ -807,7 +813,7 @@ async fn run_conversation(
     // Skip questions if ingest-only mode
     if ingest_only {
         println!("[{tag}] Ingest-only mode — skipping questions");
-        return;
+        return Ok(());
     }
 
     // Question phase
@@ -932,8 +938,12 @@ async fn run_conversation(
     }
 
     for handle in qa_handles {
-        handle.await.expect("question task panicked");
+        if let Err(e) = handle.await {
+            eprintln!("[{tag}] question task failed: {e}");
+        }
     }
+
+    Ok(())
 }
 
 // --- Main ---
@@ -966,7 +976,7 @@ async fn main() {
 
     // Check Elephant is reachable
     let http = Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
+        .timeout(std::time::Duration::from_secs(900))
         .build()
         .expect("failed to build HTTP client");
     // Fetch server info (model config)
@@ -1020,7 +1030,7 @@ async fn main() {
         base_url: None,
     };
     let judge: Arc<dyn LlmClient> = Arc::new(RetryingLlmClient::new(
-        Arc::from(llm::build_client(&judge_config)),
+        Arc::from(llm::build_client(&judge_config).unwrap()),
         RetryPolicy::default(),
     ));
 
@@ -1098,14 +1108,18 @@ async fn main() {
         let ingest_only = args.ingest_only;
 
         handles.push(tokio::spawn(async move {
-            let _permit = sem.acquire().await.expect("semaphore closed");
+            let _permit = sem.acquire().await.map_err(|e| format!("semaphore closed: {e}"))?;
             run_conversation(tag, http, api_url, entry, judge, max_sessions, max_questions, question_concurrency, consolidate, consolidate_per_session, reuse_bank, ingest_only, shared).await
         }));
     }
 
     // Wait for all conversations.
     for handle in handles {
-        handle.await.expect("task panicked");
+        match handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => eprintln!("conversation failed: {e}"),
+            Err(e) => eprintln!("conversation task panicked: {e}"),
+        }
     }
 
     // Final aggregation from shared results.

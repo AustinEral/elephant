@@ -81,17 +81,17 @@ cargo run --release --bin view -- --conv conv-26 bench/locomo/results/reranker.j
 - **LLM-as-judge** (primary): Binary CORRECT/WRONG via the configured LLM.
 - **Token F1** (reference): Token-level overlap between prediction and gold answer. Included for diagnostics only.
 
-## Baseline results
+## Results
 
 Single conversation (conv-26), 154 questions, with consolidation:
 
 | Category | Accuracy | n |
 |---|---|---|
-| multi-hop | 91.9% | 37 |
-| open-domain | 77.1% | 70 |
-| single-hop | 78.1% | 32 |
-| temporal | 76.9% | 13 |
+| multi-hop | 97.3% | 37 |
+| open-domain | 87.1% | 70 |
+| temporal | 84.6% | 13 |
+| single-hop | 81.3% | 32 |
 | unanswerable | 100.0% | 2 |
-| **TOTAL** | **81.2%** | **154** |
+| **TOTAL** | **88.3%** | **154** |
 
-Model: Sonnet 4.6, Judge: Sonnet 4.6, Embeddings: bge-small-en-v1.5 (local)
+Model: Sonnet 4.6, Judge: Sonnet 4.6, Embeddings: bge-small-en-v1.5 (local), Reranker: ms-marco-MiniLM-L-6-v2 (local)
