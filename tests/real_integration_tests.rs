@@ -65,7 +65,7 @@ fn make_test_llm() -> Arc<dyn LlmClient> {
         api_key: llm_api_key(),
         model: llm_model(),
         base_url: llm_base_url(),
-    }))
+    }).unwrap())
 }
 fn embedding_model_path() -> String { env("EMBEDDING_MODEL_PATH") }
 fn embedding_api_key() -> String { env("EMBEDDING_API_KEY") }

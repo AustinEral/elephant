@@ -31,20 +31,20 @@ use elephant::types::ChunkConfig;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::StreamableHttpService;
 
-fn make_llm(provider: &str, api_key: &str, model: &str, base_url: Option<String>) -> Box<dyn LlmClient> {
+fn make_llm(provider: &str, api_key: &str, model: &str, base_url: Option<String>) -> elephant::error::Result<Box<dyn LlmClient>> {
     match provider {
-        "openai" => Box::new(OpenAiClient::new(api_key.into(), model.into(), base_url)),
-        _ => Box::new(AnthropicClient::new(api_key.into(), model.into())),
+        "openai" => Ok(Box::new(OpenAiClient::new(api_key.into(), model.into(), base_url)?)),
+        _ => Ok(Box::new(AnthropicClient::new(api_key.into(), model.into())?)),
     }
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let _ = dotenvy::dotenv();
 
     // Init tracing subscriber: LOG_FORMAT=json for machine-readable, default for human-readable
     let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("warn"));
+        .unwrap_or_else(|_| EnvFilter::new("info"));
     let log_format = env::var("LOG_FORMAT").unwrap_or_default();
     if log_format == "json" {
         tracing_subscriber::registry()
@@ -58,41 +58,37 @@ async fn main() {
             .init();
     }
 
-    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let database_url = env::var("DATABASE_URL")?;
     let listen_addr = env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:3001".into());
-    let llm_provider = env::var("LLM_PROVIDER").expect("LLM_PROVIDER must be set");
-    let llm_api_key = env::var("LLM_API_KEY").expect("LLM_API_KEY must be set");
+    let llm_provider = env::var("LLM_PROVIDER")?;
+    let llm_api_key = env::var("LLM_API_KEY")?;
     let retain_model = env::var("RETAIN_LLM_MODEL")
-        .or_else(|_| env::var("LLM_MODEL"))
-        .expect("RETAIN_LLM_MODEL or LLM_MODEL must be set");
+        .or_else(|_| env::var("LLM_MODEL"))?;
     let reflect_model = env::var("REFLECT_LLM_MODEL")
-        .or_else(|_| env::var("LLM_MODEL"))
-        .expect("REFLECT_LLM_MODEL or LLM_MODEL must be set");
+        .or_else(|_| env::var("LLM_MODEL"))?;
     let llm_base_url = env::var("LLM_BASE_URL").ok();
 
     // 1. Storage — PgPool is internally Arc'd, cheap to clone
-    let pool = sqlx::PgPool::connect(&database_url)
-        .await
-        .expect("failed to connect to database");
+    let pool = sqlx::PgPool::connect(&database_url).await?;
     let store = Arc::new(PgMemoryStore::new(pool.clone()));
-    store.migrate().await.expect("failed to run migrations");
+    store.migrate().await?;
 
     // 2. LLM clients — retain (extraction) and reflect/consolidation (synthesis) can use
     //    different models. RETAIN_LLM_MODEL and REFLECT_LLM_MODEL override LLM_MODEL.
     let retry_policy = RetryPolicy::default();
     let retain_llm: Arc<dyn LlmClient> = Arc::new(RetryingLlmClient::new(
-        Arc::from(make_llm(&llm_provider, &llm_api_key, &retain_model, llm_base_url.clone())),
+        Arc::from(make_llm(&llm_provider, &llm_api_key, &retain_model, llm_base_url.clone())?),
         retry_policy.clone(),
     ));
     let reflect_llm: Arc<dyn LlmClient> = Arc::new(RetryingLlmClient::new(
-        Arc::from(make_llm(&llm_provider, &llm_api_key, &reflect_model, llm_base_url.clone())),
+        Arc::from(make_llm(&llm_provider, &llm_api_key, &reflect_model, llm_base_url.clone())?),
         retry_policy,
     ));
     let emb_config = EmbeddingConfig {
-        provider: match env::var("EMBEDDING_PROVIDER").expect("EMBEDDING_PROVIDER must be set").as_str() {
+        provider: match env::var("EMBEDDING_PROVIDER")?.as_str() {
             "openai" => EmbeddingProvider::OpenAi,
             "local" => EmbeddingProvider::Local,
-            other => panic!("unknown EMBEDDING_PROVIDER: {other} (expected 'local' or 'openai')"),
+            other => return Err(format!("unknown EMBEDDING_PROVIDER: {other}").into()),
         },
         model_path: env::var("EMBEDDING_MODEL_PATH").ok(),
         api_key: env::var("EMBEDDING_API_KEY").ok(),
@@ -100,19 +96,19 @@ async fn main() {
         dimensions: env::var("EMBEDDING_API_DIMS").ok().and_then(|s| s.parse().ok()),
     };
     let embeddings: Arc<dyn EmbeddingClient> =
-        Arc::from(embedding::build_client(&emb_config).expect("failed to create embedding client"));
+        Arc::from(embedding::build_client(&emb_config)?);
 
     // 3. Retain pipeline — uses retain-tier LLM (extraction, can be a fast/cheap model)
     let dedup_threshold: Option<f32> = match env::var("DEDUP_THRESHOLD").as_deref() {
         Ok("none") => None,
-        Ok(s) => Some(s.parse().expect("DEDUP_THRESHOLD must be a float or 'none'")),
+        Ok(s) => Some(s.parse().map_err(|_| format!("DEDUP_THRESHOLD must be a float or 'none', got: {s}"))?),
         Err(_) => Some(0.95),
     };
     let retain = Arc::new(DefaultRetainPipeline::new(
         Box::new(SimpleChunker),
         Box::new(LlmFactExtractor::new(retain_llm.clone())),
         Box::new(LayeredEntityResolver::new(
-            embedding::build_client(&emb_config).expect("embedding client"),
+            embedding::build_client(&emb_config)?,
             retain_llm.clone(),
         )),
         Box::new(DefaultGraphBuilder::new(
@@ -120,7 +116,7 @@ async fn main() {
             GraphConfig::default(),
         )),
         Box::new(PgMemoryStore::new(pool.clone())),
-        embedding::build_client(&emb_config).expect("embedding client"),
+        embedding::build_client(&emb_config)?,
         retain_llm.clone(),
         ChunkConfig {
             max_tokens: 512,
@@ -132,11 +128,11 @@ async fn main() {
 
     // 4. Reranker
     let reranker_config = RerankerConfig {
-        provider: match env::var("RERANKER_PROVIDER").expect("RERANKER_PROVIDER must be set").as_str() {
+        provider: match env::var("RERANKER_PROVIDER")?.as_str() {
             "local" => RerankerProvider::Local,
             "api" => RerankerProvider::Api,
             "none" => RerankerProvider::None,
-            other => panic!("unknown RERANKER_PROVIDER: {other} (expected 'local', 'api', or 'none')"),
+            other => return Err(format!("unknown RERANKER_PROVIDER: {other}").into()),
         },
         model_path: env::var("RERANKER_MODEL_PATH").ok(),
         max_seq_len: env::var("RERANKER_MAX_SEQ_LEN")
@@ -147,8 +143,7 @@ async fn main() {
         api_url: env::var("RERANKER_API_URL").ok(),
         api_model: env::var("RERANKER_API_MODEL").ok(),
     };
-    let reranker = reranker::build_reranker(&reranker_config)
-        .expect("failed to create reranker");
+    let reranker = reranker::build_reranker(&reranker_config)?;
 
     // 5. Recall pipeline
     let retriever_limit: usize = env::var("RETRIEVER_LIMIT")
@@ -242,11 +237,10 @@ async fn main() {
     );
 
     let app = server::router(state).nest_service("/mcp", mcp_service);
-    let listener = tokio::net::TcpListener::bind(&listen_addr)
-        .await
-        .expect("failed to bind listener");
+    let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
     println!("Listening on {listen_addr}");
     println!("  REST API: http://{listen_addr}/v1/");
     println!("  MCP:      http://{listen_addr}/mcp/");
-    axum::serve(listener, app).await.expect("server error");
+    axum::serve(listener, app).await?;
+    Ok(())
 }

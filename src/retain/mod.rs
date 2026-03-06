@@ -249,10 +249,12 @@ impl DefaultRetainPipeline {
                 .collect();
 
             let resolved = if !all_mentions.is_empty() {
+                debug!(chunk = chunk_idx, mentions = all_mentions.len(), "resolving_entities");
                 self.resolver.resolve(&all_mentions, input.bank_id, &*txn).await?
             } else {
                 Vec::new()
             };
+            debug!(chunk = chunk_idx, resolved = resolved.len(), "entities_resolved");
 
             total_entities_resolved += resolved.len();
             for r in &resolved {
@@ -269,6 +271,7 @@ impl DefaultRetainPipeline {
 
             // 2c. Convert ExtractedFact → Fact with resolved entities and embeddings
             let fact_texts: Vec<&str> = extracted.iter().map(|f| f.content.as_str()).collect();
+            debug!(chunk = chunk_idx, texts = fact_texts.len(), "embedding_facts");
             let embeddings = self.embeddings.embed(&fact_texts).await?;
 
             let mut facts = Vec::with_capacity(extracted.len());
@@ -316,14 +319,17 @@ impl DefaultRetainPipeline {
             }
 
             // 2e. Store facts
+            debug!(chunk = chunk_idx, facts = facts.len(), "inserting_facts");
             let ids = txn.insert_facts(&facts).await?;
             all_fact_ids.extend_from_slice(&ids);
 
             // 2f. Build graph links
+            debug!(chunk = chunk_idx, facts = facts.len(), "building_links");
             let links = self
                 .graph_builder
                 .build_links(&facts, input.bank_id, &*txn)
                 .await?;
+            debug!(chunk = chunk_idx, links = links.len(), "links_built");
             total_links += links.len();
 
             // 2g. Opinion reinforcement

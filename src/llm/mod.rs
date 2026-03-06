@@ -8,6 +8,9 @@ pub mod retry;
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 
+/// Default HTTP timeout for LLM API requests (seconds).
+pub const DEFAULT_TIMEOUT_SECS: u64 = 600;
+
 use crate::error::{Error, Result};
 use crate::types::llm::{CompletionRequest, CompletionResponse};
 
@@ -189,7 +192,13 @@ pub(crate) async fn send_and_check(
     let resp = request_builder
         .send()
         .await
-        .map_err(|e| Error::Llm(format!("{provider} request failed: {e}")))?;
+        .map_err(|e| {
+            if e.is_timeout() {
+                Error::ServerError(format!("{provider} request timed out"))
+            } else {
+                Error::Llm(format!("{provider} request failed: {e}"))
+            }
+        })?;
 
     let status = resp.status();
     let resp_text = resp
@@ -245,17 +254,17 @@ pub struct LlmConfig {
 }
 
 /// Build an LLM client from a provider configuration.
-pub fn build_client(config: &ProviderConfig) -> Box<dyn LlmClient> {
+pub fn build_client(config: &ProviderConfig) -> crate::error::Result<Box<dyn LlmClient>> {
     match config.provider {
-        Provider::Anthropic => Box::new(anthropic::AnthropicClient::new(
+        Provider::Anthropic => Ok(Box::new(anthropic::AnthropicClient::new(
             config.api_key.clone(),
             config.model.clone(),
-        )),
-        Provider::OpenAi => Box::new(openai::OpenAiClient::new(
+        )?)),
+        Provider::OpenAi => Ok(Box::new(openai::OpenAiClient::new(
             config.api_key.clone(),
             config.model.clone(),
             config.base_url.clone(),
-        )),
+        )?)),
     }
 }
 

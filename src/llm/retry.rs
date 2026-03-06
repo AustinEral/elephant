@@ -70,10 +70,12 @@ impl LlmClient for RetryingLlmClient {
 
                     if let Some(secs) = wait
                         && attempt < self.policy.max_retries {
-                            eprintln!(
-                                "LLM retry {}/{}: {e}, waiting {secs}s",
-                                attempt + 1,
-                                self.policy.max_retries
+                            tracing::warn!(
+                                attempt = attempt + 1,
+                                max_retries = self.policy.max_retries,
+                                wait_secs = secs,
+                                error = %e,
+                                "llm_retry"
                             );
                             tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
                             last_err = Some(e);

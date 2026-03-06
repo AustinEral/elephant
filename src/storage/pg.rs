@@ -763,7 +763,7 @@ pub struct PgTransactionHandle {
 impl TransactionHandle for PgTransactionHandle {
     async fn commit(self: Box<Self>) -> Result<()> {
         let mut guard = self.txn.lock().await;
-        let txn = guard.take().expect("transaction already consumed");
+        let txn = guard.take().ok_or_else(|| Error::Internal("transaction already consumed".into()))?;
         txn.commit().await?;
         Ok(())
     }
@@ -785,55 +785,55 @@ impl MemoryStore for PgTransactionHandle {
 
     async fn create_bank(&self, bank: &MemoryBank) -> Result<BankId> {
         let mut guard = txn_conn!(self);
-        let txn = guard.as_mut().expect("transaction consumed");
+        let txn = guard.as_mut().ok_or_else(|| Error::Internal("transaction already consumed".into()))?;
         create_bank_impl(txn, bank).await
     }
 
     async fn get_bank(&self, id: BankId) -> Result<MemoryBank> {
         let mut guard = txn_conn!(self);
-        let txn = guard.as_mut().expect("transaction consumed");
+        let txn = guard.as_mut().ok_or_else(|| Error::Internal("transaction already consumed".into()))?;
         get_bank_impl(txn, id).await
     }
 
     async fn insert_facts(&self, facts: &[Fact]) -> Result<Vec<FactId>> {
         let mut guard = txn_conn!(self);
-        let txn = guard.as_mut().expect("transaction consumed");
+        let txn = guard.as_mut().ok_or_else(|| Error::Internal("transaction already consumed".into()))?;
         insert_facts_impl(txn, facts).await
     }
 
     async fn get_facts(&self, ids: &[FactId]) -> Result<Vec<Fact>> {
         let mut guard = txn_conn!(self);
-        let txn = guard.as_mut().expect("transaction consumed");
+        let txn = guard.as_mut().ok_or_else(|| Error::Internal("transaction already consumed".into()))?;
         get_facts_impl(txn, ids).await
     }
 
     async fn get_facts_by_bank(&self, bank: BankId, filter: FactFilter) -> Result<Vec<Fact>> {
         let mut guard = txn_conn!(self);
-        let txn = guard.as_mut().expect("transaction consumed");
+        let txn = guard.as_mut().ok_or_else(|| Error::Internal("transaction already consumed".into()))?;
         get_facts_by_bank_impl(txn, bank, filter).await
     }
 
     async fn upsert_entity(&self, entity: &Entity) -> Result<EntityId> {
         let mut guard = txn_conn!(self);
-        let txn = guard.as_mut().expect("transaction consumed");
+        let txn = guard.as_mut().ok_or_else(|| Error::Internal("transaction already consumed".into()))?;
         upsert_entity_impl(txn, entity).await
     }
 
     async fn find_entity(&self, bank: BankId, name: &str) -> Result<Option<Entity>> {
         let mut guard = txn_conn!(self);
-        let txn = guard.as_mut().expect("transaction consumed");
+        let txn = guard.as_mut().ok_or_else(|| Error::Internal("transaction already consumed".into()))?;
         find_entity_impl(txn, bank, name).await
     }
 
     async fn get_entity_facts(&self, entity: EntityId) -> Result<Vec<Fact>> {
         let mut guard = txn_conn!(self);
-        let txn = guard.as_mut().expect("transaction consumed");
+        let txn = guard.as_mut().ok_or_else(|| Error::Internal("transaction already consumed".into()))?;
         get_entity_facts_impl(txn, entity).await
     }
 
     async fn insert_links(&self, links: &[GraphLink]) -> Result<()> {
         let mut guard = txn_conn!(self);
-        let txn = guard.as_mut().expect("transaction consumed");
+        let txn = guard.as_mut().ok_or_else(|| Error::Internal("transaction already consumed".into()))?;
         insert_links_impl(txn, links).await
     }
 
@@ -843,7 +843,7 @@ impl MemoryStore for PgTransactionHandle {
         link_type: Option<LinkType>,
     ) -> Result<Vec<(FactId, f32, LinkType)>> {
         let mut guard = txn_conn!(self);
-        let txn = guard.as_mut().expect("transaction consumed");
+        let txn = guard.as_mut().ok_or_else(|| Error::Internal("transaction already consumed".into()))?;
         get_neighbors_impl(txn, fact_id, link_type).await
     }
 
@@ -855,13 +855,13 @@ impl MemoryStore for PgTransactionHandle {
         network_filter: Option<&[NetworkType]>,
     ) -> Result<Vec<ScoredFact>> {
         let mut guard = txn_conn!(self);
-        let txn = guard.as_mut().expect("transaction consumed");
+        let txn = guard.as_mut().ok_or_else(|| Error::Internal("transaction already consumed".into()))?;
         vector_search_impl(txn, embedding, bank, limit, network_filter).await
     }
 
     async fn update_fact(&self, fact: &Fact) -> Result<()> {
         let mut guard = txn_conn!(self);
-        let txn = guard.as_mut().expect("transaction consumed");
+        let txn = guard.as_mut().ok_or_else(|| Error::Internal("transaction already consumed".into()))?;
         update_fact_impl(txn, fact).await
     }
 
@@ -873,13 +873,13 @@ impl MemoryStore for PgTransactionHandle {
         network_filter: Option<&[NetworkType]>,
     ) -> Result<Vec<ScoredFact>> {
         let mut guard = txn_conn!(self);
-        let txn = guard.as_mut().expect("transaction consumed");
+        let txn = guard.as_mut().ok_or_else(|| Error::Internal("transaction already consumed".into()))?;
         keyword_search_impl(txn, query, bank, limit, network_filter).await
     }
 
     async fn list_entities(&self, bank: BankId) -> Result<Vec<Entity>> {
         let mut guard = txn_conn!(self);
-        let txn = guard.as_mut().expect("transaction consumed");
+        let txn = guard.as_mut().ok_or_else(|| Error::Internal("transaction already consumed".into()))?;
         list_entities_impl(txn, bank).await
     }
 
@@ -889,13 +889,13 @@ impl MemoryStore for PgTransactionHandle {
         at: chrono::DateTime<chrono::Utc>,
     ) -> Result<()> {
         let mut guard = txn_conn!(self);
-        let txn = guard.as_mut().expect("transaction consumed");
+        let txn = guard.as_mut().ok_or_else(|| Error::Internal("transaction already consumed".into()))?;
         mark_consolidated_impl(txn, ids, at).await
     }
 
     async fn list_banks(&self) -> Result<Vec<MemoryBank>> {
         let mut guard = txn_conn!(self);
-        let txn = guard.as_mut().expect("transaction consumed");
+        let txn = guard.as_mut().ok_or_else(|| Error::Internal("transaction already consumed".into()))?;
         list_banks_impl(txn).await
     }
 }

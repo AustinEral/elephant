@@ -20,12 +20,21 @@ pub struct AnthropicClient {
 
 impl AnthropicClient {
     /// Create a new Anthropic client.
-    pub fn new(api_key: String, model: String) -> Self {
-        Self {
-            client: Client::new(),
+    pub fn new(api_key: String, model: String) -> Result<Self> {
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(
+                std::env::var("LLM_TIMEOUT_SECS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(super::DEFAULT_TIMEOUT_SECS),
+            ))
+            .build()
+            .map_err(|e| crate::error::Error::Internal(e.to_string()))?;
+        Ok(Self {
+            client,
             api_key,
             default_model: model,
-        }
+        })
     }
 }
 
@@ -240,7 +249,7 @@ mod tests {
         let _ = dotenvy::dotenv();
         let api_key =
             std::env::var("LLM_API_KEY").expect("LLM_API_KEY must be set");
-        let client = AnthropicClient::new(api_key, std::env::var("LLM_MODEL").or_else(|_| std::env::var("RETAIN_LLM_MODEL")).expect("LLM_MODEL or RETAIN_LLM_MODEL must be set"));
+        let client = AnthropicClient::new(api_key, std::env::var("LLM_MODEL").or_else(|_| std::env::var("RETAIN_LLM_MODEL")).expect("LLM_MODEL or RETAIN_LLM_MODEL must be set")).unwrap();
 
         let request = CompletionRequest {
             model: String::new(),
@@ -266,7 +275,7 @@ mod tests {
 
         let api_key =
             std::env::var("LLM_API_KEY").expect("LLM_API_KEY must be set");
-        let client = AnthropicClient::new(api_key, std::env::var("LLM_MODEL").or_else(|_| std::env::var("RETAIN_LLM_MODEL")).expect("LLM_MODEL or RETAIN_LLM_MODEL must be set"));
+        let client = AnthropicClient::new(api_key, std::env::var("LLM_MODEL").or_else(|_| std::env::var("RETAIN_LLM_MODEL")).expect("LLM_MODEL or RETAIN_LLM_MODEL must be set")).unwrap();
 
         #[derive(Deserialize, Debug)]
         struct Color {

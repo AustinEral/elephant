@@ -20,13 +20,22 @@ pub struct OpenAiClient {
 
 impl OpenAiClient {
     /// Create a new OpenAI client with optional base URL for compatible providers.
-    pub fn new(api_key: String, model: String, base_url: Option<String>) -> Self {
-        Self {
-            client: Client::new(),
+    pub fn new(api_key: String, model: String, base_url: Option<String>) -> Result<Self> {
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(
+                std::env::var("LLM_TIMEOUT_SECS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(super::DEFAULT_TIMEOUT_SECS),
+            ))
+            .build()
+            .map_err(|e| crate::error::Error::Internal(e.to_string()))?;
+        Ok(Self {
+            client,
             api_key,
             default_model: model,
             base_url: base_url.unwrap_or_else(|| API_URL.to_string()),
-        }
+        })
     }
 }
 
@@ -283,7 +292,7 @@ mod tests {
     async fn integration_simple_prompt() {
         let _ = dotenvy::dotenv();
         let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
-        let client = OpenAiClient::new(api_key, std::env::var("LLM_MODEL").expect("LLM_MODEL must be set"), None);
+        let client = OpenAiClient::new(api_key, std::env::var("LLM_MODEL").expect("LLM_MODEL must be set"), None).unwrap();
 
         let request = CompletionRequest {
             messages: vec![Message::text("user", "Say hello in exactly 3 words.")],
@@ -304,7 +313,7 @@ mod tests {
         use serde::Deserialize;
 
         let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
-        let client = OpenAiClient::new(api_key, std::env::var("LLM_MODEL").expect("LLM_MODEL must be set"), None);
+        let client = OpenAiClient::new(api_key, std::env::var("LLM_MODEL").expect("LLM_MODEL must be set"), None).unwrap();
 
         #[derive(Deserialize, Debug)]
         struct Color {

@@ -4,6 +4,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Serialize;
+use tracing::error;
 
 use crate::error::Error;
 
@@ -26,10 +27,10 @@ impl IntoResponse for Error {
             Error::Storage(_) | Error::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
-        let body = ErrorBody {
-            error: self.to_string(),
-        };
+        let msg = self.to_string();
+        error!(status = status.as_u16(), error = msg.as_str(), "request_error");
 
+        let body = ErrorBody { error: msg };
         (status, Json(body)).into_response()
     }
 }
