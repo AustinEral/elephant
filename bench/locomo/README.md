@@ -88,10 +88,10 @@ Single conversation (conv-26), 154 questions, with consolidation:
 | Category | Accuracy | n |
 |---|---|---|
 | multi-hop | 97.3% | 37 |
-| open-domain | 87.1% | 70 |
-| temporal | 84.6% | 13 |
-| single-hop | 81.3% | 32 |
+| temporal | 92.3% | 13 |
+| open-domain | 85.7% | 70 |
+| single-hop | 84.4% | 32 |
 | unanswerable | 100.0% | 2 |
-| **TOTAL** | **88.3%** | **154** |
+| **TOTAL** | **89.0%** | **154** |
 
 Model: Sonnet 4.6, Judge: Sonnet 4.6, Embeddings: bge-small-en-v1.5 (local), Reranker: ms-marco-MiniLM-L-6-v2 (local)
