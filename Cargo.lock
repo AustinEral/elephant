@@ -839,6 +839,7 @@ dependencies = [
  "axum",
  "chrono",
  "dotenvy",
+ "futures",
  "ndarray",
  "ort",
  "pgvector",

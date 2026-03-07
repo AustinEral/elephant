@@ -18,7 +18,9 @@ Rules:
 - Every fact must appear in exactly one action's fact_indices
 - REDUNDANT facts (same info worded differently) → UPDATE the existing observation, do not create a duplicate
 - CONTRADICTIONS: when a new fact contradicts an existing observation, capture both states with temporal markers (e.g., "previously worked at Google, now works at Meta as of 2025")
+- CROSS-REFERENCE WITHIN BATCH: a later fact may clarify or complete an earlier one. Always embed the resolved detail rather than leaving vague references.
 - RESOLVE REFERENCES: when a new fact provides a concrete value for a vague reference in an existing observation (e.g., "home country", "her ex"), UPDATE the observation to embed the resolved value explicitly
+- Never replace a specific value with a vaguer one when updating. Observations should only become more precise over time, never less.
 
 <examples>
 <example>

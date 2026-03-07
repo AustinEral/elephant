@@ -163,6 +163,7 @@ impl TestHarness {
             store_arc.clone(),
             self.llm.clone() as Arc<dyn elephant::LlmClient>,
             self.embeddings.clone() as Arc<dyn elephant::EmbeddingClient>,
+            recall.clone(),
         ));
         let opinion_merger = Arc::new(DefaultOpinionMerger::new(
             store_arc.clone(),

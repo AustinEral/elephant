@@ -9,16 +9,18 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
+use futures::future::join_all;
 use serde::Deserialize;
 use tracing::{debug, info, warn, info_span, Instrument};
 
 use crate::embedding::EmbeddingClient;
 use crate::error::Result;
 use crate::llm::{complete_structured, LlmClient};
+use crate::recall::RecallPipeline;
 use crate::storage::MemoryStore;
 use crate::types::id::{BankId, FactId};
 use crate::types::llm::{CompletionRequest, Message};
-use crate::types::{ConsolidationReport, Fact, FactFilter, FactType, NetworkType, TemporalRange};
+use crate::types::{ConsolidationReport, Fact, FactFilter, FactType, NetworkType, RecallQuery, TemporalRange};
 
 /// Consolidates raw facts into topic-scoped observations.
 #[async_trait]
@@ -32,6 +34,7 @@ pub struct DefaultConsolidator {
     store: Arc<dyn MemoryStore>,
     llm: Arc<dyn LlmClient>,
     embeddings: Arc<dyn EmbeddingClient>,
+    recall: Arc<dyn RecallPipeline>,
 }
 
 impl DefaultConsolidator {
@@ -40,11 +43,13 @@ impl DefaultConsolidator {
         store: Arc<dyn MemoryStore>,
         llm: Arc<dyn LlmClient>,
         embeddings: Arc<dyn EmbeddingClient>,
+        recall: Arc<dyn RecallPipeline>,
     ) -> Self {
         Self {
             store,
             llm,
             embeddings,
+            recall,
         }
     }
 }
@@ -76,6 +81,13 @@ fn max_tokens() -> usize {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(4096)
+}
+
+fn recall_budget() -> usize {
+    std::env::var("CONSOLIDATION_RECALL_BUDGET")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2000)
 }
 
 /// Merge temporal ranges from source facts into an existing range using LEAST(start)/GREATEST(end).
@@ -145,20 +157,30 @@ impl DefaultConsolidator {
         let total_batches = unconsolidated.len().div_ceil(bs);
         for (batch_idx, batch) in unconsolidated.chunks(bs).enumerate() {
             debug!(batch = batch_idx + 1, total_batches, facts = batch.len(), "processing batch");
-            // 3a. Per-fact recall: search for related observations using each fact's embedding,
-            // then union/dedup the results.
+            // 3a. Per-fact recall: full pipeline (semantic + keyword + graph + temporal)
+            // for each fact in parallel, then union/dedup the results.
+            let budget = recall_budget();
+            let recall_futures: Vec<_> = batch.iter().map(|fact| {
+                let recall = self.recall.clone();
+                let query = RecallQuery {
+                    bank_id,
+                    query: fact.content.clone(),
+                    budget_tokens: budget,
+                    network_filter: Some(vec![NetworkType::Observation]),
+                    temporal_anchor: fact.temporal_range.clone(),
+                };
+                async move { recall.recall(&query).await }
+            }).collect();
+
+            let recall_results = join_all(recall_futures).await;
+
             let mut seen_obs_ids = std::collections::HashSet::new();
             let mut related_observations = Vec::new();
-
-            for fact in batch {
-                if let Some(ref emb) = fact.embedding {
-                    let results = self.store.vector_search(emb, bank_id, 5, None).await?;
-                    for sf in results {
-                        if sf.fact.network == NetworkType::Observation
-                            && seen_obs_ids.insert(sf.fact.id)
-                        {
-                            related_observations.push(sf.fact);
-                        }
+            for result in recall_results {
+                let result = result?;
+                for sf in result.facts {
+                    if seen_obs_ids.insert(sf.fact.id) {
+                        related_observations.push(sf.fact);
                     }
                 }
             }
@@ -307,6 +329,29 @@ mod tests {
     use crate::embedding::mock::MockEmbeddings;
     use crate::llm::mock::MockLlmClient;
     use crate::storage::mock::MockMemoryStore;
+    use crate::types::{RecallResult, ScoredFact, RetrievalSource};
+
+    /// Mock recall pipeline that returns Observation facts from the store via vector_search.
+    struct MockRecallPipeline {
+        store: Arc<MockMemoryStore>,
+    }
+
+    #[async_trait]
+    impl RecallPipeline for MockRecallPipeline {
+        async fn recall(&self, query: &RecallQuery) -> Result<RecallResult> {
+            // Return all observations in the bank (simple mock)
+            let all = self.store.get_facts_by_bank(query.bank_id, FactFilter {
+                network: Some(vec![NetworkType::Observation]),
+                ..Default::default()
+            }).await?;
+            let facts = all.into_iter().map(|f| ScoredFact {
+                fact: f,
+                score: 1.0,
+                sources: vec![RetrievalSource::Semantic],
+            }).collect();
+            Ok(RecallResult { facts, total_tokens: 0 })
+        }
+    }
 
     fn setup() -> (Arc<MockMemoryStore>, Arc<MockLlmClient>, Arc<MockEmbeddings>) {
         (
@@ -345,6 +390,7 @@ mod tests {
             store.clone() as Arc<dyn MemoryStore>,
             llm.clone() as Arc<dyn LlmClient>,
             embeddings.clone() as Arc<dyn EmbeddingClient>,
+            Arc::new(MockRecallPipeline { store: store.clone() }) as Arc<dyn RecallPipeline>,
         )
     }
 

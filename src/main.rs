@@ -186,6 +186,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         store.clone(),
         reflect_llm.clone(),
         embeddings.clone(),
+        recall.clone(),
     ));
     let opinion_merger = Arc::new(DefaultOpinionMerger::new(
         store.clone(),

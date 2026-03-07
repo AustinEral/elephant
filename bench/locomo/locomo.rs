@@ -516,6 +516,8 @@ struct Args {
     /// Send raw dataset JSON per session instead of formatted text.
     /// Includes all fields (query, img_url, dia_id) beyond what the LoCoMo paper specifies.
     raw_json: bool,
+    /// When used with --resume, delete observations and reset consolidated_at before re-consolidating.
+    reconsolidate: bool,
 }
 
 fn parse_args() -> Args {
@@ -536,6 +538,7 @@ fn parse_args() -> Args {
         resume: None,
         ingest_only: false,
         raw_json: false,
+        reconsolidate: false,
     };
 
     let raw: Vec<String> = env::args().collect();
@@ -602,6 +605,9 @@ fn parse_args() -> Args {
             "--raw-json" => {
                 args.raw_json = true;
             }
+            "--reconsolidate" => {
+                args.reconsolidate = true;
+            }
             "--help" | "-h" => {
                 eprintln!("Usage: locomo-bench [OPTIONS]");
                 eprintln!();
@@ -643,6 +649,9 @@ fn parse_args() -> Args {
                 );
                 eprintln!(
                     "  --raw-json                      Send raw dataset JSON (includes extra metadata)"
+                );
+                eprintln!(
+                    "  --reconsolidate                 With --resume: delete observations & re-consolidate"
                 );
                 std::process::exit(0);
             }
@@ -1070,6 +1079,20 @@ async fn main() {
 
     let judge_label = format!("{judge_provider_str}/{judge_model}");
     println!("LLM judge: {judge_label}");
+    // Reset consolidation state if --reconsolidate
+    if args.reconsolidate {
+        let resume_path = args.resume.as_ref().expect("--reconsolidate requires --resume");
+        println!("Resetting consolidation state...");
+        let status = std::process::Command::new("cargo")
+            .args(["run", "--bin", "reset-consolidation", "--", resume_path.to_str().unwrap()])
+            .status()
+            .expect("failed to run reset-consolidation");
+        if !status.success() {
+            eprintln!("reset-consolidation failed");
+            std::process::exit(1);
+        }
+    }
+
     // Load bank IDs from a previous run (--resume)
     let resume_banks: HashMap<String, String> = if let Some(ref path) = args.resume {
         let raw = fs::read_to_string(path).expect("failed to read resume file");
