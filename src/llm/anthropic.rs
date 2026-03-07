@@ -10,17 +10,40 @@ use crate::types::llm::{CompletionRequest, CompletionResponse, ToolCall, ToolCho
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+const OAUTH_BETA: &str = "oauth-2025-04-20";
+
+/// Authentication mode for the Anthropic API.
+#[derive(Debug, Clone)]
+pub enum AnthropicAuth {
+    /// Standard API key (x-api-key header).
+    ApiKey(String),
+    /// Claude Code OAuth token (Bearer auth + oauth beta header).
+    /// Auto-detected from `sk-ant-oat` prefix.
+    OAuth(String),
+}
+
+impl AnthropicAuth {
+    /// Create from a token string, auto-detecting OAuth from prefix.
+    pub fn from_token(token: String) -> Self {
+        if token.starts_with("sk-ant-oat") {
+            Self::OAuth(token)
+        } else {
+            Self::ApiKey(token)
+        }
+    }
+}
 
 /// Client for the Anthropic Claude Messages API.
 pub struct AnthropicClient {
     client: Client,
-    api_key: String,
+    auth: AnthropicAuth,
     default_model: String,
 }
 
 impl AnthropicClient {
-    /// Create a new Anthropic client.
+    /// Create a new Anthropic client. Auto-detects OAuth from token prefix.
     pub fn new(api_key: String, model: String) -> Result<Self> {
+        let auth = AnthropicAuth::from_token(api_key);
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(
                 std::env::var("LLM_TIMEOUT_SECS")
@@ -32,7 +55,7 @@ impl AnthropicClient {
             .map_err(|e| crate::error::Error::Internal(e.to_string()))?;
         Ok(Self {
             client,
-            api_key,
+            auth,
             default_model: model,
         })
     }
@@ -54,6 +77,7 @@ struct AnthropicRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<AnthropicToolChoice>,
 }
+
 
 #[derive(Serialize)]
 struct AnthropicTool {
@@ -183,22 +207,30 @@ impl LlmClient for AnthropicClient {
             ToolChoice::Specific(name) => AnthropicToolChoice::Tool { name },
         });
 
+        let system = request.system;
+
         let body = AnthropicRequest {
             model,
             messages,
             max_tokens: request.max_tokens.unwrap_or(4096),
             temperature: request.temperature,
-            system: request.system,
+            system,
             tools,
             tool_choice,
         };
 
+        let mut req = self.client.post(ANTHROPIC_API_URL);
+
+        req = match &self.auth {
+            AnthropicAuth::ApiKey(key) => req.header("x-api-key", key),
+            AnthropicAuth::OAuth(token) => req
+                .header("Authorization", format!("Bearer {token}"))
+                .header("anthropic-beta", OAUTH_BETA),
+        };
+
         let resp_text = super::send_and_check(
             "Anthropic",
-            self.client
-                .post(ANTHROPIC_API_URL)
-                .header("x-api-key", &self.api_key)
-                .header("anthropic-version", ANTHROPIC_VERSION)
+            req.header("anthropic-version", ANTHROPIC_VERSION)
                 .header("content-type", "application/json")
                 .json(&body),
         )
@@ -295,5 +327,28 @@ mod tests {
         let color: Color = complete_structured(&client, request).await.unwrap();
         assert!(!color.name.is_empty());
         assert!(color.hex.starts_with('#'));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LLM_API_KEY"]
+    async fn integration_oauth() {
+        let _ = dotenvy::dotenv();
+        let api_key = std::env::var("LLM_API_KEY").expect("LLM_API_KEY must be set");
+        assert!(api_key.starts_with("sk-ant-oat"), "this test requires an OAuth token (sk-ant-oat...)");
+        let client = AnthropicClient::new(api_key, "claude-sonnet-4-20250514".into()).unwrap();
+
+        let request = CompletionRequest {
+            model: String::new(),
+            messages: vec![Message::text("user", "Say hello in exactly 3 words.")],
+            max_tokens: Some(64),
+            temperature: Some(0.0),
+            system: None,
+            ..Default::default()
+        };
+
+        let resp = client.complete(request).await.unwrap();
+        println!("OAuth response: {}", resp.content);
+        assert!(!resp.content.is_empty());
+        assert!(resp.input_tokens > 0);
     }
 }
