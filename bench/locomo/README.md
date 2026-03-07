@@ -52,6 +52,7 @@ cargo run --release --bin view -- bench/locomo/results/quick.json bench/locomo/r
 | `--resume <path>` | Reuse bank IDs from previous results (skip ingestion) | |
 | `--bank-id <id>` | Reuse a specific bank (skip ingestion) | |
 | `--ingest-only` | Ingest and consolidate only, skip questions | off |
+| `--raw-json` | Send raw dataset JSON per session (see below) | off |
 | `--judge-model <name>` | Override judge model | from env |
 | `--api-url <url>` | Elephant server URL | `http://localhost:3001` |
 | `--data <path>` | Dataset path | `data/locomo10.json` |
@@ -76,6 +77,14 @@ cargo run --release --bin view -- --conv conv-26 bench/locomo/results/reranker.j
 |---|---|
 | `--conv <id>` | Filter results to a single conversation |
 
+## Image handling
+
+The LoCoMo dataset includes images shared during conversations. Per the [paper's evaluation protocol](https://arxiv.org/abs/2402.17753), images are replaced with their BLIP-2 captions inline in the conversation text. This is the default behavior.
+
+### `--raw-json` mode
+
+Some competing implementations send the raw dataset JSON per session, which includes extra metadata fields (`query`, `img_url`, `dia_id`) beyond what the LoCoMo paper specifies as fair input. In particular, the `query` field contains the image search term used during dataset construction, which often directly answers benchmark questions. The `--raw-json` flag reproduces this behavior for comparison purposes.
+
 ## Scoring
 
 - **LLM-as-judge** (primary): Binary CORRECT/WRONG via the configured LLM.
@@ -87,11 +96,11 @@ Single conversation (conv-26), 154 questions, with consolidation:
 
 | Category | Accuracy | n |
 |---|---|---|
-| multi-hop | 97.3% | 37 |
-| temporal | 92.3% | 13 |
-| open-domain | 85.7% | 70 |
-| single-hop | 84.4% | 32 |
+| temporal | 100.0% | 13 |
+| multi-hop | 91.9% | 37 |
+| open-domain | 91.4% | 70 |
+| single-hop | 81.2% | 32 |
 | unanswerable | 100.0% | 2 |
-| **TOTAL** | **89.0%** | **154** |
+| **TOTAL** | **90.3%** | **154** |
 
 Model: Sonnet 4.6, Judge: Sonnet 4.6, Embeddings: bge-small-en-v1.5 (local), Reranker: ms-marco-MiniLM-L-6-v2 (local)

@@ -47,6 +47,7 @@ struct Conversation {
 struct Turn {
     speaker: String,
     text: String,
+    blip_caption: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -256,9 +257,27 @@ fn parse_session_date(date_str: &str) -> String {
 fn format_session(turns: &[Turn], session_date: &str) -> String {
     let mut lines = vec![format!("[{session_date}]")];
     for turn in turns {
-        lines.push(format!("{}: {}", turn.speaker, turn.text));
+        match &turn.blip_caption {
+            Some(caption) => lines.push(format!(
+                "{}: {} [Image: {}]",
+                turn.speaker, turn.text, caption
+            )),
+            None => lines.push(format!("{}: {}", turn.speaker, turn.text)),
+        }
     }
     lines.join("\n")
+}
+
+/// Raw JSON mode: sends the unmodified dataset JSON for each session.
+/// This includes all fields (blip_caption, query, img_url, dia_id, etc.).
+/// Some benchmarking implementations use this approach, which leaks dataset
+/// metadata beyond what the LoCoMo paper specifies as fair input.
+fn format_session_raw(conv: &Conversation, idx: usize) -> String {
+    let key = format!("session_{idx}");
+    conv.sessions
+        .get(&key)
+        .map(|v| v.to_string())
+        .unwrap_or_default()
 }
 
 fn session_count(conv: &Conversation) -> usize {
@@ -494,6 +513,9 @@ struct Args {
     resume: Option<PathBuf>,
     /// Ingest only — skip question phase (useful for separating ingestion from evaluation).
     ingest_only: bool,
+    /// Send raw dataset JSON per session instead of formatted text.
+    /// Includes all fields (query, img_url, dia_id) beyond what the LoCoMo paper specifies.
+    raw_json: bool,
 }
 
 fn parse_args() -> Args {
@@ -513,6 +535,7 @@ fn parse_args() -> Args {
         consolidate_per_session: false,
         resume: None,
         ingest_only: false,
+        raw_json: false,
     };
 
     let raw: Vec<String> = env::args().collect();
@@ -576,6 +599,9 @@ fn parse_args() -> Args {
             "--ingest-only" => {
                 args.ingest_only = true;
             }
+            "--raw-json" => {
+                args.raw_json = true;
+            }
             "--help" | "-h" => {
                 eprintln!("Usage: locomo-bench [OPTIONS]");
                 eprintln!();
@@ -614,6 +640,9 @@ fn parse_args() -> Args {
                 );
                 eprintln!(
                     "  --ingest-only                   Ingest only, skip question phase"
+                );
+                eprintln!(
+                    "  --raw-json                      Send raw dataset JSON (includes extra metadata)"
                 );
                 std::process::exit(0);
             }
@@ -675,6 +704,7 @@ async fn run_conversation(
     consolidate_per_session: bool,
     reuse_bank: Option<String>,
     ingest_only: bool,
+    raw_json: bool,
     shared: Arc<Mutex<SharedResults>>,
 ) -> Result<(), String> {
     let conv = &entry.conversation;
@@ -709,7 +739,11 @@ async fn run_conversation(
             let turns = get_session_turns(conv, idx);
             let date_str = get_session_date(conv, idx);
             let timestamp = parse_session_date(&date_str);
-            let text = format_session(&turns, &date_str);
+            let text = if raw_json {
+                format_session_raw(conv, idx)
+            } else {
+                format_session(&turns, &date_str)
+            };
 
             let t0 = Instant::now();
             let resp: RetainResponse = match api_post_retry(
@@ -1106,10 +1140,11 @@ async fn main() {
         let tag = format!("conv {}/{total_convs}", conv_idx + 1);
         let shared = shared.clone();
         let ingest_only = args.ingest_only;
+        let raw_json = args.raw_json;
 
         handles.push(tokio::spawn(async move {
             let _permit = sem.acquire().await.map_err(|e| format!("semaphore closed: {e}"))?;
-            run_conversation(tag, http, api_url, entry, judge, max_sessions, max_questions, question_concurrency, consolidate, consolidate_per_session, reuse_bank, ingest_only, shared).await
+            run_conversation(tag, http, api_url, entry, judge, max_sessions, max_questions, question_concurrency, consolidate, consolidate_per_session, reuse_bank, ingest_only, raw_json, shared).await
         }));
     }
 
