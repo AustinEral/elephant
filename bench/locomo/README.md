@@ -31,7 +31,7 @@ docker compose up -d
 # Quick smoke test
 cargo run --release --bin locomo-bench -- --tag quick --max-conversations 1 --max-sessions 1 --max-questions 5
 
-# Full benchmark (all 10 conversations, ~2000 questions)
+# Full benchmark (all 10 conversations, 1,540 questions Cat.1-4)
 cargo run --release --bin locomo-bench -- --tag baseline
 
 # Compare two runs

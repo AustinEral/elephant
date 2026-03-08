@@ -12,7 +12,7 @@
   <img src="https://img.shields.io/badge/license-MIT%2FApache--2.0-green" alt="License">
 </p>
 
-<p align="center"><b>94.2% accuracy</b> on <a href="bench/locomo/README.md">LoCoMo</a> (conv-26, 154 questions) · <b>100%</b> temporal reasoning</p>
+<p align="center"><b>94.2% accuracy</b> on <a href="bench/locomo/README.md">LoCoMo</a> (conv-26, 154 questions, Cat.1–4) · <b>100%</b> temporal reasoning</p>
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> · <a href="#how-it-works">How It Works</a> · <a href="#features">Features</a> · <a href="#benchmarks">Benchmarks</a>

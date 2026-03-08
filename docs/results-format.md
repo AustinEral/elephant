@@ -1,6 +1,6 @@
-# Benchmark Results Schema
+# Benchmark Results Format
 
-JSON schema for benchmark output files in `bench/locomo/results/`.
+JSON format for benchmark output files in `bench/locomo/results/`.
 
 ## Top-level structure
 
