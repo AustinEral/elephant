@@ -63,7 +63,7 @@ Per the [LoCoMo evaluation protocol](https://arxiv.org/abs/2402.17753), images a
 | Secondary metric | Token F1 (reference only, not used for ranking) |
 | Judge model | Configurable via `JUDGE_MODEL` (defaults to `LLM_MODEL`) |
 | Judge temperature | 0 |
-| Judge prompt | Binary correctness assessment — does the hypothesis match the gold answer? |
+| Judge prompt | [`bench/locomo/judge_answer.txt`](/bench/locomo/judge_answer.txt) — binary correctness with tolerance for format differences |
 
 ## Scoring
 
@@ -94,4 +94,4 @@ cargo run --release --bin locomo-bench -- --tag conv26 --max-conversations 1 --q
 cargo run --release --bin view -- bench/locomo/results/full.json
 ```
 
-All results saved as JSON in `bench/locomo/results/`. Schema defined in [results-schema.md](results-schema.md).
+All results saved as JSON in `bench/locomo/results/`. Schema defined in [results-format.md](results-format.md).

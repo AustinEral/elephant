@@ -2,9 +2,11 @@
 
 Evaluates long-term conversational memory using the [LoCoMo dataset](https://arxiv.org/abs/2402.17753) (ACL 2024).
 
-**Categories**: single-hop, multi-hop, temporal, open-domain, unanswerable
+**LoCoMo Categories (1–4)**: single-hop, multi-hop, temporal, open-domain. Category 5 (adversarial) excluded, consistent with Mnemis, Backboard, and other recent systems. Full Cat.1–4 dataset contains 1,540 questions across 10 conversations.
 
 **Pipeline**: Ingest sessions → consolidate → ask questions via reflect → score with LLM judge
+
+**Protocol**: See [docs/benchmark-protocol.md](/docs/benchmark-protocol.md) for full methodology.
 
 ## Setup
 
@@ -92,15 +94,18 @@ Some competing implementations send the raw dataset JSON per session, which incl
 
 ## Results
 
-Single conversation (conv-26), 154 questions, with consolidation:
+Single conversation (conv-26), 154 questions, Cat.1–4 only, with consolidation:
 
 | Category | Accuracy | n |
 |---|---|---|
-| temporal | 100.0% | 13 |
-| multi-hop | 94.6% | 37 |
-| open-domain | 94.3% | 70 |
-| single-hop | 90.6% | 32 |
-| unanswerable | 100.0% | 2 |
-| **TOTAL** | **94.2%** | **154** |
+| Temporal | 100.0% | 13 |
+| Multi-hop | 94.6% | 37 |
+| Open-domain | 94.3% | 70 |
+| Single-hop | 90.6% | 32 |
+| **Overall** | **94.2%** | **154** |
+
+Local answer subtypes: unanswerable 100.0% (2/2)
 
 Model: Sonnet 4.6, Judge: Sonnet 4.6, Embeddings: bge-small-en-v1.5 (local), Reranker: ms-marco-MiniLM-L-6-v2 (local)
+
+See [full result card](/docs/bench-result-card.md) for complete metadata and caveats.

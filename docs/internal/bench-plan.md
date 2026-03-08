@@ -17,7 +17,7 @@ Protocol reference: [benchmark-protocol.md](benchmark-protocol.md)
 | [benchmark-protocol.md](benchmark-protocol.md) | Single source of truth for methodology |
 | [bench-result-card.md](bench-result-card.md) | Current result with all metadata |
 | [bench-competitors.md](bench-competitors.md) | Competitive landscape and comparison policy |
-| [results-schema.md](results-schema.md) | Machine-readable output format |
+| [results-format.md](results-format.md) | Results JSON format documentation |
 | `bench/locomo/results/*.json` | Raw results |
 
 ### Internal (dev-only)
@@ -78,5 +78,5 @@ Format results for README, blog post, or paper. Include:
 | Mnemis | 93.9 | Beat on full run |
 | EverMemOS | 93.05 | Beat on full run |
 | Long-context GPT-5-mini | 92.85 | Beat (proves memory adds value) |
-| Backboard | 90.00 | Already above on conv-26 |
-| Hindsight | 89.61 | Already above on conv-26 |
+| Backboard | 90.00 | Above on conv-26 slice; not directly comparable yet |
+| Hindsight | 89.61 | Above on conv-26 slice; not directly comparable yet |

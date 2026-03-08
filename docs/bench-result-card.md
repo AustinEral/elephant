@@ -49,7 +49,7 @@ Local subtypes: unanswerable 100.0% (2/2)
 
 ### Variance
 
-Not yet measured. A judge-only rerun and a full rerun are planned to establish variance bounds. Backboard's benchmark notes 2-3% variance across runs with GPT-4.1 as judge; similar variance expected here.
+Not yet measured. A judge-only rerun and a full rerun are planned to establish variance bounds. For reference, Backboard's benchmark notes 2-3% variance across runs with GPT-4.1 as judge; our variance is unknown until measured.
 
 ### Reproduction
 
@@ -72,7 +72,7 @@ cargo run --release --bin locomo-bench -- \
 ```
 
 Results JSON: `bench/locomo/results/temporal-consolidation.json`
-Schema: [results-schema.md](results-schema.md)
+Schema: [results-format.md](results-format.md)
 
 ### Caveats
 

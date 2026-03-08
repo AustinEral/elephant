@@ -12,7 +12,7 @@
   <img src="https://img.shields.io/badge/license-MIT%2FApache--2.0-green" alt="License">
 </p>
 
-<p align="center"><b>94.2% accuracy</b> on <a href="bench/locomo/README.md">LoCoMo</a> · <b>100%</b> temporal reasoning</p>
+<p align="center"><b>94.2% accuracy</b> on <a href="bench/locomo/README.md">LoCoMo</a> (conv-26, 154 questions) · <b>100%</b> temporal reasoning</p>
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> · <a href="#how-it-works">How It Works</a> · <a href="#features">Features</a> · <a href="#benchmarks">Benchmarks</a>
@@ -127,9 +127,10 @@ flowchart TB
 | **Open-domain** | 94.3% | General knowledge grounded in conversation history |
 | **Single-hop** | 90.6% | Direct fact retrieval from a single memory |
 | | | |
-| **Overall** | **94.2%** | **154 questions across all categories** |
+| | | |
+| **Overall** | **94.2%** | **154 questions, conv-26 only (Cat.1–4)** |
 
-<sub>Sonnet 4.6 · bge-small-en-v1.5 local embeddings · <a href="bench/README.md">reproduce these results</a></sub>
+<sub>Sonnet 4.6 · bge-small-en-v1.5 local embeddings · <a href="docs/benchmark-protocol.md">protocol</a> · <a href="docs/bench-result-card.md">full result card</a></sub>
 
 ## References
 

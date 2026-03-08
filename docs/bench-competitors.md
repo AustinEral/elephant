@@ -15,20 +15,20 @@ Protocol reference: [benchmark-protocol.md](benchmark-protocol.md)
 
 Systems ranked by published LoCoMo accuracy (Cat.1-4 unless noted):
 
-| Rank | System | Score | Backbone | Evidence Type | Protocol Notes | Cost Data | Source |
-|---:|---|---:|---|---|---|---|---|
-| 1 | **Mnemis** | 93.9 | GPT-4.1-mini | Self-reported paper | LLM-as-judge, Cat.5 excluded | Yes (56M tokens) | [arXiv:2602.15313](https://arxiv.org/pdf/2602.15313) |
-| 2 | **EverMemOS** | 93.05 | GPT-4.1-mini | Self-reported paper | Stage-by-stage token table | Yes (22M tokens) | [arXiv:2601.02163](https://arxiv.org/pdf/2601.02163) |
-| — | **EverMemOS** | 92.3 | GPT-4.1-mini | Reproduced by Mnemis | Different eval setup | — | Mnemis comparison table |
-| 3 | **Backboard** | 90.00 | GPT-4.1 judge | Repo benchmark | Cat.5 filtered, per-conv JSONs | No detailed tokens | [GitHub](https://github.com/Backboard-io/Backboard-Locomo-Benchmark) |
-| 4 | **Hindsight** | 89.61 | Gemini-3 | Self-reported paper | — | No | [arXiv:2512.12818](https://arxiv.org/html/2512.12818v1) |
-| 5 | **HyMem** | 89.55 | GPT-4.1-mini | Self-reported paper | — | Relative claim only | [arXiv:2602.13933](https://arxiv.org/html/2602.13933v1) |
-| 6 | **Memvid** | 85.65 | — | Repo benchmark | Cat.1-4 | No | [GitHub](https://github.com/memvid/memvidbench) |
-| 7 | **MIRIX** | 85.4 | — | Self-reported paper | — | No | [arXiv:2507.07957](https://arxiv.org/abs/2507.07957) |
-| 8 | **EMem-G** | 85.3 | GPT-4.1-mini | Comparison-table result | From Mnemis paper | No | Mnemis comparison table |
-| 9 | **MemBuilder** | 84.23 | Qwen3-4B (trained) | Self-reported paper | — | No | [arXiv:2601.05488](https://arxiv.org/html/2601.05488v1) |
+| Rank | System | Score | Backbone | Evidence Type | Protocol Notes | Cost Data | Comparable? | Source |
+|---:|---|---:|---|---|---|---|---|---|
+| 1 | **Mnemis** | 93.9 | GPT-4.1-mini | Self-reported paper | LLM-as-judge, Cat.5 excluded | Yes (56M tokens) | Partial — different backbone | [arXiv:2602.15313](https://arxiv.org/pdf/2602.15313) |
+| 2 | **EverMemOS** | 93.05 | GPT-4.1-mini | Self-reported paper | Stage-by-stage token table | Yes (22M tokens) | Partial — different backbone | [arXiv:2601.02163](https://arxiv.org/pdf/2601.02163) |
+| — | **EverMemOS** | 92.3 | GPT-4.1-mini | Reproduced by Mnemis | Different eval setup | — | No — third-party repro | Mnemis comparison table |
+| 3 | **Backboard** | 90.00 | GPT-4.1 judge | Repo benchmark | Cat.5 filtered, per-conv JSONs | No detailed tokens | Partial — different judge | [GitHub](https://github.com/Backboard-io/Backboard-Locomo-Benchmark) |
+| 4 | **Hindsight** | 89.61 | Gemini-3 | Self-reported paper | — | No | Partial — different backbone | [arXiv:2512.12818](https://arxiv.org/html/2512.12818v1) |
+| 5 | **HyMem** | 89.55 | GPT-4.1-mini | Self-reported paper | — | Relative claim only | Partial — different backbone | [arXiv:2602.13933](https://arxiv.org/html/2602.13933v1) |
+| 6 | **Memvid** | 85.65 | — | Repo benchmark | Cat.1-4 | No | Partial — backbone unknown | [GitHub](https://github.com/memvid/memvidbench) |
+| 7 | **MIRIX** | 85.4 | — | Self-reported paper | — | No | Partial — backbone unknown | [arXiv:2507.07957](https://arxiv.org/abs/2507.07957) |
+| 8 | **EMem-G** | 85.3 | GPT-4.1-mini | Comparison-table result | From Mnemis paper | No | No — third-party repro | Mnemis comparison table |
+| 9 | **MemBuilder** | 84.23 | Qwen3-4B (trained) | Self-reported paper | — | No | No — trained model | [arXiv:2601.05488](https://arxiv.org/html/2601.05488v1) |
 
-Note: EverMemOS appears twice — 93.05 (self-reported) vs 92.3 (Mnemis reproduction). Both are useful but not identical claims.
+Note: EverMemOS appears twice — 93.05 (self-reported) vs 92.3 (Mnemis reproduction). Both are useful but not identical claims. No system is directly comparable to Elephant until we run the full benchmark with matching scope.
 
 ## Elephant Position
 

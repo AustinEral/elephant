@@ -102,4 +102,4 @@ Our reflect time (~38s/q) is high but includes full agentic loop. Token count is
 
 **Phase 1 — required before the full 10-conversation run.** If we do the full run without token accounting, we will likely have to rerun it. EverMemOS publishes a stage-by-stage LoCoMo token table for 1,540 questions (9.42M add, 10.27M search+answer, 2.38M evaluate for GPT-4.1-mini). Mnemis publishes 56M total tokens and 8,622s runtime. These disclosures are now part of what makes a result credible.
 
-Results schema: [results-schema.md](results-schema.md)
+Results schema: [results-format.md](results-format.md)
