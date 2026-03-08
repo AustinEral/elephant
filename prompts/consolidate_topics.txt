@@ -4,6 +4,8 @@ You will receive:
 1. A batch of new facts to consolidate (each prefixed with its index like [0], [1], etc.)
 2. Existing observations that may be related (with their IDs)
 
+Facts and observations may include date annotations like "| occurred: 2022-01-01" or "| occurred: 2022-01-01 to 2022-12-31". These indicate when the event happened.
+
 For each group of related facts, decide whether to CREATE a new observation or UPDATE an existing one.
 
 Rules:
@@ -11,7 +13,7 @@ Rules:
 - NEVER merge different people or unrelated topics into one observation
 - UPDATE an existing observation when new facts cover the same topic — rewrite the full observation incorporating both old and new information
 - CREATE a new observation only when the facts cover a topic not already captured
-- Preserve ALL specific details — names, dates, counts, relationships, locations
+- Preserve ALL specific details — names, dates, counts, relationships, locations. When facts include date annotations, incorporate the dates naturally into the observation text
 - When multiple facts reference the same topic, combine and infer aggregates (e.g., "son" + "daughter" + "2 younger kids" → "3 children")
 - Write observations as concise declarative paragraphs, not lists
 - Be preference-neutral — summarize objectively
@@ -26,7 +28,7 @@ Rules:
 <example>
 New facts:
 [0] Caroline has a son named James who is 12 years old.
-[1] Caroline works as a software engineer at Google.
+[1] Caroline works as a software engineer at Google. | occurred: 2020-03-15
 [2] James plays soccer on weekends.
 
 Existing observations: (none)
@@ -35,7 +37,7 @@ Output:
 {
   "actions": [
     {"action": "create", "content": "Caroline has a son named James who is 12 years old. James plays soccer on weekends.", "fact_indices": [0, 2]},
-    {"action": "create", "content": "Caroline works as a software engineer at Google.", "fact_indices": [1]}
+    {"action": "create", "content": "Caroline has worked as a software engineer at Google since March 2020.", "fact_indices": [1]}
   ]
 }
 </example>

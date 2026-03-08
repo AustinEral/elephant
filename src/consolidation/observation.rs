@@ -90,6 +90,25 @@ fn recall_budget() -> usize {
         .unwrap_or(512)
 }
 
+/// Format a temporal range as a pipe-separated suffix for consolidation prompts.
+/// Returns e.g. `" | occurred: 2022-01-01 to 2022-12-31"` or empty string if no range.
+fn format_temporal_suffix(tr: Option<&TemporalRange>) -> String {
+    match tr {
+        Some(tr) => {
+            let start_str = tr.start.map(|d| d.format("%Y-%m-%d").to_string());
+            let end_str = tr.end.map(|d| d.format("%Y-%m-%d").to_string());
+            match (start_str, end_str) {
+                (Some(s), Some(e)) if s == e => format!(" | occurred: {s}"),
+                (Some(s), Some(e)) => format!(" | occurred: {s} to {e}"),
+                (Some(s), None) => format!(" | occurred: {s}"),
+                (None, Some(e)) => format!(" | occurred: until {e}"),
+                (None, None) => String::new(),
+            }
+        }
+        None => String::new(),
+    }
+}
+
 /// Merge temporal ranges from source facts into an existing range using LEAST(start)/GREATEST(end).
 fn merge_temporal(existing: Option<&TemporalRange>, facts: &[&Fact]) -> Option<TemporalRange> {
     let mut start = existing.and_then(|r| r.start);
@@ -185,11 +204,14 @@ impl DefaultConsolidator {
                 }
             }
 
-            // 3b. Format prompt
+            // 3b. Format prompt with temporal annotations
             let facts_text = batch
                 .iter()
                 .enumerate()
-                .map(|(i, f)| format!("[{i}] {}", f.content))
+                .map(|(i, f)| {
+                    let temporal = format_temporal_suffix(f.temporal_range.as_ref());
+                    format!("[{i}] {}{temporal}", f.content)
+                })
                 .collect::<Vec<_>>()
                 .join("\n");
 
@@ -198,7 +220,10 @@ impl DefaultConsolidator {
             } else {
                 related_observations
                     .iter()
-                    .map(|o| format!("[{}] {}", o.id, o.content))
+                    .map(|o| {
+                        let temporal = format_temporal_suffix(o.temporal_range.as_ref());
+                        format!("[{}] {}{temporal}", o.id, o.content)
+                    })
                     .collect::<Vec<_>>()
                     .join("\n")
             };
@@ -529,6 +554,38 @@ mod tests {
 
         assert_eq!(report.observations_created, 2);
         assert_eq!(llm.remaining(), 0);
+    }
+
+    #[test]
+    fn temporal_suffix_formatting() {
+        use chrono::TimeZone;
+
+        assert_eq!(format_temporal_suffix(None), "");
+
+        // Both start and end (different dates)
+        let tr = TemporalRange {
+            start: Some(Utc.with_ymd_and_hms(2022, 1, 1, 0, 0, 0).unwrap()),
+            end: Some(Utc.with_ymd_and_hms(2022, 12, 31, 0, 0, 0).unwrap()),
+        };
+        assert_eq!(format_temporal_suffix(Some(&tr)), " | occurred: 2022-01-01 to 2022-12-31");
+
+        // Same start and end → no range
+        let tr = TemporalRange {
+            start: Some(Utc.with_ymd_and_hms(2022, 6, 15, 0, 0, 0).unwrap()),
+            end: Some(Utc.with_ymd_and_hms(2022, 6, 15, 0, 0, 0).unwrap()),
+        };
+        assert_eq!(format_temporal_suffix(Some(&tr)), " | occurred: 2022-06-15");
+
+        // Start only
+        let tr = TemporalRange {
+            start: Some(Utc.with_ymd_and_hms(2024, 3, 1, 0, 0, 0).unwrap()),
+            end: None,
+        };
+        assert_eq!(format_temporal_suffix(Some(&tr)), " | occurred: 2024-03-01");
+
+        // Both None inside TemporalRange
+        let tr = TemporalRange { start: None, end: None };
+        assert_eq!(format_temporal_suffix(Some(&tr)), "");
     }
 
     #[tokio::test]
