@@ -87,7 +87,7 @@ fn recall_budget() -> usize {
     std::env::var("CONSOLIDATION_RECALL_BUDGET")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(2000)
+        .unwrap_or(512)
 }
 
 /// Merge temporal ranges from source facts into an existing range using LEAST(start)/GREATEST(end).
