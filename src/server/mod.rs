@@ -153,6 +153,7 @@ mod tests {
                 sources: vec![],
                 new_opinions: vec![],
                 confidence: 0.5,
+                retrieved_context: Default::default(),
             })
         }
     }

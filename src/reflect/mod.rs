@@ -19,7 +19,7 @@ use crate::llm::LlmClient;
 use crate::recall::RecallPipeline;
 use crate::storage::MemoryStore;
 use crate::types::llm::{CompletionRequest, Message, ToolChoice, ToolDef, ToolResult};
-use crate::types::{FactId, NetworkType, RecallQuery, ReflectQuery, ReflectResult};
+use crate::types::{FactId, NetworkType, RecallQuery, ReflectQuery, ReflectResult, RetrievedFact};
 
 use disposition::verbalize_bank_profile;
 
@@ -125,6 +125,7 @@ impl DefaultReflectPipeline {
         let mut messages: Vec<Message> = vec![Message::text("user", query.question.clone())];
 
         let mut seen_fact_ids: HashSet<FactId> = HashSet::new();
+        let mut retrieved_context: Vec<RetrievedFact> = Vec::new();
 
         let tools = tool_defs();
 
@@ -227,6 +228,12 @@ impl DefaultReflectPipeline {
                             if is_new {
                                 facts_new += 1;
                                 writeln!(new_facts, "[FACT {}] {}", sf.fact.id, sf.fact.content).unwrap();
+                                retrieved_context.push(RetrievedFact {
+                                    id: sf.fact.id,
+                                    content: sf.fact.content.clone(),
+                                    score: sf.score,
+                                    network: sf.fact.network,
+                                });
                             }
                         }
 
@@ -267,7 +274,7 @@ impl DefaultReflectPipeline {
                             source_ids = ?args.source_ids,
                             "done"
                         );
-                        let result = self.finalize(args, &seen_fact_ids);
+                        let result = self.finalize(args, &seen_fact_ids, retrieved_context.clone());
                         if let Ok(ref r) = result {
                             tracing::Span::current().record("iterations", iteration + 1);
                             tracing::Span::current().record("source_count", r.sources.len());
@@ -310,6 +317,7 @@ impl DefaultReflectPipeline {
         &self,
         args: DoneArgs,
         seen_fact_ids: &HashSet<FactId>,
+        retrieved_context: Vec<RetrievedFact>,
     ) -> Result<ReflectResult> {
         // Validate source_ids against seen_fact_ids (drop hallucinated IDs)
         let sources: Vec<FactId> = args
@@ -324,6 +332,7 @@ impl DefaultReflectPipeline {
             sources,
             new_opinions: vec![],
             confidence: 0.85,
+            retrieved_context,
         })
     }
 }

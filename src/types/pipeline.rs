@@ -193,6 +193,19 @@ pub struct RecallResult {
     pub total_tokens: usize,
 }
 
+/// A single retrieved fact with its relevance score.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RetrievedFact {
+    /// Fact ID.
+    pub id: FactId,
+    /// Fact text content.
+    pub content: String,
+    /// Relevance score from the recall pipeline.
+    pub score: f32,
+    /// Which memory network this fact belongs to.
+    pub network: NetworkType,
+}
+
 /// Result of a reflect operation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ReflectResult {
@@ -204,6 +217,9 @@ pub struct ReflectResult {
     pub new_opinions: Vec<Fact>,
     /// Confidence in the reflection.
     pub confidence: f32,
+    /// All facts retrieved during the reflect agent loop, in ranked order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retrieved_context: Vec<RetrievedFact>,
 }
 
 // --- Reflect pipeline types ---

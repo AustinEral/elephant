@@ -79,10 +79,20 @@ struct ReflectRequest {
     budget_tokens: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RetrievedFactEntry {
+    id: String,
+    content: String,
+    score: f32,
+    network: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct ReflectResponse {
     response: String,
     confidence: f32,
+    #[serde(default)]
+    retrieved_context: Vec<RetrievedFactEntry>,
 }
 
 #[derive(Debug, Serialize)]
@@ -167,6 +177,9 @@ struct QuestionResult {
     judge_reasoning: String,
     confidence: f32,
     elapsed_s: f64,
+    /// All facts retrieved during reflect, in ranked order with scores.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    retrieved_context: Vec<RetrievedFactEntry>,
 }
 
 // --- Category names ---
@@ -902,7 +915,7 @@ async fn run_conversation(
             let cat_name = category_name(category);
 
             let t0 = Instant::now();
-            let (hypothesis, confidence) = match api_post_retry::<ReflectResponse>(
+            let (hypothesis, confidence, retrieved_context) = match api_post_retry::<ReflectResponse>(
                 &http,
                 &format!("{api_url}/v1/banks/{bank_id}/reflect"),
                 &ReflectRequest {
@@ -914,10 +927,10 @@ async fn run_conversation(
             )
             .await
             {
-                Ok(resp) => (resp.response, resp.confidence),
+                Ok(resp) => (resp.response, resp.confidence, resp.retrieved_context),
                 Err(e) => {
                     eprintln!("[{tag}] [{}/{}] ERROR after retries: {e}", qa_idx + 1, qa_len);
-                    (String::new(), 0.0)
+                    (String::new(), 0.0, Default::default())
                 }
             };
             let elapsed = t0.elapsed().as_secs_f64();
@@ -955,6 +968,7 @@ async fn run_conversation(
                 judge_reasoning,
                 confidence,
                 elapsed_s: elapsed,
+                retrieved_context,
             };
 
             // Push to shared results and flush to disk
@@ -1019,7 +1033,7 @@ async fn main() {
 
     // Check Elephant is reachable
     let http = Client::builder()
-        .timeout(std::time::Duration::from_secs(900))
+        .timeout(std::time::Duration::from_secs(3600))
         .build()
         .expect("failed to build HTTP client");
     // Fetch server info (model config)

@@ -20,6 +20,6 @@ pub use network::NetworkType;
 pub use pipeline::{
     AssembledContext, BankPromptContext, Chunk, ChunkConfig, ConsolidationReport, ExtractionInput,
     ExtractedFact, FactFilter, OpinionMergeReport, RecallQuery, RecallResult,
-    ReflectQuery, ReflectResult, ResolvedEntity, RetainInput, RetainOutput,
+    ReflectQuery, ReflectResult, ResolvedEntity, RetainInput, RetainOutput, RetrievedFact,
 };
 pub use temporal::TemporalRange;
