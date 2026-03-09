@@ -1,0 +1,9 @@
+{
+  "conversations": ["conv-26"],
+  "session_limit": 1,
+  "question_limit": 5,
+  "ingest": "turn",
+  "consolidation": "end",
+  "conversation_jobs": 1,
+  "question_jobs": 1
+}

@@ -146,7 +146,12 @@ impl TryFrom<DispositionRaw> for Disposition {
     type Error = Error;
 
     fn try_from(raw: DispositionRaw) -> Result<Self> {
-        Disposition::new(raw.skepticism, raw.literalism, raw.empathy, raw.bias_strength)
+        Disposition::new(
+            raw.skepticism,
+            raw.literalism,
+            raw.empathy,
+            raw.bias_strength,
+        )
     }
 }
 

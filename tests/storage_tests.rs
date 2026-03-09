@@ -1,16 +1,15 @@
 use chrono::Utc;
 use sqlx::PgPool;
+use testcontainers::GenericImage;
 use testcontainers::core::ContainerPort;
 use testcontainers::runners::AsyncRunner;
-use testcontainers::GenericImage;
 use testcontainers_modules::testcontainers::ImageExt;
 
-use elephant::storage::pg::PgMemoryStore;
 use elephant::storage::MemoryStore;
+use elephant::storage::pg::PgMemoryStore;
 use elephant::types::*;
 
-async fn setup_store(
-) -> (PgMemoryStore, testcontainers::ContainerAsync<GenericImage>) {
+async fn setup_store() -> (PgMemoryStore, testcontainers::ContainerAsync<GenericImage>) {
     let container = GenericImage::new("pgvector/pgvector", "pg16")
         .with_exposed_port(ContainerPort::Tcp(5432))
         .with_wait_for(testcontainers::core::WaitFor::message_on_stderr(

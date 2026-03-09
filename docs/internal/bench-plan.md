@@ -1,82 +1,122 @@
-# Benchmark Publication Plan
+# Benchmark Rebuild Plan
 
-Protocol reference: [benchmark-protocol.md](benchmark-protocol.md)
+Protocol reference: [../benchmark-protocol.md](../benchmark-protocol.md)
 
-## Current State
+## Goal
 
-- **94.2%** on conv-26 (154 questions, Cat.1-4)
-- Single conversation only — not a full leaderboard claim
-- No cost/token tracking, no variance data
+Turn Elephant benchmarking from a tuning harness into a publication-grade evaluation system.
 
-## Document Set
+That means every serious run must answer:
 
-### External (public-facing)
+- Was the answer correct?
+- Did retrieval hit the supporting evidence?
+- What did each stage cost?
 
-| Document | Purpose |
-|---|---|
-| [benchmark-protocol.md](benchmark-protocol.md) | Single source of truth for methodology |
-| [bench-result-card.md](bench-result-card.md) | Current result with all metadata |
-| [bench-competitors.md](bench-competitors.md) | Competitive landscape and comparison policy |
-| [results-format.md](results-format.md) | Results JSON format documentation |
-| `bench/locomo/results/*.json` | Raw results |
+## Required Benchmark Data
 
-### Internal (dev-only)
+### Run manifest
 
-| Document | Purpose |
-|---|---|
-| [bench-plan.md](bench-plan.md) | This file — roadmap to publication |
-| [bench-instrumentation.md](bench-instrumentation.md) | Token/cost tracking implementation |
+- Dataset path and fingerprint
+- CLI invocation
+- Git commit and dirty-worktree status
+- Category filter and question count
+- Ingestion granularity
+- Image handling policy
+- Concurrency and consolidation mode
 
-## Phases
+### System config
 
-### Phase 1: Token Instrumentation (required before full run)
+- Retain model
+- Reflect/consolidation model
+- Judge model
+- Embeddings model
+- Reranker model
 
-Add token counting to the pipeline. This is **required** before the full 10-conversation run — rerunning to add instrumentation is expensive. Mnemis and EverMemOS both publish meaningful cost disclosures; without them our results are incomplete.
+### Stage metrics
 
-Track per-stage: retain, consolidation, reflect, judge. Publish: tokens/question, total tokens, call counts, runtime.
+- Prompt tokens
+- Completion tokens
+- LLM calls
+- LLM errors
+- Aggregate latency
 
-See [bench-instrumentation.md](bench-instrumentation.md) for implementation details.
+Tracked per stage:
 
-### Phase 2: Variance Measurement
+- retain_extract
+- retain_resolve
+- retain_graph
+- retain_opinion
+- reflect
+- consolidate
+- opinion_merge
+- judge
 
-Before claiming any number, establish variance bounds:
-- Rerun judge-only pass on conv-26 (same bank, different judge randomness)
-- Rerun full conv-26 pass (fresh bank, fresh extraction/consolidation)
-- Report spread across runs
+### Per-question artifact
 
-Backboard notes 2-3% variance with GPT-4.1 as judge. We need our own number.
+- Question text and gold answer
+- Category
+- Evidence refs from LoCoMo
+- Hypothesis
+- Judge label and reasoning
+- Reflect confidence
+- Wall-clock latency
+- Retrieved facts
+- Retrieved turn refs
+- Evidence hit / evidence recall
+- Status and error field
 
-### Phase 3: Second Conversation Gate
+## Architecture
 
-Run one more conversation (pick a structurally different one) with the same protocol. If both stay above ~90%, proceed to full run. If not, investigate what's different.
+### Implemented now
 
-### Phase 4: Full Benchmark Run
+- Shared runtime builder in `src/runtime.rs`
+- Stage-aware metering wrapper in `src/metrics.rs`
+- In-process LoCoMo runner in `bench/locomo/locomo.rs`
+- Turn-level ingest as the default benchmark path
+- Turn provenance exported through `retrieved_context.source_turn_id`
+- Evidence-aware scoring using LoCoMo `evidence`
 
-Run all 10 conversations (~1,540 questions, Cat.1-4). This is the leaderboard claim. Requires:
-- Token instrumentation from Phase 1
-- Variance data from Phase 2
-- Stable config (no more prompt tuning between conversations)
-- Per-conversation breakdown
-- Per-category breakdown
-- Token/runtime table
+### Why this design
 
-### Phase 5: Publication
+The old HTTP harness could measure answer correctness, but it could not observe retain/reflect/consolidate cost cleanly because those LLM calls happened inside the server.
 
-Format results for README, blog post, or paper. Include:
-- Result card with all metadata
-- Per-conversation table
-- Per-category table
-- Token/cost table with competitor comparison
-- Comparison to published baselines (with evidence-type tags)
-- Variance bounds
-- Reproduction instructions
+The new design evaluates Elephant directly in process against the same runtime wiring used by the server. That keeps benchmark instrumentation out of the public API while still benchmarking the real product stack.
 
-## Target Comparisons
+## Remaining Work
 
-| System | Score | Our target |
-|---|---:|---|
-| Mnemis | 93.9 | Beat on full run |
-| EverMemOS | 93.05 | Beat on full run |
-| Long-context GPT-5-mini | 92.85 | Beat (proves memory adds value) |
-| Backboard | 90.00 | Above on conv-26 slice; not directly comparable yet |
-| Hindsight | 89.61 | Above on conv-26 slice; not directly comparable yet |
+### Phase 1: Artifact polish
+
+- Add prompt/version hashes to the run manifest
+- Add explicit model/provider labels for the judge artifact path
+- Add a machine-readable artifact index for multi-run comparisons
+
+### Phase 2: Validation
+
+- Clean conv-26 rerun with the new runner
+- Judge-only rerun for variance
+- One additional conversation rerun with the same frozen config
+
+### Phase 3: Credibility checks
+
+- Human audit sample for judge disagreements
+- Long-context baseline run under the same artifact standard
+- README/public result card update after clean reruns
+
+### Phase 4: Full benchmark
+
+Run all 10 conversations only after:
+
+- config freeze
+- stage metrics verification
+- variance measurement
+- clean Cat.1-4 artifact validation
+
+## Publication Standard
+
+Elephant should not publish a headline benchmark number until the run includes:
+
+- full Cat.1-4 artifact set
+- stage token disclosure
+- evidence-aware retrieval reporting
+- reproducible manifest
+- at least one rerun or variance note

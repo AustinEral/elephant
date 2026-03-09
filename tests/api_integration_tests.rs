@@ -4,36 +4,36 @@
 
 use std::sync::Arc;
 
+use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use axum::Router;
 use chrono::Utc;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::PgPool;
+use testcontainers::GenericImage;
 use testcontainers::core::ContainerPort;
 use testcontainers::runners::AsyncRunner;
-use testcontainers::GenericImage;
 use testcontainers_modules::testcontainers::ImageExt;
 use tower::util::ServiceExt;
 
 use elephant::consolidation::{DefaultConsolidator, DefaultOpinionMerger};
 use elephant::embedding::mock::MockEmbeddings;
-use elephant::llm::mock::MockLlmClient;
 use elephant::llm::LlmClient;
+use elephant::llm::mock::MockLlmClient;
+use elephant::recall::DefaultRecallPipeline;
 use elephant::recall::budget::EstimateTokenizer;
 use elephant::recall::graph::{GraphRetriever, GraphRetrieverConfig};
 use elephant::recall::keyword::KeywordRetriever;
 use elephant::recall::reranker::{self, RerankerConfig, RerankerProvider};
 use elephant::recall::semantic::SemanticRetriever;
 use elephant::recall::temporal::TemporalRetriever;
-use elephant::recall::DefaultRecallPipeline;
 use elephant::reflect::DefaultReflectPipeline;
+use elephant::retain::DefaultRetainPipeline;
 use elephant::retain::chunker::SimpleChunker;
 use elephant::retain::extractor::LlmFactExtractor;
 use elephant::retain::graph_builder::{DefaultGraphBuilder, GraphConfig};
 use elephant::retain::resolver::LayeredEntityResolver;
-use elephant::retain::DefaultRetainPipeline;
-use elephant::server::{router, AppState};
+use elephant::server::{AppState, router};
 use elephant::storage::pg::PgMemoryStore;
 use elephant::types::*;
 
@@ -97,9 +97,7 @@ impl TestHarness {
         let retain_llm_graph: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new());
 
         // Wire the shared MockLlmClient for extraction (where we push responses)
-        let extractor = Box::new(LlmFactExtractor::new(
-            Arc::new(self.llm.as_ref().clone()),
-        ));
+        let extractor = Box::new(LlmFactExtractor::new(Arc::new(self.llm.as_ref().clone())));
         let resolver = Box::new(LayeredEntityResolver::new(
             Box::new(MockEmbeddings::new(EMBED_DIMS)),
             retain_llm_resolver,
@@ -129,13 +127,22 @@ impl TestHarness {
         ));
 
         // Recall pipeline
-        let store_arc: Arc<dyn elephant::MemoryStore> = Arc::new(PgMemoryStore::new(self.pool.clone()));
+        let store_arc: Arc<dyn elephant::MemoryStore> =
+            Arc::new(PgMemoryStore::new(self.pool.clone()));
         let embed_arc: Arc<dyn elephant::EmbeddingClient> = self.embeddings.clone();
 
         let recall = Arc::new(DefaultRecallPipeline::new(
-            Box::new(SemanticRetriever::new(store_arc.clone(), embed_arc.clone(), 20)),
+            Box::new(SemanticRetriever::new(
+                store_arc.clone(),
+                embed_arc.clone(),
+                20,
+            )),
             Box::new(KeywordRetriever::new(store_arc.clone(), 20)),
-            Box::new(GraphRetriever::new(store_arc.clone(), embed_arc.clone(), GraphRetrieverConfig::default())),
+            Box::new(GraphRetriever::new(
+                store_arc.clone(),
+                embed_arc.clone(),
+                GraphRetrieverConfig::default(),
+            )),
             Box::new(TemporalRetriever::new(store_arc.clone())),
             reranker::build_reranker(&RerankerConfig {
                 provider: RerankerProvider::None,
@@ -144,7 +151,8 @@ impl TestHarness {
                 api_key: None,
                 api_url: None,
                 api_model: None,
-            }).expect("reranker"),
+            })
+            .expect("reranker"),
             Box::new(EstimateTokenizer),
             60.0,
             50,
@@ -171,7 +179,12 @@ impl TestHarness {
             self.embeddings.clone() as Arc<dyn elephant::EmbeddingClient>,
         ));
         let state = AppState {
-            info: elephant::server::ServerInfo { retain_model: "test".into(), reflect_model: "test".into(), embedding_model: "test".into(), reranker_model: "none".into() },
+            info: elephant::server::ServerInfo {
+                retain_model: "test".into(),
+                reflect_model: "test".into(),
+                embedding_model: "test".into(),
+                reranker_model: "none".into(),
+            },
             retain,
             recall,
             reflect,
@@ -197,10 +210,7 @@ fn json_request(method: &str, uri: &str, body: Value) -> Request<Body> {
 }
 
 fn get_request(uri: &str) -> Request<Body> {
-    Request::builder()
-        .uri(uri)
-        .body(Body::empty())
-        .unwrap()
+    Request::builder().uri(uri).body(Body::empty()).unwrap()
 }
 
 async fn json_body(resp: axum::response::Response) -> Value {
@@ -340,10 +350,8 @@ async fn retain_creates_entities() {
     let bank_id = json_body(resp).await["id"].as_str().unwrap().to_string();
 
     // Push extraction response mentioning "Rust" entity
-    h.llm.push_response(extraction_response(
-        "Rust has a strong type system",
-        "Rust",
-    ));
+    h.llm
+        .push_response(extraction_response("Rust has a strong type system", "Rust"));
 
     // Retain
     let req = json_request(
@@ -370,17 +378,15 @@ async fn retain_creates_entities() {
     let entities = entities.as_array().unwrap();
     assert!(!entities.is_empty(), "should have at least one entity");
 
-    let rust_entity = entities
-        .iter()
-        .find(|e| e["canonical_name"].as_str().unwrap_or("").contains("Rust") ||
-                   e["canonical_name"].as_str().unwrap_or("").contains("rust"));
+    let rust_entity = entities.iter().find(|e| {
+        e["canonical_name"].as_str().unwrap_or("").contains("Rust")
+            || e["canonical_name"].as_str().unwrap_or("").contains("rust")
+    });
     assert!(rust_entity.is_some(), "should have a Rust entity");
 
     // Get facts for the entity
     let entity_id = rust_entity.unwrap()["id"].as_str().unwrap();
-    let req = get_request(&format!(
-        "/v1/banks/{bank_id}/entities/{entity_id}/facts"
-    ));
+    let req = get_request(&format!("/v1/banks/{bank_id}/entities/{entity_id}/facts"));
     let resp = h.app().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
@@ -479,7 +485,6 @@ async fn consolidation_empty_bank() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
     assert_eq!(body["opinions_merged"], 0);
-
 }
 
 #[tokio::test]
@@ -596,5 +601,8 @@ async fn bank_isolation() {
     let has_python = facts
         .iter()
         .any(|f| f["content"].as_str().unwrap_or("").contains("Python"));
-    assert!(!has_python, "bank B should not contain bank A's facts about Python");
+    assert!(
+        !has_python,
+        "bank B should not contain bank A's facts about Python"
+    );
 }

@@ -41,7 +41,11 @@ pub fn fuse_rankings(rankings: &[Vec<ScoredFact>], k: f32) -> Vec<ScoredFact> {
         })
         .collect();
 
-    result.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    result.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     result
 }
 

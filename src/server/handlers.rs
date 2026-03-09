@@ -1,14 +1,13 @@
 //! HTTP handler functions for the API server.
 
-use axum::extract::{Path, State};
 use axum::Json;
+use axum::extract::{Path, State};
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
 use crate::types::{
-    BankId, ConsolidationReport, Disposition, Entity, Fact, MemoryBank,
-    OpinionMergeReport, RecallQuery, RecallResult, ReflectQuery, ReflectResult, RetainInput,
-    RetainOutput,
+    BankId, ConsolidationReport, Disposition, Entity, Fact, MemoryBank, OpinionMergeReport,
+    RecallQuery, RecallResult, ReflectQuery, ReflectResult, RetainInput, RetainOutput,
 };
 
 use super::AppState;
@@ -62,16 +61,12 @@ fn parse_entity_id(id: &str) -> Result<crate::types::EntityId> {
 // --- Handlers ---
 
 /// GET /v1/info
-pub async fn server_info(
-    State(state): State<AppState>,
-) -> Json<super::ServerInfo> {
+pub async fn server_info(State(state): State<AppState>) -> Json<super::ServerInfo> {
     Json(state.info.clone())
 }
 
 /// GET /v1/banks
-pub async fn list_banks(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<MemoryBank>>> {
+pub async fn list_banks(State(state): State<AppState>) -> Result<Json<Vec<MemoryBank>>> {
     let banks = state.store.list_banks().await?;
     Ok(Json(banks))
 }
@@ -183,4 +178,3 @@ pub async fn merge_opinions(
     let report = state.opinion_merger.merge(bank_id).await?;
     Ok(Json(report))
 }
-

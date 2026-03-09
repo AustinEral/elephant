@@ -53,25 +53,24 @@ pub struct EmbeddingConfig {
 pub fn build_client(config: &EmbeddingConfig) -> Result<Box<dyn EmbeddingClient>> {
     match config.provider {
         EmbeddingProvider::Local => {
-            let model_path = config
-                .model_path
-                .as_deref()
-                .ok_or_else(|| crate::error::Error::Embedding("EMBEDDING_MODEL_PATH must be set for local embeddings".into()))?;
+            let model_path = config.model_path.as_deref().ok_or_else(|| {
+                crate::error::Error::Embedding(
+                    "EMBEDDING_MODEL_PATH must be set for local embeddings".into(),
+                )
+            })?;
             let client = local::LocalEmbeddings::new(std::path::Path::new(model_path))?;
             Ok(Box::new(client))
         }
         EmbeddingProvider::OpenAi => {
-            let api_key = config
-                .api_key
-                .clone()
-                .ok_or_else(|| crate::error::Error::Embedding("EMBEDDING_API_KEY must be set".into()))?;
-            let model = config
-                .model
-                .clone()
-                .ok_or_else(|| crate::error::Error::Embedding("EMBEDDING_API_MODEL must be set".into()))?;
-            let dimensions = config
-                .dimensions
-                .ok_or_else(|| crate::error::Error::Embedding("EMBEDDING_API_DIMS must be set".into()))?;
+            let api_key = config.api_key.clone().ok_or_else(|| {
+                crate::error::Error::Embedding("EMBEDDING_API_KEY must be set".into())
+            })?;
+            let model = config.model.clone().ok_or_else(|| {
+                crate::error::Error::Embedding("EMBEDDING_API_MODEL must be set".into())
+            })?;
+            let dimensions = config.dimensions.ok_or_else(|| {
+                crate::error::Error::Embedding("EMBEDDING_API_DIMS must be set".into())
+            })?;
             let client = openai::OpenAiEmbeddings::new(api_key, model, dimensions);
             Ok(Box::new(client))
         }

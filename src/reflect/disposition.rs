@@ -121,8 +121,14 @@ mod tests {
         let bank = make_bank(5, 5, 5, 1.0);
         let ctx = verbalize_bank_profile(&bank);
         assert!(ctx.disposition_prompt.contains("extremely skeptical"));
-        assert!(ctx.disposition_prompt.contains("interprets everything literally"));
-        assert!(ctx.disposition_prompt.contains("strongly weights emotional factors"));
+        assert!(
+            ctx.disposition_prompt
+                .contains("interprets everything literally")
+        );
+        assert!(
+            ctx.disposition_prompt
+                .contains("strongly weights emotional factors")
+        );
         assert!(ctx.disposition_prompt.contains("strongly influence"));
     }
 
@@ -142,8 +148,14 @@ mod tests {
             "Be concise".into(),
         ];
         let ctx = verbalize_bank_profile(&bank);
-        assert!(ctx.directives_prompt.contains("1. You MUST: Never share private data"));
-        assert!(ctx.directives_prompt.contains("2. You MUST: Always cite sources"));
+        assert!(
+            ctx.directives_prompt
+                .contains("1. You MUST: Never share private data")
+        );
+        assert!(
+            ctx.directives_prompt
+                .contains("2. You MUST: Always cite sources")
+        );
         assert!(ctx.directives_prompt.contains("3. You MUST: Be concise"));
     }
 

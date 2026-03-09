@@ -71,7 +71,12 @@ impl Retriever for GraphRetriever {
         let embedding = &vecs[0];
         let seeds = self
             .store
-            .vector_search(embedding, query.bank_id, self.config.max_seeds, query.network_filter.as_deref())
+            .vector_search(
+                embedding,
+                query.bank_id,
+                self.config.max_seeds,
+                query.network_filter.as_deref(),
+            )
             .await?;
 
         if seeds.is_empty() {
@@ -85,10 +90,8 @@ impl Retriever for GraphRetriever {
         }
 
         // Step 3: BFS spreading activation
-        let mut frontier: VecDeque<(FactId, f32, usize)> = seeds
-            .iter()
-            .map(|sf| (sf.fact.id, sf.score, 0))
-            .collect();
+        let mut frontier: VecDeque<(FactId, f32, usize)> =
+            seeds.iter().map(|sf| (sf.fact.id, sf.score, 0)).collect();
         let mut visited: HashSet<FactId> = seeds.iter().map(|sf| sf.fact.id).collect();
 
         while let Some((fact_id, activation, hop)) = frontier.pop_front() {
@@ -132,7 +135,11 @@ impl Retriever for GraphRetriever {
             })
             .collect();
 
-        scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         scored.truncate(self.config.max_results);
         Ok(scored)
     }

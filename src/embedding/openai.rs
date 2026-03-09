@@ -96,8 +96,10 @@ mod tests {
         let client = OpenAiEmbeddings::new(
             api_key,
             std::env::var("EMBEDDING_API_MODEL").expect("EMBEDDING_API_MODEL must be set"),
-            std::env::var("EMBEDDING_API_DIMS").expect("EMBEDDING_API_DIMS must be set")
-                .parse().expect("EMBEDDING_API_DIMS must be a number"),
+            std::env::var("EMBEDDING_API_DIMS")
+                .expect("EMBEDDING_API_DIMS must be set")
+                .parse()
+                .expect("EMBEDDING_API_DIMS must be a number"),
         );
         let result = client.embed(&["Hello, world!"]).await.unwrap();
         assert_eq!(result.len(), 1);
@@ -112,8 +114,10 @@ mod tests {
         let client = OpenAiEmbeddings::new(
             api_key,
             std::env::var("EMBEDDING_API_MODEL").expect("EMBEDDING_API_MODEL must be set"),
-            std::env::var("EMBEDDING_API_DIMS").expect("EMBEDDING_API_DIMS must be set")
-                .parse().expect("EMBEDDING_API_DIMS must be a number"),
+            std::env::var("EMBEDDING_API_DIMS")
+                .expect("EMBEDDING_API_DIMS must be set")
+                .parse()
+                .expect("EMBEDDING_API_DIMS must be a number"),
         );
         let result = client.embed(&["cat", "dog", "database"]).await.unwrap();
         assert_eq!(result.len(), 3);

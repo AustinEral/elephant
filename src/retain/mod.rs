@@ -15,17 +15,17 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use tracing::{debug, info, info_span, Instrument};
+use tracing::{Instrument, debug, info, info_span};
 
 use crate::embedding::EmbeddingClient;
 use crate::error::Result;
 use crate::llm::LlmClient;
 use crate::storage::MemoryStore;
-use crate::util::cosine_similarity;
 use crate::types::{
     CompletionRequest, ExtractionInput, Fact, FactFilter, FactId, Message, NetworkType,
     RetainInput, RetainOutput,
 };
+use crate::util::cosine_similarity;
 
 use self::chunker::Chunker;
 use self::extractor::FactExtractor;
@@ -80,15 +80,22 @@ impl DefaultRetainPipeline {
     }
 
     /// Remove facts that are near-duplicates of existing facts in the bank.
-    async fn dedup_facts(&self, facts: Vec<Fact>, bank_id: crate::types::BankId, threshold: f32, store: &dyn MemoryStore) -> Result<Vec<Fact>> {
+    async fn dedup_facts(
+        &self,
+        facts: Vec<Fact>,
+        bank_id: crate::types::BankId,
+        threshold: f32,
+        store: &dyn MemoryStore,
+    ) -> Result<Vec<Fact>> {
         let mut kept = Vec::with_capacity(facts.len());
         for fact in facts {
             if let Some(ref emb) = fact.embedding {
                 let results = store.vector_search(emb, bank_id, 1, None).await?;
                 if let Some(top) = results.first()
-                    && top.score >= threshold {
-                        continue;
-                    }
+                    && top.score >= threshold
+                {
+                    continue;
+                }
             }
             kept.push(fact);
         }
@@ -249,12 +256,22 @@ impl DefaultRetainPipeline {
                 .collect();
 
             let resolved = if !all_mentions.is_empty() {
-                debug!(chunk = chunk_idx, mentions = all_mentions.len(), "resolving_entities");
-                self.resolver.resolve(&all_mentions, input.bank_id, &*txn).await?
+                debug!(
+                    chunk = chunk_idx,
+                    mentions = all_mentions.len(),
+                    "resolving_entities"
+                );
+                self.resolver
+                    .resolve(&all_mentions, input.bank_id, &*txn)
+                    .await?
             } else {
                 Vec::new()
             };
-            debug!(chunk = chunk_idx, resolved = resolved.len(), "entities_resolved");
+            debug!(
+                chunk = chunk_idx,
+                resolved = resolved.len(),
+                "entities_resolved"
+            );
 
             total_entities_resolved += resolved.len();
             for r in &resolved {
@@ -271,7 +288,11 @@ impl DefaultRetainPipeline {
 
             // 2c. Convert ExtractedFact → Fact with resolved entities and embeddings
             let fact_texts: Vec<&str> = extracted.iter().map(|f| f.content.as_str()).collect();
-            debug!(chunk = chunk_idx, texts = fact_texts.len(), "embedding_facts");
+            debug!(
+                chunk = chunk_idx,
+                texts = fact_texts.len(),
+                "embedding_facts"
+            );
             let embeddings = self.embeddings.embed(&fact_texts).await?;
 
             let mut facts = Vec::with_capacity(extracted.len());
@@ -305,9 +326,15 @@ impl DefaultRetainPipeline {
             // 2d. Dedup against existing facts (reads through txn to see prior chunks)
             let pre_dedup = facts.len();
             let facts = if let Some(threshold) = self.dedup_threshold {
-                let deduped = self.dedup_facts(facts, input.bank_id, threshold, &*txn).await?;
+                let deduped = self
+                    .dedup_facts(facts, input.bank_id, threshold, &*txn)
+                    .await?;
                 if deduped.is_empty() {
-                    debug!(chunk = chunk_idx, deduped_all = pre_dedup, "all facts deduped, skipping chunk");
+                    debug!(
+                        chunk = chunk_idx,
+                        deduped_all = pre_dedup,
+                        "all facts deduped, skipping chunk"
+                    );
                     continue;
                 }
                 deduped
@@ -315,7 +342,12 @@ impl DefaultRetainPipeline {
                 facts
             };
             if facts.len() < pre_dedup {
-                debug!(chunk = chunk_idx, before = pre_dedup, after = facts.len(), "dedup");
+                debug!(
+                    chunk = chunk_idx,
+                    before = pre_dedup,
+                    after = facts.len(),
+                    "dedup"
+                );
             }
 
             // 2e. Store facts
@@ -346,7 +378,12 @@ impl DefaultRetainPipeline {
         txn.commit().await?;
 
         let facts_stored = all_fact_ids.len();
-        info!(facts_stored, entities_resolved = total_entities_resolved, links_created = total_links, "retain_complete");
+        info!(
+            facts_stored,
+            entities_resolved = total_entities_resolved,
+            links_created = total_links,
+            "retain_complete"
+        );
         tracing::Span::current().record("facts_stored", facts_stored);
         tracing::Span::current().record("entities_resolved", total_entities_resolved);
         tracing::Span::current().record("links_created", total_links);

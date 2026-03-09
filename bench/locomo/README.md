@@ -2,11 +2,22 @@
 
 Evaluates long-term conversational memory using the [LoCoMo dataset](https://arxiv.org/abs/2402.17753) (ACL 2024).
 
-**LoCoMo Categories (1–4)**: single-hop, multi-hop, temporal, open-domain. Category 5 (adversarial) excluded, consistent with Mnemis, Backboard, and other recent systems. Full Cat.1–4 dataset contains 1,540 questions across 10 conversations.
+## What changed
 
-**Pipeline**: Ingest sessions → consolidate → ask questions via reflect → score with LLM judge
+The benchmark now runs Elephant **in process** instead of talking to a running server over HTTP.
 
-**Protocol**: See [docs/benchmark-protocol.md](/docs/benchmark-protocol.md) for full methodology.
+That change was deliberate:
+
+- stage-token accounting is now precise
+- retain/reflect/consolidate are benchmarked through the real runtime wiring
+- turn provenance can be compared to LoCoMo `evidence`
+
+## Scope
+
+- Categories scored: **1-4 only**
+- Category 5: excluded in code
+- Default ingestion granularity: **turn-level**
+- Image handling: BLIP captions inline by default
 
 ## Setup
 
@@ -20,92 +31,84 @@ curl -o data/locomo10.json \
 cargo build --release --bin locomo-bench --bin view
 ```
 
-The judge LLM can be configured independently via `JUDGE_PROVIDER`, `JUDGE_API_KEY`, `JUDGE_MODEL` env vars (falls back to `LLM_*` equivalents).
+The runner uses the same environment variables as Elephant itself:
+
+- `DATABASE_URL`
+- `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL`
+- `RETAIN_LLM_MODEL`, `REFLECT_LLM_MODEL` if split models are desired
+- embedding and reranker env vars
+
+Judge env vars remain independently overridable through `JUDGE_*`.
+
+The serious runner surface is now profile-driven. Versioned profile files live in `bench/locomo/profiles/`, and `--config <path>` can layer additional JSON overrides on top.
+
+The CLI is intentionally strict. Old flag aliases were removed so benchmark commands stay unambiguous.
 
 ## Quick start
 
 ```bash
-# Start Elephant
-docker compose up -d
-
 # Quick smoke test
-cargo run --release --bin locomo-bench -- --tag quick --max-conversations 1 --max-sessions 1 --max-questions 5
+cargo run --release --bin locomo-bench -- run --profile smoke --tag quick
 
-# Full benchmark (all 10 conversations, 1,540 questions Cat.1-4)
-cargo run --release --bin locomo-bench -- --tag baseline
+# Full benchmark
+cargo run --release --bin locomo-bench -- run --profile full --tag baseline
 
-# Compare two runs
-cargo run --release --bin view -- bench/locomo/results/quick.json bench/locomo/results/baseline.json
-```
+# Single conversation gate
+cargo run --release --bin locomo-bench -- \
+  run \
+  --profile full \
+  --conversation conv-26 \
+  --tag conv26
 
-## Arguments
+# Ingest only
+cargo run --release --bin locomo-bench -- ingest --profile full --tag ingest
 
-| Flag | Description | Default |
-|---|---|---|
-| `--tag <name>` | Save results to `results/<name>.json` | `locomo` |
-| `--output <path>` | Override output path (ignores tag) | |
-| `--max-conversations <N>` | Limit number of conversations | all |
-| `--max-sessions <N>` | Limit ingested sessions per conversation | all |
-| `--max-questions <N>` | Limit questions per conversation | all |
-| `--concurrency <N>` | Parallel conversations | 1 |
-| `--question-concurrency <N>` | Parallel questions per conversation | 1 |
-| `--no-consolidate` | Skip consolidation after ingestion | consolidate on |
-| `--consolidate-per-session` | Consolidate after each session (incremental) | off |
-| `--resume <path>` | Reuse bank IDs from previous results (skip ingestion) | |
-| `--bank-id <id>` | Reuse a specific bank (skip ingestion) | |
-| `--ingest-only` | Ingest and consolidate only, skip questions | off |
-| `--raw-json` | Send raw dataset JSON per session (see below) | off |
-| `--judge-model <name>` | Override judge model | from env |
-| `--api-url <url>` | Elephant server URL | `http://localhost:3001` |
-| `--data <path>` | Dataset path | `data/locomo10.json` |
+# QA only from existing banks
+cargo run --release --bin locomo-bench -- \
+  qa \
+  bench/locomo/results/ingest.json \
+  --out bench/locomo/results/ingest-qa.json
 
-### View tool
-
-```bash
-# View a single result
+# Inspect a run
 cargo run --release --bin view -- bench/locomo/results/baseline.json
 
 # Compare two runs
-cargo run --release --bin view -- bench/locomo/results/reranker.json bench/locomo/results/baseline.json
-
-# Filter to a single conversation
-cargo run --release --bin view -- --conv conv-26 bench/locomo/results/reranker.json
-
-# Compare a single conversation across runs
-cargo run --release --bin view -- --conv conv-26 bench/locomo/results/reranker.json bench/locomo/results/baseline.json
+cargo run --release --bin view -- \
+  bench/locomo/results/baseline.json \
+  bench/locomo/results/ablation.json
 ```
+
+## Important flags
 
 | Flag | Description |
 |---|---|
-| `--conv <id>` | Filter results to a single conversation |
+| `run` | Fresh ingest, consolidate, then score QA |
+| `ingest` | Ingest and consolidate only; do not run QA |
+| `qa <artifact>` | Score QA against bank ids from an existing artifact; skips ingest and consolidation |
+| `--profile <name>` | Load a versioned benchmark profile (`full`, `smoke`, `legacy-raw`) |
+| `--config <path>` | Apply JSON overrides on top of the selected profile |
+| `--tag <name>` | Save results to `bench/locomo/results/<name>.json` |
+| `--conversation <id>` | Run a specific conversation; repeat to run an explicit set |
+| `--ingest <turn|session|raw-json>` | Choose turn-level ingest, legacy session ingest, or unfair raw-json reproduction |
+| `--consolidation <end|per-session|off>` | Control when consolidation runs |
+| `--conversation-jobs <n>` | Parallel conversations |
+| `--question-jobs <n>` | Parallel questions per conversation |
+| `--session-limit <n>` | Debug-only session slice |
+| `--question-limit <n>` | Debug-only question slice |
 
-## Image handling
+## Artifact quality
 
-The LoCoMo dataset includes images shared during conversations. Per the [paper's evaluation protocol](https://arxiv.org/abs/2402.17753), images are replaced with their BLIP-2 captions inline in the conversation text. This is the default behavior.
+A serious run now records:
 
-### `--raw-json` mode
+- manifest and run provenance
+- per-stage token/call/latency metrics
+- per-question judge outcome
+- retrieved facts
+- retrieved turn refs
+- evidence hit / evidence recall
 
-Some competing implementations send the raw dataset JSON per session, which includes extra metadata fields (`query`, `img_url`, `dia_id`) beyond what the LoCoMo paper specifies as fair input. In particular, the `query` field contains the image search term used during dataset construction, which often directly answers benchmark questions. The `--raw-json` flag reproduces this behavior for comparison purposes.
+Schema: [results-format.md](/docs/results-format.md)
 
-## Scoring
+## Publication status
 
-- **LLM-as-judge** (primary): Binary CORRECT/WRONG via the configured LLM.
-- **Token F1** (reference): Token-level overlap between prediction and gold answer. Included for diagnostics only.
-
-## Results
-
-Single conversation (conv-26), 154 questions, Cat.1–4 only, with consolidation:
-
-| Category | Accuracy | n |
-|---|---|---|
-| Temporal | 100.0% | 13 |
-| Multi-hop | 94.6% | 37 |
-| Open-domain | 94.3% | 70 |
-| Single-hop | 90.6% | 32 |
-| **Overall** | **94.2%** | **154** |
-
-Local answer subtypes: unanswerable 100.0% (2/2)
-
-Model: Sonnet 4.6, Judge: Sonnet 4.6, Embeddings: bge-small-en-v1.5 (local), Reranker: ms-marco-MiniLM-L-6-v2 (local)
-
-See [full result card](/docs/bench-result-card.md) for complete metadata and caveats.
+The checked-in historical artifacts are still legacy outputs from the old harness. Use the new runner for any benchmark claim or comparison work.

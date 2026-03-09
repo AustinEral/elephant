@@ -61,26 +61,27 @@ impl LlmClient for RetryingLlmClient {
                     let wait = match &e {
                         Error::RateLimit(_) => Some(self.policy.rate_limit_wait_secs),
                         Error::ServerError(_) => {
-                            let backoff = self.policy.initial_backoff_secs
-                                * 2u64.saturating_pow(attempt);
+                            let backoff =
+                                self.policy.initial_backoff_secs * 2u64.saturating_pow(attempt);
                             Some(backoff.min(self.policy.max_backoff_secs))
                         }
                         _ => None,
                     };
 
                     if let Some(secs) = wait
-                        && attempt < self.policy.max_retries {
-                            tracing::warn!(
-                                attempt = attempt + 1,
-                                max_retries = self.policy.max_retries,
-                                wait_secs = secs,
-                                error = %e,
-                                "llm_retry"
-                            );
-                            tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
-                            last_err = Some(e);
-                            continue;
-                        }
+                        && attempt < self.policy.max_retries
+                    {
+                        tracing::warn!(
+                            attempt = attempt + 1,
+                            max_retries = self.policy.max_retries,
+                            wait_secs = secs,
+                            error = %e,
+                            "llm_retry"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+                        last_err = Some(e);
+                        continue;
+                    }
 
                     return Err(e);
                 }

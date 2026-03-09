@@ -81,11 +81,7 @@ impl HierarchyAssembler for DefaultHierarchyAssembler {
 }
 
 /// Format assembled facts into a prompt-ready string with section headers.
-fn format_context(
-    observations: &[Fact],
-    raw_facts: &[Fact],
-    opinions: &[Fact],
-) -> String {
+fn format_context(observations: &[Fact], raw_facts: &[Fact], opinions: &[Fact]) -> String {
     let mut out = String::new();
 
     if !observations.is_empty() {
@@ -119,17 +115,17 @@ fn format_context(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::embedding::mock::MockEmbeddings;
     use crate::embedding::EmbeddingClient;
+    use crate::embedding::mock::MockEmbeddings;
+    use crate::recall::DefaultRecallPipeline;
     use crate::recall::budget::EstimateTokenizer;
     use crate::recall::graph::{GraphRetriever, GraphRetrieverConfig};
     use crate::recall::keyword::KeywordRetriever;
     use crate::recall::reranker::NoOpReranker;
     use crate::recall::semantic::SemanticRetriever;
     use crate::recall::temporal::TemporalRetriever;
-    use crate::recall::DefaultRecallPipeline;
-    use crate::storage::mock::MockMemoryStore;
     use crate::storage::MemoryStore;
+    use crate::storage::mock::MockMemoryStore;
     use crate::types::*;
     use chrono::Utc;
 
@@ -176,7 +172,11 @@ mod tests {
         embeddings: Arc<MockEmbeddings>,
     ) -> Arc<DefaultRecallPipeline> {
         Arc::new(DefaultRecallPipeline::new(
-            Box::new(SemanticRetriever::new(store.clone(), embeddings.clone(), 20)),
+            Box::new(SemanticRetriever::new(
+                store.clone(),
+                embeddings.clone(),
+                20,
+            )),
             Box::new(KeywordRetriever::new(store.clone(), 20)),
             Box::new(GraphRetriever::new(
                 store.clone(),
@@ -200,9 +200,24 @@ mod tests {
         let emb = embeddings.embed(&["test"]).await.unwrap();
 
         let facts = vec![
-            make_fact(bank, "Observation about tests", NetworkType::Observation, emb[0].clone()),
-            make_fact(bank, "World fact about testing", NetworkType::World, emb[0].clone()),
-            make_fact(bank, "Opinion on test quality", NetworkType::Opinion, emb[0].clone()),
+            make_fact(
+                bank,
+                "Observation about tests",
+                NetworkType::Observation,
+                emb[0].clone(),
+            ),
+            make_fact(
+                bank,
+                "World fact about testing",
+                NetworkType::World,
+                emb[0].clone(),
+            ),
+            make_fact(
+                bank,
+                "Opinion on test quality",
+                NetworkType::Opinion,
+                emb[0].clone(),
+            ),
         ];
         store.insert_facts(&facts).await.unwrap();
 
@@ -249,7 +264,12 @@ mod tests {
         let bank = create_test_bank(&store, 8).await;
 
         let emb = embeddings.embed(&["opinion"]).await.unwrap();
-        let fact = make_fact(bank, "Strong opinion here", NetworkType::Opinion, emb[0].clone());
+        let fact = make_fact(
+            bank,
+            "Strong opinion here",
+            NetworkType::Opinion,
+            emb[0].clone(),
+        );
         store.insert_facts(&[fact]).await.unwrap();
 
         let pipeline = build_pipeline(store, embeddings);

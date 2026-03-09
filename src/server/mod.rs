@@ -5,8 +5,8 @@ pub mod handlers;
 
 use std::sync::Arc;
 
-use axum::routing::{get, post};
 use axum::Router;
+use axum::routing::{get, post};
 use tower_http::cors::CorsLayer;
 
 use crate::consolidation::{Consolidator, OpinionMerger};
@@ -54,7 +54,10 @@ pub struct AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/v1/info", get(handlers::server_info))
-        .route("/v1/banks", get(handlers::list_banks).post(handlers::create_bank))
+        .route(
+            "/v1/banks",
+            get(handlers::list_banks).post(handlers::create_bank),
+        )
         .route("/v1/banks/{id}", get(handlers::get_bank))
         .route("/v1/banks/{id}/retain", post(handlers::retain))
         .route("/v1/banks/{id}/recall", post(handlers::recall))
@@ -89,7 +92,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use chrono::Utc;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use tower::util::ServiceExt;
 
     // --- Mock pipelines ---
@@ -162,10 +165,7 @@ mod tests {
 
     #[async_trait]
     impl Consolidator for MockConsolidator {
-        async fn consolidate(
-            &self,
-            _bank_id: BankId,
-        ) -> Result<ConsolidationReport> {
+        async fn consolidate(&self, _bank_id: BankId) -> Result<ConsolidationReport> {
             Ok(ConsolidationReport::default())
         }
     }
@@ -182,7 +182,12 @@ mod tests {
     fn test_app() -> (Router, Arc<MockMemoryStore>) {
         let store = Arc::new(MockMemoryStore::new());
         let state = AppState {
-            info: ServerInfo { retain_model: "test".into(), reflect_model: "test".into(), embedding_model: "test".into(), reranker_model: "none".into() },
+            info: ServerInfo {
+                retain_model: "test".into(),
+                reflect_model: "test".into(),
+                embedding_model: "test".into(),
+                reranker_model: "none".into(),
+            },
             retain: Arc::new(MockRetainPipeline {
                 store: store.clone(),
             }),
@@ -213,10 +218,7 @@ mod tests {
     }
 
     fn get_request(uri: &str) -> Request<Body> {
-        Request::builder()
-            .uri(uri)
-            .body(Body::empty())
-            .unwrap()
+        Request::builder().uri(uri).body(Body::empty()).unwrap()
     }
 
     #[tokio::test]
@@ -269,7 +271,12 @@ mod tests {
         );
 
         let app2 = router(AppState {
-            info: ServerInfo { retain_model: "test".into(), reflect_model: "test".into(), embedding_model: "test".into(), reranker_model: "none".into() },
+            info: ServerInfo {
+                retain_model: "test".into(),
+                reflect_model: "test".into(),
+                embedding_model: "test".into(),
+                reranker_model: "none".into(),
+            },
             retain: Arc::new(MockRetainPipeline {
                 store: store.clone(),
             }),
@@ -466,7 +473,12 @@ mod tests {
         // Build a fresh app since oneshot consumes the router
         let make_app = || {
             router(AppState {
-                info: ServerInfo { retain_model: "test".into(), reflect_model: "test".into(), embedding_model: "test".into(), reranker_model: "none".into() },
+                info: ServerInfo {
+                    retain_model: "test".into(),
+                    reflect_model: "test".into(),
+                    embedding_model: "test".into(),
+                    reranker_model: "none".into(),
+                },
                 retain: Arc::new(MockRetainPipeline {
                     store: store.clone(),
                 }),
@@ -474,7 +486,7 @@ mod tests {
                 reflect: Arc::new(MockReflectPipeline),
                 consolidator: Arc::new(MockConsolidator),
                 opinion_merger: Arc::new(MockOpinionMerger),
-                    store: store.clone(),
+                store: store.clone(),
                 embeddings: Arc::new(MockEmbeddings::new(384)),
             })
         };
@@ -496,6 +508,5 @@ mod tests {
         );
         let resp = make_app().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-
     }
 }

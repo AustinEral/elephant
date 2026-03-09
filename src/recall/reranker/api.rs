@@ -146,11 +146,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_input_returns_empty() {
-        let reranker = ApiReranker::new(
-            "key".into(),
-            "http://localhost:1".into(),
-            "model".into(),
-        );
+        let reranker = ApiReranker::new("key".into(), "http://localhost:1".into(), "model".into());
         let result = reranker.rerank("query", vec![], 10).await.unwrap();
         assert!(result.is_empty());
     }
@@ -220,16 +216,9 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
 
-        let reranker = ApiReranker::new(
-            "key".into(),
-            format!("http://{addr}"),
-            "model".into(),
-        );
+        let reranker = ApiReranker::new("key".into(), format!("http://{addr}"), "model".into());
 
-        let facts = vec![
-            make_scored("first", 0.5),
-            make_scored("second", 0.5),
-        ];
+        let facts = vec![make_scored("first", 0.5), make_scored("second", 0.5)];
 
         // API already returns top_n=2 from server, but we asked for it
         let result = reranker.rerank("query", facts, 2).await.unwrap();
@@ -251,11 +240,7 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
 
-        let reranker = ApiReranker::new(
-            "key".into(),
-            format!("http://{addr}"),
-            "model".into(),
-        );
+        let reranker = ApiReranker::new("key".into(), format!("http://{addr}"), "model".into());
 
         let facts = vec![make_scored("test", 0.5)];
         let err = reranker.rerank("query", facts, 1).await.unwrap_err();

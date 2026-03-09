@@ -1,8 +1,8 @@
 //! Error-to-HTTP mapping for the API server.
 
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::Serialize;
 use tracing::error;
 
@@ -21,14 +21,20 @@ impl IntoResponse for Error {
             Error::InvalidDisposition(_) | Error::InvalidId(_) | Error::Serialization(_) => {
                 StatusCode::BAD_REQUEST
             }
-            Error::Llm(_) | Error::Embedding(_) | Error::Reranker(_) | Error::ServerError(_) => StatusCode::BAD_GATEWAY,
+            Error::Llm(_) | Error::Embedding(_) | Error::Reranker(_) | Error::ServerError(_) => {
+                StatusCode::BAD_GATEWAY
+            }
             Error::RateLimit(_) => StatusCode::TOO_MANY_REQUESTS,
             Error::EmbeddingDimensionMismatch { .. } => StatusCode::CONFLICT,
             Error::Storage(_) | Error::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
         let msg = self.to_string();
-        error!(status = status.as_u16(), error = msg.as_str(), "request_error");
+        error!(
+            status = status.as_u16(),
+            error = msg.as_str(),
+            "request_error"
+        );
 
         let body = ErrorBody { error: msg };
         (status, Json(body)).into_response()

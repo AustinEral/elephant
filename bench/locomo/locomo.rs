@@ -1,30 +1,31 @@
 //! LoCoMo benchmark harness for Elephant.
 //!
-//! Ingests conversations via the retain API, asks questions via reflect,
-//! and scores answers with token-level F1 + LLM-as-judge.
-//!
-//! Usage:
-//!     cargo run --bin locomo-bench -- --data data/locomo10.json
-//!
-//! Config from .env: LLM_PROVIDER, LLM_API_KEY, LLM_MODEL, ELEPHANT_URL
+//! This runner executes Elephant in-process so benchmark artifacts can include
+//! stage-level usage, dataset evidence refs, and stable run provenance.
 
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::env;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Instant;
 
 use chrono::{DateTime, NaiveDateTime, Utc};
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, Semaphore};
 
 use elephant::llm::retry::{RetryPolicy, RetryingLlmClient};
 use elephant::llm::{self, LlmClient, Provider, ProviderConfig};
-use elephant::types::llm::{CompletionRequest, Message};
+use elephant::metrics::{LlmStage, MeteredLlmClient, MetricsCollector, StageUsage};
+use elephant::runtime::{BuildRuntimeOptions, ElephantRuntime, build_runtime_from_env};
+use elephant::types::{
+    BankId, CompletionRequest, Disposition, MemoryBank, Message, NetworkType, ReflectQuery,
+    RetainInput, TurnId,
+};
 
 // --- LoCoMo dataset types ---
 
@@ -53,74 +54,12 @@ struct Turn {
 #[derive(Debug, Deserialize)]
 struct QaPair {
     question: String,
-    /// Missing for category 5 (adversarial), which uses `adversarial_answer` instead.
+    /// Usually missing for category 5 (adversarial), though the upstream dataset
+    /// currently contains two category-5 rows with populated `answer` values.
     answer: Option<serde_json::Value>,
     category: u8,
-}
-
-// --- API types (match Elephant's HTTP interface) ---
-
-#[derive(Debug, Serialize)]
-struct RetainRequest {
-    bank_id: String,
-    content: String,
-    timestamp: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct RetainResponse {
-    facts_stored: usize,
-}
-
-#[derive(Debug, Serialize)]
-struct ReflectRequest {
-    bank_id: String,
-    question: String,
-    budget_tokens: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct RetrievedFactEntry {
-    id: String,
-    content: String,
-    score: f32,
-    network: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ReflectResponse {
-    response: String,
-    confidence: f32,
     #[serde(default)]
-    retrieved_context: Vec<RetrievedFactEntry>,
-}
-
-#[derive(Debug, Serialize)]
-struct CreateBankRequest {
-    name: String,
-    mission: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct CreateBankResponse {
-    id: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ServerInfoResponse {
-    retain_model: String,
-    reflect_model: String,
-    embedding_model: String,
-    reranker_model: String,
-}
-
-#[derive(Debug, Serialize)]
-struct ConsolidateRequest {}
-
-#[derive(Debug, Deserialize)]
-struct ConsolidateResponse {
-    observations_created: usize,
-    observations_updated: usize,
+    evidence: Vec<String>,
 }
 
 // --- Judge types ---
@@ -133,10 +72,45 @@ struct JudgeResponse {
 
 // --- Result types ---
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct BenchmarkManifest {
+    protocol_version: String,
+    profile: String,
+    mode: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    config_path: Option<String>,
+    dataset_path: String,
+    dataset_fingerprint: String,
+    command: String,
+    category_filter: Vec<u8>,
+    #[serde(default)]
+    selected_conversations: Vec<String>,
+    image_policy: String,
+    ingestion_granularity: String,
+    question_concurrency: usize,
+    conversation_concurrency: usize,
+    consolidation_strategy: String,
+    session_limit: Option<usize>,
+    question_limit: Option<usize>,
+    raw_json: bool,
+    dirty_worktree: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct ConversationSummary {
+    bank_id: String,
+    accuracy: f64,
+    mean_f1: f64,
+    mean_evidence_recall: f64,
+    count: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct BenchmarkOutput {
     benchmark: String,
     timestamp: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    commit: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     tag: Option<String>,
     judge_model: String,
@@ -148,10 +122,22 @@ struct BenchmarkOutput {
     total_questions: usize,
     accuracy: f64,
     mean_f1: f64,
+    mean_evidence_recall: f64,
     per_category: HashMap<String, CategoryResult>,
-    /// Maps sample_id → bank_id for resuming without re-ingestion.
     #[serde(default)]
+    per_conversation: HashMap<String, ConversationSummary>,
+    /// Maps sample_id → bank_id for resuming without re-ingestion.
+    #[serde(rename = "bank_ids", alias = "banks", default)]
     banks: HashMap<String, String>,
+    /// Maps benchmark turn ids back to LoCoMo refs like D1:3.
+    #[serde(default)]
+    turn_refs: HashMap<String, String>,
+    #[serde(default)]
+    manifest: BenchmarkManifest,
+    #[serde(default)]
+    stage_metrics: BTreeMap<LlmStage, StageUsage>,
+    #[serde(default)]
+    total_stage_usage: StageUsage,
     results: Vec<QuestionResult>,
     total_time_s: f64,
 }
@@ -160,7 +146,20 @@ struct BenchmarkOutput {
 struct CategoryResult {
     accuracy: f64,
     mean_f1: f64,
+    mean_evidence_recall: f64,
     count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RetrievedFactEntry {
+    id: String,
+    content: String,
+    score: f32,
+    network: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    source_turn_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    source_turn_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,6 +176,15 @@ struct QuestionResult {
     judge_reasoning: String,
     confidence: f32,
     elapsed_s: f64,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    error: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    evidence_refs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    retrieved_turn_refs: Vec<String>,
+    evidence_hit: bool,
+    evidence_recall: f64,
     /// All facts retrieved during reflect, in ranked order with scores.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     retrieved_context: Vec<RetrievedFactEntry>,
@@ -195,6 +203,19 @@ fn category_name(cat: u8) -> &'static str {
     }
 }
 
+fn should_score_question(qa: &QaPair) -> bool {
+    matches!(qa.category, 1..=4) && qa.answer.is_some()
+}
+
+fn network_name(network: NetworkType) -> &'static str {
+    match network {
+        NetworkType::World => "world",
+        NetworkType::Experience => "experience",
+        NetworkType::Observation => "observation",
+        NetworkType::Opinion => "opinion",
+    }
+}
+
 // --- Token F1 ---
 
 fn normalize_answer(s: &str) -> String {
@@ -203,7 +224,6 @@ fn normalize_answer(s: &str) -> String {
         .chars()
         .map(|c| if c.is_ascii_punctuation() { ' ' } else { c })
         .collect();
-    // Remove articles
     let words: Vec<&str> = no_punct
         .split_whitespace()
         .filter(|w| !matches!(*w, "a" | "an" | "the"))
@@ -224,7 +244,6 @@ fn token_f1(prediction: &str, ground_truth: &str) -> f64 {
         return 0.0;
     }
 
-    // Count common tokens (multiset intersection)
     let mut gold_counts: HashMap<&str, usize> = HashMap::new();
     for t in &gold_tokens {
         *gold_counts.entry(t).or_default() += 1;
@@ -252,61 +271,45 @@ fn token_f1(prediction: &str, ground_truth: &str) -> f64 {
 
 // --- Session parsing ---
 
-fn parse_session_date(date_str: &str) -> String {
-    // Format: "1:56 pm on 8 May, 2023"
+fn parse_session_date(date_str: &str) -> DateTime<Utc> {
     let cleaned = date_str.trim();
     if let Ok(dt) = NaiveDateTime::parse_from_str(cleaned, "%I:%M %p on %-d %B, %Y") {
-        let utc: DateTime<Utc> = dt.and_utc();
-        return utc.to_rfc3339();
+        return dt.and_utc();
     }
-    // Fallback: try without comma
-    if let Ok(dt) = NaiveDateTime::parse_from_str(cleaned, "%I:%M %p on %-d %B %Y") {
-        let utc: DateTime<Utc> = dt.and_utc();
-        return utc.to_rfc3339();
+    if let Ok(dt) = NaiveDateTime::parse_from_str(cleaned, "%I:%M %P on %-d %B, %Y") {
+        return dt.and_utc();
     }
-    Utc::now().to_rfc3339()
-}
-
-fn format_session(turns: &[Turn], session_date: &str) -> String {
-    let mut lines = vec![format!("[{session_date}]")];
-    for turn in turns {
-        match &turn.blip_caption {
-            Some(caption) => lines.push(format!(
-                "{}: {} [Image: {}]",
-                turn.speaker, turn.text, caption
-            )),
-            None => lines.push(format!("{}: {}", turn.speaker, turn.text)),
-        }
-    }
-    lines.join("\n")
-}
-
-/// Raw JSON mode: sends the unmodified dataset JSON for each session.
-/// This includes all fields (blip_caption, query, img_url, dia_id, etc.).
-/// Some benchmarking implementations use this approach, which leaks dataset
-/// metadata beyond what the LoCoMo paper specifies as fair input.
-fn format_session_raw(conv: &Conversation, idx: usize) -> String {
-    let key = format!("session_{idx}");
-    conv.sessions
-        .get(&key)
-        .map(|v| v.to_string())
-        .unwrap_or_default()
+    Utc::now()
 }
 
 fn session_count(conv: &Conversation) -> usize {
-    let mut n = 0;
-    while conv.sessions.contains_key(&format!("session_{}", n + 1)) {
-        n += 1;
-    }
-    n
+    conv.sessions
+        .keys()
+        .filter_map(|k| {
+            k.strip_prefix("session_")
+                .and_then(|rest| rest.strip_suffix("_date_time"))
+                .or_else(|| {
+                    k.strip_prefix("session_").and_then(|rest| {
+                        rest.strip_suffix("_dialogue")
+                            .or_else(|| rest.strip_suffix("_dialog"))
+                    })
+                })
+                .and_then(|n| n.parse::<usize>().ok())
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 fn get_session_turns(conv: &Conversation, idx: usize) -> Vec<Turn> {
-    let key = format!("session_{idx}");
-    conv.sessions
-        .get(&key)
-        .and_then(|v| serde_json::from_value::<Vec<Turn>>(v.clone()).ok())
-        .unwrap_or_default()
+    for suffix in ["dialogue", "dialog"] {
+        let key = format!("session_{idx}_{suffix}");
+        if let Some(v) = conv.sessions.get(&key) {
+            if let Ok(turns) = serde_json::from_value::<Vec<Turn>>(v.clone()) {
+                return turns;
+            }
+        }
+    }
+    Vec::new()
 }
 
 fn get_session_date(conv: &Conversation, idx: usize) -> String {
@@ -318,12 +321,72 @@ fn get_session_date(conv: &Conversation, idx: usize) -> String {
         .to_string()
 }
 
+fn format_turn(turn: &Turn) -> String {
+    match turn.blip_caption.as_deref() {
+        Some(caption) if !caption.trim().is_empty() => {
+            format!(
+                "{}: {}\n[Image caption: {}]",
+                turn.speaker, turn.text, caption
+            )
+        }
+        _ => format!("{}: {}", turn.speaker, turn.text),
+    }
+}
+
+fn format_session(turns: &[Turn], date_str: &str) -> String {
+    let dialogue = turns.iter().map(format_turn).collect::<Vec<_>>().join("\n");
+    format!("Date: {date_str}\n\n{dialogue}")
+}
+
+fn format_session_raw(conv: &Conversation, idx: usize) -> String {
+    let dialogue_key = format!("session_{idx}_dialogue");
+    let dialog_key = format!("session_{idx}_dialog");
+    let date_key = format!("session_{idx}_date_time");
+    let obj = serde_json::json!({
+        "sample_session": idx,
+        "date_time": conv.sessions.get(&date_key).cloned().unwrap_or(serde_json::Value::Null),
+        "dialogue": conv.sessions.get(&dialogue_key)
+            .cloned()
+            .or_else(|| conv.sessions.get(&dialog_key).cloned())
+            .unwrap_or(serde_json::Value::Null),
+    });
+    serde_json::to_string_pretty(&obj).unwrap_or_default()
+}
+
 fn answer_to_string(val: &serde_json::Value) -> String {
     match val {
         serde_json::Value::String(s) => s.clone(),
         serde_json::Value::Number(n) => n.to_string(),
         other => other.to_string(),
     }
+}
+
+fn evidence_recall(expected: &[String], retrieved: &[String]) -> (bool, f64) {
+    let expected_set: BTreeSet<&str> = expected.iter().map(String::as_str).collect();
+    if expected_set.is_empty() {
+        return (true, 1.0);
+    }
+    let retrieved_set: BTreeSet<&str> = retrieved.iter().map(String::as_str).collect();
+    let hits = expected_set
+        .iter()
+        .filter(|e| retrieved_set.contains(**e))
+        .count();
+    (hits > 0, hits as f64 / expected_set.len() as f64)
+}
+
+fn fnv1a64(data: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in data {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn fmt_elapsed(seconds: f64) -> String {
+    let m = (seconds as u64) / 60;
+    let s = (seconds as u64) % 60;
+    format!("{m}:{s:02}")
 }
 
 // --- LLM Judge ---
@@ -335,7 +398,7 @@ async fn llm_judge(
     question: &str,
     gold_answer: &str,
     generated_answer: &str,
-) -> (bool, String) {
+) -> Result<(bool, String), String> {
     let prompt = JUDGE_PROMPT
         .replace("{question}", question)
         .replace("{gold_answer}", gold_answer)
@@ -350,141 +413,184 @@ async fn llm_judge(
         ..Default::default()
     };
 
-    // RetryingLlmClient handles rate-limit/server-error retries.
-    // We only retry here on parse failures (LLM returned unparseable text).
     for attempt in 0..3 {
         let result = judge.complete(request.clone()).await;
         match result {
             Ok(resp) => {
-                // Try to parse as structured JSON
                 if let Ok(parsed) = serde_json::from_str::<JudgeResponse>(&resp.content) {
                     let correct = parsed.label.eq_ignore_ascii_case("CORRECT");
-                    return (correct, parsed.reasoning);
+                    return Ok((correct, parsed.reasoning));
                 }
-                // Try extracting JSON from prose
                 if let Ok(json_str) = llm::extract_json(&resp.content)
                     && let Ok(parsed) = serde_json::from_str::<JudgeResponse>(&json_str)
                 {
                     let correct = parsed.label.eq_ignore_ascii_case("CORRECT");
-                    return (correct, parsed.reasoning);
+                    return Ok((correct, parsed.reasoning));
                 }
                 if attempt == 2 {
-                    return (
-                        false,
-                        format!(
-                            "could not parse judge response: {}",
-                            &resp.content[..resp.content.len().min(100)]
-                        ),
-                    );
+                    return Err(format!(
+                        "could not parse judge response: {}",
+                        &resp.content[..resp.content.len().min(120)]
+                    ));
                 }
             }
             Err(e) => {
-                return (false, format!("judge error: {e}"));
+                return Err(format!("judge error: {e}"));
             }
         }
     }
-    (false, "judge failed after retries".into())
+    Err("judge failed after retries".into())
 }
 
-// --- HTTP helpers ---
-
-async fn api_post<T: serde::de::DeserializeOwned>(
-    client: &Client,
-    url: &str,
-    body: &impl Serialize,
-) -> Result<T, String> {
-    let resp = client
-        .post(url)
-        .json(body)
-        .send()
-        .await
-        .map_err(|e| format!("request failed: {e}"))?;
-    let status = resp.status();
-    let text = resp.text().await.map_err(|e| format!("read error: {e}"))?;
-    if !status.is_success() {
-        return Err(format!("HTTP {status}: {text}"));
-    }
-    serde_json::from_str(&text).map_err(|e| format!("parse error: {e}\nbody: {text}"))
+fn build_judge_client(
+    metrics: Arc<MetricsCollector>,
+    override_model: Option<String>,
+) -> Arc<dyn LlmClient> {
+    let judge_provider_str = env::var("JUDGE_PROVIDER")
+        .or_else(|_| env::var("LLM_PROVIDER"))
+        .expect("JUDGE_PROVIDER or LLM_PROVIDER must be set");
+    let judge_api_key = env::var("JUDGE_API_KEY")
+        .or_else(|_| env::var("LLM_API_KEY"))
+        .expect("JUDGE_API_KEY or LLM_API_KEY must be set");
+    let judge_model = override_model.unwrap_or_else(|| {
+        env::var("JUDGE_MODEL")
+            .or_else(|_| env::var("LLM_MODEL"))
+            .expect("JUDGE_MODEL or LLM_MODEL must be set")
+    });
+    let provider = match judge_provider_str.as_str() {
+        "openai" => Provider::OpenAi,
+        _ => Provider::Anthropic,
+    };
+    let judge_config = ProviderConfig {
+        provider,
+        api_key: judge_api_key,
+        model: judge_model,
+        base_url: env::var("JUDGE_BASE_URL")
+            .ok()
+            .or_else(|| env::var("LLM_BASE_URL").ok()),
+    };
+    let inner: Arc<dyn LlmClient> = Arc::from(llm::build_client(&judge_config).unwrap());
+    let metered: Arc<dyn LlmClient> =
+        Arc::new(MeteredLlmClient::new(inner, metrics, LlmStage::Judge));
+    Arc::new(RetryingLlmClient::new(metered, RetryPolicy::default()))
 }
 
-async fn api_post_retry<T: serde::de::DeserializeOwned>(
-    client: &Client,
-    url: &str,
-    body: &impl Serialize,
-    max_retries: usize,
-) -> Result<T, String> {
-    let mut last_err = String::new();
-    for attempt in 0..=max_retries {
-        match api_post(client, url, body).await {
-            Ok(v) => return Ok(v),
-            Err(e) => {
-                last_err = e;
-                if attempt < max_retries {
-                    let delay = 1 << attempt; // 1s, 2s, 4s
-                    eprintln!("  retry {}/{max_retries} in {delay}s: {last_err}", attempt + 1);
-                    tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
-                }
-            }
-        }
-    }
-    Err(last_err)
+fn judge_label(override_model: &Option<String>) -> String {
+    let provider = env::var("JUDGE_PROVIDER")
+        .or_else(|_| env::var("LLM_PROVIDER"))
+        .expect("JUDGE_PROVIDER or LLM_PROVIDER must be set");
+    let model = override_model.clone().unwrap_or_else(|| {
+        env::var("JUDGE_MODEL")
+            .or_else(|_| env::var("LLM_MODEL"))
+            .expect("JUDGE_MODEL or LLM_MODEL must be set")
+    });
+    format!("{provider}/{model}")
 }
 
-// --- Time formatting ---
-
-fn fmt_elapsed(seconds: f64) -> String {
-    let m = (seconds as u64) / 60;
-    let s = (seconds as u64) % 60;
-    format!("{m}:{s:02}")
-}
-
-// --- Incremental results flushing ---
+// --- Result flushing ---
 
 #[allow(clippy::too_many_arguments)]
-fn flush_results(results: &[QuestionResult], banks: &HashMap<String, String>, output_path: &Path, judge_label: &str, tag: &Option<String>, retain_model: &str, reflect_model: &str, embedding_model: &str, reranker_model: &str, consolidation_strategy: &str, bench_start: Instant) {
+fn flush_results(
+    results: &[QuestionResult],
+    banks: &HashMap<String, String>,
+    turn_refs: &HashMap<String, String>,
+    output_path: &Path,
+    judge_label: &str,
+    tag: &Option<String>,
+    retain_model: &str,
+    reflect_model: &str,
+    embedding_model: &str,
+    reranker_model: &str,
+    consolidation_strategy: &str,
+    manifest: &BenchmarkManifest,
+    metrics: &MetricsCollector,
+    run_timestamp: &str,
+    commit: Option<&str>,
+    bench_start: Instant,
+) {
     let bench_elapsed = bench_start.elapsed().as_secs_f64();
-    let total_questions = results.len();
+    let mut sorted_results = results.to_vec();
+    sorted_results.sort_by(|a, b| {
+        a.sample_id
+            .cmp(&b.sample_id)
+            .then(a.category_name.cmp(&b.category_name))
+            .then(a.question_id.cmp(&b.question_id))
+            .then(a.question.cmp(&b.question))
+    });
+    let total_questions = sorted_results.len();
 
-    let mut category_f1: HashMap<String, Vec<f64>> = HashMap::new();
-    let mut category_judge: HashMap<String, Vec<f64>> = HashMap::new();
-    for r in results {
-        category_f1.entry(r.category_name.clone()).or_default().push(r.f1);
-        let score = if r.judge_correct { 1.0 } else { 0.0 };
-        category_judge.entry(r.category_name.clone()).or_default().push(score);
+    let mut category_results: HashMap<String, Vec<&QuestionResult>> = HashMap::new();
+    let mut conversation_results: HashMap<String, Vec<&QuestionResult>> = HashMap::new();
+    for r in &sorted_results {
+        category_results
+            .entry(r.category_name.clone())
+            .or_default()
+            .push(r);
+        conversation_results
+            .entry(r.sample_id.clone())
+            .or_default()
+            .push(r);
     }
 
     let mean_f1 = if total_questions > 0 {
-        results.iter().map(|r| r.f1).sum::<f64>() / total_questions as f64
+        sorted_results.iter().map(|r| r.f1).sum::<f64>() / total_questions as f64
     } else {
         0.0
     };
-    let total_correct: f64 = category_judge.values().map(|v| v.iter().sum::<f64>()).sum();
-    let total_judged: usize = category_judge.values().map(|v| v.len()).sum();
-    let accuracy = if total_judged > 0 {
-        total_correct / total_judged as f64
+    let mean_evidence_recall = if total_questions > 0 {
+        sorted_results
+            .iter()
+            .map(|r| r.evidence_recall)
+            .sum::<f64>()
+            / total_questions as f64
+    } else {
+        0.0
+    };
+    let total_correct = sorted_results.iter().filter(|r| r.judge_correct).count();
+    let accuracy = if total_questions > 0 {
+        total_correct as f64 / total_questions as f64
     } else {
         0.0
     };
 
     let mut per_category = HashMap::new();
-    for (name, f1_scores) in &category_f1 {
-        let j_scores = category_judge.get(name);
-        let n = f1_scores.len();
+    for (name, rows) in &category_results {
+        let n = rows.len();
         per_category.insert(
             name.clone(),
             CategoryResult {
-                accuracy: j_scores
-                    .map(|v| v.iter().sum::<f64>() / v.len() as f64)
-                    .unwrap_or(0.0),
-                mean_f1: f1_scores.iter().sum::<f64>() / n as f64,
+                accuracy: rows.iter().filter(|r| r.judge_correct).count() as f64 / n as f64,
+                mean_f1: rows.iter().map(|r| r.f1).sum::<f64>() / n as f64,
+                mean_evidence_recall: rows.iter().map(|r| r.evidence_recall).sum::<f64>()
+                    / n as f64,
                 count: n,
             },
         );
     }
 
+    let mut per_conversation = HashMap::new();
+    for (sample_id, rows) in &conversation_results {
+        let n = rows.len();
+        per_conversation.insert(
+            sample_id.clone(),
+            ConversationSummary {
+                bank_id: banks.get(sample_id).cloned().unwrap_or_default(),
+                accuracy: rows.iter().filter(|r| r.judge_correct).count() as f64 / n as f64,
+                mean_f1: rows.iter().map(|r| r.f1).sum::<f64>() / n as f64,
+                mean_evidence_recall: rows.iter().map(|r| r.evidence_recall).sum::<f64>()
+                    / n as f64,
+                count: n,
+            },
+        );
+    }
+
+    let stage_metrics = metrics.snapshot();
+    let total_stage_usage = metrics.total_usage();
+
     let output = BenchmarkOutput {
         benchmark: "locomo".into(),
-        timestamp: Utc::now().to_rfc3339(),
+        timestamp: run_timestamp.to_string(),
+        commit: commit.map(str::to_owned),
         tag: tag.clone(),
         judge_model: judge_label.to_string(),
         retain_model: retain_model.to_string(),
@@ -495,9 +601,15 @@ fn flush_results(results: &[QuestionResult], banks: &HashMap<String, String>, ou
         total_questions,
         accuracy,
         mean_f1,
+        mean_evidence_recall,
         per_category,
+        per_conversation,
         banks: banks.clone(),
-        results: results.to_vec(),
+        turn_refs: turn_refs.clone(),
+        manifest: manifest.clone(),
+        stage_metrics,
+        total_stage_usage,
+        results: sorted_results,
         total_time_s: bench_elapsed,
     };
 
@@ -508,174 +620,734 @@ fn flush_results(results: &[QuestionResult], banks: &HashMap<String, String>, ou
 
 // --- CLI ---
 
-struct Args {
-    data: PathBuf,
-    api_url: String,
-    output: Option<PathBuf>,
-    tag: Option<String>,
-    max_conversations: Option<usize>,
-    max_sessions: Option<usize>,
-    max_questions: Option<usize>,
-    bank_id: Option<String>,
-    judge_model: Option<String>,
-    concurrency: usize,
-    question_concurrency: usize,
-    consolidate: bool,
-    consolidate_per_session: bool,
-    /// Resume from a previous results file — reuses bank IDs to skip ingestion.
-    resume: Option<PathBuf>,
-    /// Ingest only — skip question phase (useful for separating ingestion from evaluation).
-    ingest_only: bool,
-    /// Send raw dataset JSON per session instead of formatted text.
-    /// Includes all fields (query, img_url, dia_id) beyond what the LoCoMo paper specifies.
-    raw_json: bool,
-    /// When used with --resume, delete observations and reset consolidated_at before re-consolidating.
-    reconsolidate: bool,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum RunProfile {
+    Full,
+    Smoke,
+    LegacyRaw,
 }
 
-fn parse_args() -> Args {
-    let mut args = Args {
-        data: PathBuf::from("data/locomo10.json"),
-        api_url: "http://localhost:3001".into(),
-        output: None,
-        tag: None,
-        max_conversations: None,
-        max_sessions: None,
-        max_questions: None,
-        bank_id: None,
-        judge_model: None,
-        concurrency: 1,
-        question_concurrency: 1,
-        consolidate: true,
-        consolidate_per_session: false,
-        resume: None,
-        ingest_only: false,
-        raw_json: false,
-        reconsolidate: false,
+impl Default for RunProfile {
+    fn default() -> Self {
+        Self::Full
+    }
+}
+
+impl RunProfile {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Smoke => "smoke",
+            Self::LegacyRaw => "legacy-raw",
+        }
+    }
+
+    fn config_path(self) -> PathBuf {
+        PathBuf::from(format!("bench/locomo/profiles/{}.json", self.as_str()))
+    }
+}
+
+impl FromStr for RunProfile {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "full" => Ok(Self::Full),
+            "smoke" => Ok(Self::Smoke),
+            "legacy-raw" => Ok(Self::LegacyRaw),
+            other => Err(format!(
+                "invalid --profile value: {other} (expected one of: full, smoke, legacy-raw)"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BenchCommand {
+    Run,
+    Ingest,
+    Qa,
+}
+
+impl BenchCommand {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Run => "run",
+            Self::Ingest => "ingest",
+            Self::Qa => "qa",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum IngestMode {
+    Turn,
+    Session,
+    RawJson,
+}
+
+impl Default for IngestMode {
+    fn default() -> Self {
+        Self::Turn
+    }
+}
+
+impl IngestMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Turn => "turn",
+            Self::Session => "session",
+            Self::RawJson => "raw-json",
+        }
+    }
+
+    fn ingestion_granularity(self) -> &'static str {
+        match self {
+            Self::Turn => "turn",
+            Self::Session | Self::RawJson => "session",
+        }
+    }
+
+    fn image_policy(self) -> &'static str {
+        match self {
+            Self::RawJson => "raw_json_session_payload",
+            Self::Turn | Self::Session => "blip_caption_inline",
+        }
+    }
+
+    fn ingest_per_session(self) -> bool {
+        !matches!(self, Self::Turn)
+    }
+
+    fn raw_json(self) -> bool {
+        matches!(self, Self::RawJson)
+    }
+}
+
+impl FromStr for IngestMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "turn" => Ok(Self::Turn),
+            "session" => Ok(Self::Session),
+            "raw-json" => Ok(Self::RawJson),
+            other => Err(format!(
+                "invalid --ingest value: {other} (expected one of: turn, session, raw-json)"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum ConsolidationMode {
+    End,
+    PerSession,
+    Off,
+}
+
+impl Default for ConsolidationMode {
+    fn default() -> Self {
+        Self::End
+    }
+}
+
+impl ConsolidationMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::End => "end",
+            Self::PerSession => "per-session",
+            Self::Off => "off",
+        }
+    }
+
+    fn enabled(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+
+    fn per_session(self) -> bool {
+        matches!(self, Self::PerSession)
+    }
+}
+
+impl FromStr for ConsolidationMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "end" => Ok(Self::End),
+            "per-session" => Ok(Self::PerSession),
+            "off" => Ok(Self::Off),
+            other => Err(format!(
+                "invalid --consolidation value: {other} (expected one of: end, per-session, off)"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct FileRunConfig {
+    #[serde(default)]
+    dataset: Option<PathBuf>,
+    #[serde(default)]
+    output: Option<PathBuf>,
+    #[serde(default)]
+    tag: Option<String>,
+    #[serde(default)]
+    conversations: Vec<String>,
+    #[serde(default)]
+    session_limit: Option<usize>,
+    #[serde(default)]
+    question_limit: Option<usize>,
+    #[serde(default)]
+    ingest: Option<IngestMode>,
+    #[serde(default)]
+    consolidation: Option<ConsolidationMode>,
+    #[serde(default)]
+    conversation_jobs: Option<usize>,
+    #[serde(default)]
+    question_jobs: Option<usize>,
+    #[serde(default)]
+    judge_model: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct RunConfig {
+    profile: RunProfile,
+    config_path: Option<PathBuf>,
+    dataset: PathBuf,
+    output: Option<PathBuf>,
+    tag: Option<String>,
+    conversations: Vec<String>,
+    session_limit: Option<usize>,
+    question_limit: Option<usize>,
+    ingest: IngestMode,
+    consolidation: ConsolidationMode,
+    conversation_jobs: usize,
+    question_jobs: usize,
+    judge_model: Option<String>,
+}
+
+impl Default for RunConfig {
+    fn default() -> Self {
+        Self {
+            profile: RunProfile::Full,
+            config_path: None,
+            dataset: PathBuf::from("data/locomo10.json"),
+            output: None,
+            tag: None,
+            conversations: Vec::new(),
+            session_limit: None,
+            question_limit: None,
+            ingest: IngestMode::Turn,
+            consolidation: ConsolidationMode::End,
+            conversation_jobs: 1,
+            question_jobs: 1,
+            judge_model: None,
+        }
+    }
+}
+
+impl FileRunConfig {
+    fn apply(self, config: &mut RunConfig) {
+        if let Some(dataset) = self.dataset {
+            config.dataset = dataset;
+        }
+        if let Some(output) = self.output {
+            config.output = Some(output);
+        }
+        if let Some(tag) = self.tag {
+            config.tag = Some(tag);
+        }
+        if !self.conversations.is_empty() {
+            config.conversations = self.conversations;
+        }
+        if let Some(limit) = self.session_limit {
+            config.session_limit = Some(limit);
+        }
+        if let Some(limit) = self.question_limit {
+            config.question_limit = Some(limit);
+        }
+        if let Some(ingest) = self.ingest {
+            config.ingest = ingest;
+        }
+        if let Some(consolidation) = self.consolidation {
+            config.consolidation = consolidation;
+        }
+        if let Some(jobs) = self.conversation_jobs {
+            config.conversation_jobs = jobs;
+        }
+        if let Some(jobs) = self.question_jobs {
+            config.question_jobs = jobs;
+        }
+        if let Some(judge_model) = self.judge_model {
+            config.judge_model = Some(judge_model);
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct CliOverrides {
+    help: bool,
+    profile: Option<RunProfile>,
+    config_path: Option<PathBuf>,
+    dataset: Option<PathBuf>,
+    output: Option<PathBuf>,
+    tag: Option<String>,
+    conversations: Vec<String>,
+    session_limit: Option<usize>,
+    question_limit: Option<usize>,
+    ingest: Option<IngestMode>,
+    consolidation: Option<ConsolidationMode>,
+    conversation_jobs: Option<usize>,
+    question_jobs: Option<usize>,
+    judge_model: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct BenchInvocation {
+    command: BenchCommand,
+    artifact_path: Option<PathBuf>,
+    config: RunConfig,
+}
+
+impl CliOverrides {
+    fn apply(self, config: &mut RunConfig) {
+        if let Some(dataset) = self.dataset {
+            config.dataset = dataset;
+        }
+        if let Some(output) = self.output {
+            config.output = Some(output);
+        }
+        if let Some(tag) = self.tag {
+            config.tag = Some(tag);
+        }
+        if !self.conversations.is_empty() {
+            config.conversations = self.conversations;
+        }
+        if let Some(limit) = self.session_limit {
+            config.session_limit = Some(limit);
+        }
+        if let Some(limit) = self.question_limit {
+            config.question_limit = Some(limit);
+        }
+        if let Some(ingest) = self.ingest {
+            config.ingest = ingest;
+        }
+        if let Some(consolidation) = self.consolidation {
+            config.consolidation = consolidation;
+        }
+        if let Some(jobs) = self.conversation_jobs {
+            config.conversation_jobs = jobs;
+        }
+        if let Some(jobs) = self.question_jobs {
+            config.question_jobs = jobs;
+        }
+        if let Some(judge_model) = self.judge_model {
+            config.judge_model = Some(judge_model);
+        }
+        if let Some(path) = self.config_path {
+            config.config_path = Some(path);
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ParsedCli {
+    command: BenchCommand,
+    artifact_path: Option<PathBuf>,
+    overrides: CliOverrides,
+}
+
+fn parse_args() -> BenchInvocation {
+    let raw: Vec<String> = env::args().collect();
+    match parse_args_from(&raw) {
+        Ok(Some(invocation)) => invocation,
+        Ok(None) => {
+            print_help();
+            std::process::exit(0);
+        }
+        Err(err) => {
+            eprintln!("{err}");
+            eprintln!();
+            print_help();
+            std::process::exit(1);
+        }
+    }
+}
+
+fn parse_args_from(raw: &[String]) -> Result<Option<BenchInvocation>, String> {
+    let ParsedCli {
+        command,
+        artifact_path,
+        overrides,
+    } = parse_cli_overrides(raw)?;
+    if overrides.help {
+        return Ok(None);
+    }
+
+    let config = match command {
+        BenchCommand::Run | BenchCommand::Ingest => resolve_fresh_config(overrides)?,
+        BenchCommand::Qa => resolve_qa_config(
+            artifact_path
+                .as_deref()
+                .ok_or_else(|| "`qa` requires an artifact path".to_string())?,
+            overrides,
+        )?,
+    };
+    validate_run_config(command, &config)?;
+    Ok(Some(BenchInvocation {
+        command,
+        artifact_path,
+        config,
+    }))
+}
+
+fn resolve_fresh_config(overrides: CliOverrides) -> Result<RunConfig, String> {
+    let profile = overrides.profile.unwrap_or_default();
+    let mut config = RunConfig {
+        profile,
+        ..RunConfig::default()
+    };
+    load_json_config(&profile.config_path())?.apply(&mut config);
+
+    if let Some(path) = overrides.config_path.clone() {
+        load_json_config(&path)?.apply(&mut config);
+        config.config_path = Some(path);
+    }
+
+    overrides.apply(&mut config);
+    Ok(config)
+}
+
+fn resolve_qa_config(artifact_path: &Path, overrides: CliOverrides) -> Result<RunConfig, String> {
+    validate_qa_overrides(&overrides)?;
+    let artifact = load_benchmark_output(artifact_path)?;
+    let mut config = run_config_from_artifact(&artifact)?;
+
+    if let Some(output) = overrides.output {
+        config.output = Some(output);
+    }
+    if let Some(tag) = overrides.tag {
+        config.tag = Some(tag);
+    }
+    if !overrides.conversations.is_empty() {
+        config.conversations = overrides.conversations;
+    }
+    if let Some(jobs) = overrides.conversation_jobs {
+        config.conversation_jobs = jobs;
+    }
+    if let Some(jobs) = overrides.question_jobs {
+        config.question_jobs = jobs;
+    }
+    if let Some(judge_model) = overrides.judge_model {
+        config.judge_model = Some(judge_model);
+    }
+
+    Ok(config)
+}
+
+fn validate_qa_overrides(overrides: &CliOverrides) -> Result<(), String> {
+    let mut unsupported = Vec::new();
+    if overrides.profile.is_some() {
+        unsupported.push("--profile");
+    }
+    if overrides.config_path.is_some() {
+        unsupported.push("--config");
+    }
+    if overrides.dataset.is_some() {
+        unsupported.push("--dataset");
+    }
+    if overrides.session_limit.is_some() {
+        unsupported.push("--session-limit");
+    }
+    if overrides.question_limit.is_some() {
+        unsupported.push("--question-limit");
+    }
+    if overrides.ingest.is_some() {
+        unsupported.push("--ingest");
+    }
+    if overrides.consolidation.is_some() {
+        unsupported.push("--consolidation");
+    }
+
+    if unsupported.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "`qa` does not accept {}; it runs against the artifact's existing banks",
+            unsupported.join(", ")
+        ))
+    }
+}
+
+fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
+    let mut overrides = CliOverrides::default();
+    let command = match raw.get(1).map(String::as_str) {
+        None => return Err("expected subcommand: run, ingest, or qa".into()),
+        Some("--help") | Some("-h") => {
+            overrides.help = true;
+            return Ok(ParsedCli {
+                command: BenchCommand::Run,
+                artifact_path: None,
+                overrides,
+            });
+        }
+        Some("run") => BenchCommand::Run,
+        Some("ingest") => BenchCommand::Ingest,
+        Some("qa") => BenchCommand::Qa,
+        Some(other) => {
+            return Err(format!(
+                "unknown subcommand: {other} (expected one of: run, ingest, qa)"
+            ));
+        }
     };
 
-    let raw: Vec<String> = env::args().collect();
-    let mut i = 1;
+    let mut artifact_path = None;
+    let mut i = 2;
+    if matches!(command, BenchCommand::Qa) {
+        match raw.get(2).map(String::as_str) {
+            None => return Err("expected artifact path after `qa`".into()),
+            Some("--help") | Some("-h") => {
+                overrides.help = true;
+                return Ok(ParsedCli {
+                    command,
+                    artifact_path: None,
+                    overrides,
+                });
+            }
+            Some(path) if path.starts_with('-') => {
+                return Err("expected artifact path after `qa`".into());
+            }
+            Some(path) => {
+                artifact_path = Some(PathBuf::from(path));
+                i = 3;
+            }
+        }
+    }
+
     while i < raw.len() {
         match raw[i].as_str() {
-            "--data" => {
-                i += 1;
-                args.data = PathBuf::from(&raw[i]);
+            "--help" | "-h" => {
+                overrides.help = true;
             }
-            "--api-url" => {
+            "--profile" => {
                 i += 1;
-                args.api_url = raw[i].clone();
+                overrides.profile = Some(
+                    raw.get(i)
+                        .ok_or_else(|| "--profile requires a value".to_string())?
+                        .parse()?,
+                );
             }
-            "--output" => {
+            "--config" => {
                 i += 1;
-                args.output = Some(PathBuf::from(&raw[i]));
+                overrides.config_path = Some(PathBuf::from(
+                    raw.get(i)
+                        .ok_or_else(|| "--config requires a value".to_string())?,
+                ));
+            }
+            "--dataset" => {
+                i += 1;
+                overrides.dataset = Some(PathBuf::from(
+                    raw.get(i)
+                        .ok_or_else(|| "--dataset requires a value".to_string())?,
+                ));
+            }
+            "--out" => {
+                i += 1;
+                overrides.output = Some(PathBuf::from(
+                    raw.get(i)
+                        .ok_or_else(|| "--out requires a value".to_string())?,
+                ));
             }
             "--tag" => {
                 i += 1;
-                args.tag = Some(raw[i].clone());
+                overrides.tag = Some(
+                    raw.get(i)
+                        .ok_or_else(|| "--tag requires a value".to_string())?
+                        .clone(),
+                );
             }
-            "--max-conversations" => {
+            "--conversation" => {
                 i += 1;
-                args.max_conversations = Some(raw[i].parse().expect("invalid --max-conversations"));
+                overrides.conversations.push(
+                    raw.get(i)
+                        .ok_or_else(|| "--conversation requires a value".to_string())?
+                        .clone(),
+                );
             }
-            "--max-sessions" => {
+            "--session-limit" => {
                 i += 1;
-                args.max_sessions = Some(raw[i].parse().expect("invalid --max-sessions"));
+                overrides.session_limit = Some(parse_usize_arg(raw.get(i), "--session-limit")?);
             }
-            "--max-questions" => {
+            "--question-limit" => {
                 i += 1;
-                args.max_questions = Some(raw[i].parse().expect("invalid --max-questions"));
+                overrides.question_limit = Some(parse_usize_arg(raw.get(i), "--question-limit")?);
             }
-            "--bank-id" => {
+            "--ingest" => {
                 i += 1;
-                args.bank_id = Some(raw[i].clone());
+                overrides.ingest = Some(
+                    raw.get(i)
+                        .ok_or_else(|| "--ingest requires a value".to_string())?
+                        .parse()?,
+                );
+            }
+            "--consolidation" => {
+                i += 1;
+                overrides.consolidation = Some(
+                    raw.get(i)
+                        .ok_or_else(|| "--consolidation requires a value".to_string())?
+                        .parse()?,
+                );
+            }
+            "--conversation-jobs" => {
+                i += 1;
+                overrides.conversation_jobs =
+                    Some(parse_usize_arg(raw.get(i), "--conversation-jobs")?);
+            }
+            "--question-jobs" => {
+                i += 1;
+                overrides.question_jobs = Some(parse_usize_arg(raw.get(i), "--question-jobs")?);
             }
             "--judge-model" => {
                 i += 1;
-                args.judge_model = Some(raw[i].clone());
+                overrides.judge_model = Some(
+                    raw.get(i)
+                        .ok_or_else(|| "--judge-model requires a value".to_string())?
+                        .clone(),
+                );
             }
-            "--conversation-concurrency" => {
-                i += 1;
-                args.concurrency = raw[i].parse().expect("invalid --conversation-concurrency");
-            }
-            "--question-concurrency" => {
-                i += 1;
-                args.question_concurrency = raw[i].parse().expect("invalid --question-concurrency");
-            }
-            "--no-consolidate" => {
-                args.consolidate = false;
-            }
-            "--consolidate-per-session" => {
-                args.consolidate_per_session = true;
-            }
-            "--resume" => {
-                i += 1;
-                args.resume = Some(PathBuf::from(&raw[i]));
-            }
-            "--ingest-only" => {
-                args.ingest_only = true;
-            }
-            "--raw-json" => {
-                args.raw_json = true;
-            }
-            "--reconsolidate" => {
-                args.reconsolidate = true;
-            }
-            "--help" | "-h" => {
-                eprintln!("Usage: locomo-bench [OPTIONS]");
-                eprintln!();
-                eprintln!("Options:");
-                eprintln!(
-                    "  --data <PATH>              Dataset path [default: data/locomo10.json]"
-                );
-                eprintln!(
-                    "  --api-url <URL>            Elephant API URL [default: http://localhost:3001]"
-                );
-                eprintln!(
-                    "  --output <PATH>            Output results path (overrides --tag)"
-                );
-                eprintln!(
-                    "  --tag <NAME>               Save to bench/locomo/results/<tag>.json"
-                );
-                eprintln!("  --max-conversations <N>    Limit conversations");
-                eprintln!("  --max-sessions <N>         Limit sessions ingested per conversation");
-                eprintln!("  --max-questions <N>        Limit questions per conversation");
-                eprintln!("  --bank-id <ID>             Reuse existing bank (skip ingestion)");
-                eprintln!("  --judge-model <MODEL>      Override LLM_MODEL for judge");
-                eprintln!(
-                    "  --conversation-concurrency <N>  Max parallel conversations [default: 1]"
-                );
-                eprintln!(
-                    "  --question-concurrency <N>      Max parallel questions per conversation [default: 1]"
-                );
-                eprintln!(
-                    "  --no-consolidate                Skip consolidation after ingestion"
-                );
-                eprintln!(
-                    "  --consolidate-per-session       Consolidate after each session (incremental)"
-                );
-                eprintln!(
-                    "  --resume <PATH>                 Resume from previous results (reuse bank IDs)"
-                );
-                eprintln!(
-                    "  --ingest-only                   Ingest only, skip question phase"
-                );
-                eprintln!(
-                    "  --raw-json                      Send raw dataset JSON (includes extra metadata)"
-                );
-                eprintln!(
-                    "  --reconsolidate                 With --resume: delete observations & re-consolidate"
-                );
-                std::process::exit(0);
-            }
-            other => {
-                eprintln!("Unknown argument: {other}");
-                std::process::exit(1);
-            }
+            other => return Err(format!("Unknown argument: {other}")),
         }
         i += 1;
     }
-    args
+    Ok(ParsedCli {
+        command,
+        artifact_path,
+        overrides,
+    })
+}
+
+fn parse_usize_arg(raw: Option<&String>, flag: &str) -> Result<usize, String> {
+    raw.ok_or_else(|| format!("{flag} requires a value"))?
+        .parse()
+        .map_err(|_| format!("invalid numeric value for {flag}"))
+}
+
+fn load_json_config(path: &Path) -> Result<FileRunConfig, String> {
+    let raw =
+        fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    serde_json::from_str(&raw).map_err(|e| format!("failed to parse {}: {e}", path.display()))
+}
+
+fn load_benchmark_output(path: &Path) -> Result<BenchmarkOutput, String> {
+    let raw =
+        fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    serde_json::from_str(&raw).map_err(|e| format!("failed to parse {}: {e}", path.display()))
+}
+
+fn ingest_mode_from_manifest(manifest: &BenchmarkManifest) -> Result<IngestMode, String> {
+    if manifest.raw_json {
+        return Ok(IngestMode::RawJson);
+    }
+    match manifest.ingestion_granularity.as_str() {
+        "turn" => Ok(IngestMode::Turn),
+        "session" => Ok(IngestMode::Session),
+        "" => Err("artifact manifest is missing ingestion_granularity".into()),
+        other => Err(format!(
+            "unsupported artifact ingestion_granularity: {other}"
+        )),
+    }
+}
+
+fn run_config_from_artifact(artifact: &BenchmarkOutput) -> Result<RunConfig, String> {
+    let manifest = &artifact.manifest;
+    let profile = if manifest.profile.is_empty() {
+        RunProfile::Full
+    } else {
+        manifest.profile.parse()?
+    };
+    if manifest.dataset_path.is_empty() {
+        return Err("artifact manifest is missing dataset_path".into());
+    }
+
+    let consolidation = if !manifest.consolidation_strategy.is_empty() {
+        manifest.consolidation_strategy.parse()?
+    } else if !artifact.consolidation_strategy.is_empty() {
+        artifact.consolidation_strategy.parse()?
+    } else {
+        ConsolidationMode::End
+    };
+
+    Ok(RunConfig {
+        profile,
+        config_path: manifest.config_path.as_ref().map(PathBuf::from),
+        dataset: PathBuf::from(&manifest.dataset_path),
+        output: None,
+        tag: None,
+        conversations: manifest.selected_conversations.clone(),
+        session_limit: manifest.session_limit,
+        question_limit: manifest.question_limit,
+        ingest: ingest_mode_from_manifest(manifest)?,
+        consolidation,
+        conversation_jobs: manifest.conversation_concurrency.max(1),
+        question_jobs: manifest.question_concurrency.max(1),
+        judge_model: None,
+    })
+}
+
+fn validate_run_config(command: BenchCommand, config: &RunConfig) -> Result<(), String> {
+    if config.conversation_jobs == 0 {
+        return Err("--conversation-jobs must be >= 1".into());
+    }
+    if config.question_jobs == 0 {
+        return Err("--question-jobs must be >= 1".into());
+    }
+    if matches!(command, BenchCommand::Qa) && config.dataset.as_os_str().is_empty() {
+        return Err("artifact-backed `qa` requires a dataset path".into());
+    }
+    Ok(())
+}
+
+fn print_help() {
+    eprintln!("Usage:");
+    eprintln!("  locomo-bench run [OPTIONS]");
+    eprintln!("  locomo-bench ingest [OPTIONS]");
+    eprintln!("  locomo-bench qa <RESULTS.json> [OPTIONS]");
+    eprintln!();
+    eprintln!("Subcommands:");
+    eprintln!("  run                              Fresh ingest, consolidate, then score QA");
+    eprintln!("  ingest                           Ingest and consolidate only; do not run QA");
+    eprintln!(
+        "  qa <RESULTS.json>                Score QA against existing banks; skip ingest and consolidation"
+    );
+    eprintln!();
+    eprintln!("Options:");
+    eprintln!("  --profile <NAME>                Named profile for `run`/`ingest` [default: full]");
+    eprintln!("                                  Profiles: full, smoke, legacy-raw");
+    eprintln!("  --config <PATH>                 JSON config file for `run`/`ingest`");
+    eprintln!(
+        "  --dataset <PATH>                Dataset path for `run`/`ingest` [default: data/locomo10.json]"
+    );
+    eprintln!("  --tag <NAME>                    Save to bench/locomo/results/<tag>.json");
+    eprintln!("  --out <PATH>                    Output results path (overrides --tag)");
+    eprintln!("  --conversation <ID>             Run one specific conversation (repeatable)");
+    eprintln!("  --ingest <MODE>                 turn | session | raw-json (`run`/`ingest` only)");
+    eprintln!("  --consolidation <MODE>          end | per-session | off (`run`/`ingest` only)");
+    eprintln!("  --conversation-jobs <N>         Parallel conversations");
+    eprintln!("  --question-jobs <N>             Parallel questions per conversation");
+    eprintln!("  --judge-model <MODEL>           Override judge model");
+    eprintln!();
+    eprintln!("Debug slice options:");
+    eprintln!(
+        "  --session-limit <N>             Limit sessions per conversation (`run`/`ingest` only)"
+    );
+    eprintln!(
+        "  --question-limit <N>            Limit questions per conversation (`run`/`ingest` only)"
+    );
 }
 
 // --- Shared state for incremental writes ---
@@ -683,6 +1355,7 @@ fn parse_args() -> Args {
 struct SharedResults {
     results: Vec<QuestionResult>,
     banks: HashMap<String, String>,
+    turn_refs: HashMap<String, String>,
     output_path: PathBuf,
     judge_label: String,
     tag: Option<String>,
@@ -691,6 +1364,10 @@ struct SharedResults {
     embedding_model: String,
     reranker_model: String,
     consolidation_strategy: String,
+    manifest: BenchmarkManifest,
+    metrics: Arc<MetricsCollector>,
+    run_timestamp: String,
+    commit: Option<String>,
     bench_start: Instant,
 }
 
@@ -705,115 +1382,192 @@ impl SharedResults {
         self.flush();
     }
 
+    fn record_turn_ref(&mut self, turn_id: TurnId, turn_ref: String) {
+        self.turn_refs.insert(turn_id.to_string(), turn_ref);
+    }
+
     fn flush(&self) {
-        flush_results(&self.results, &self.banks, &self.output_path, &self.judge_label, &self.tag, &self.retain_model, &self.reflect_model, &self.embedding_model, &self.reranker_model, &self.consolidation_strategy, self.bench_start);
+        flush_results(
+            &self.results,
+            &self.banks,
+            &self.turn_refs,
+            &self.output_path,
+            &self.judge_label,
+            &self.tag,
+            &self.retain_model,
+            &self.reflect_model,
+            &self.embedding_model,
+            &self.reranker_model,
+            &self.consolidation_strategy,
+            &self.manifest,
+            &self.metrics,
+            &self.run_timestamp,
+            self.commit.as_deref(),
+            self.bench_start,
+        );
     }
 }
 
 // --- Per-conversation worker ---
 
-#[allow(clippy::too_many_arguments)]
-async fn run_conversation(
-    tag: String,
-    http: Client,
-    api_url: String,
-    entry: LocomoEntry,
-    judge: Arc<dyn LlmClient>,
+#[derive(Debug, Clone)]
+struct ConversationRunOptions {
     max_sessions: Option<usize>,
     max_questions: Option<usize>,
     question_concurrency: usize,
-    consolidate: bool,
-    consolidate_per_session: bool,
-    reuse_bank: Option<String>,
+    ingest_mode: IngestMode,
+    consolidation: ConsolidationMode,
+    existing_bank: Option<String>,
+    require_existing_bank: bool,
     ingest_only: bool,
-    raw_json: bool,
+}
+
+fn question_id_for(sample_id: &str, question: &str) -> String {
+    let mut h = DefaultHasher::new();
+    sample_id.hash(&mut h);
+    question.hash(&mut h);
+    format!("{:06x}", h.finish() & 0xFFFFFF)
+}
+
+async fn run_conversation(
+    tag: String,
+    runtime: Arc<ElephantRuntime>,
+    entry: LocomoEntry,
+    judge: Arc<dyn LlmClient>,
+    options: ConversationRunOptions,
     shared: Arc<Mutex<SharedResults>>,
 ) -> Result<(), String> {
     let conv = &entry.conversation;
     let total_sessions = session_count(conv);
 
-    println!("[{tag}] {} & {} ({})", conv.speaker_a, conv.speaker_b, entry.sample_id);
+    println!(
+        "[{tag}] {} & {} ({})",
+        conv.speaker_a, conv.speaker_b, entry.sample_id
+    );
 
-    // Ingestion phase
-    let bank_id = if let Some(id) = reuse_bank {
-        println!("[{tag}] Reusing bank: {id} (skipping ingestion)");
-        id
+    let reused_bank = options.existing_bank.clone();
+    let bank_id = if let Some(id) = reused_bank {
+        println!("[{tag}] Using existing bank: {id} (skipping ingestion)");
+        BankId::from_str(&id).map_err(|e| format!("[{tag}] invalid bank id: {e}"))?
     } else {
-        let bank: CreateBankResponse = api_post(
-            &http,
-            &format!("{api_url}/v1/banks"),
-            &CreateBankRequest {
-                name: format!("locomo-{}", entry.sample_id),
-                mission: "Long-term conversational memory benchmark".into(),
-            },
-        )
-        .await
-        .map_err(|e| format!("[{tag}] failed to create bank: {e}"))?;
+        if options.require_existing_bank {
+            return Err(format!(
+                "[{tag}] missing bank for {} in the source artifact",
+                entry.sample_id
+            ));
+        }
 
-        let ingest_sessions = max_sessions.map(|m| m.min(total_sessions)).unwrap_or(total_sessions);
-        println!("[{tag}] Bank: {} | Ingesting {ingest_sessions}/{total_sessions} sessions...", bank.id);
+        let bank = MemoryBank {
+            id: BankId::new(),
+            name: format!("locomo-{}", entry.sample_id),
+            mission: "Long-term conversational memory benchmark".into(),
+            directives: vec![],
+            disposition: Disposition::default(),
+            embedding_model: runtime.embeddings.model_name().to_string(),
+            embedding_dimensions: runtime.embeddings.dimensions() as u16,
+        };
+        runtime
+            .store
+            .create_bank(&bank)
+            .await
+            .map_err(|e| format!("[{tag}] failed to create bank: {e}"))?;
+
+        let ingest_sessions = options
+            .max_sessions
+            .map(|m| m.min(total_sessions))
+            .unwrap_or(total_sessions);
+        println!(
+            "[{tag}] Bank: {} | Ingesting {ingest_sessions}/{total_sessions} sessions...",
+            bank.id
+        );
 
         let ingest_start = Instant::now();
-        let mut total_facts = 0usize;
-        let mut session_times: Vec<f64> = Vec::new();
+        let mut stored_facts = 0usize;
 
         for idx in 1..=ingest_sessions {
             let turns = get_session_turns(conv, idx);
             let date_str = get_session_date(conv, idx);
             let timestamp = parse_session_date(&date_str);
-            let text = if raw_json {
-                format_session_raw(conv, idx)
-            } else {
-                format_session(&turns, &date_str)
-            };
 
-            let t0 = Instant::now();
-            let resp: RetainResponse = match api_post_retry(
-                &http,
-                &format!("{api_url}/v1/banks/{}/retain", bank.id),
-                &RetainRequest {
-                    bank_id: bank.id.clone(),
-                    content: text,
-                    timestamp,
-                },
-                3,
-            )
-            .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!("[{tag}] ingest [{idx}/{ingest_sessions}] FAILED: {e}");
-                    continue;
-                }
-            };
-
-            let elapsed = t0.elapsed().as_secs_f64();
-            session_times.push(elapsed);
-            total_facts += resp.facts_stored;
-
-            let avg_time = session_times.iter().sum::<f64>() / session_times.len() as f64;
-            let remaining = ingest_sessions - idx;
-            let eta = avg_time * remaining as f64;
-            let total_elapsed = ingest_start.elapsed().as_secs_f64();
-
-            println!(
-                "[{tag}] ingest [{idx}/{ingest_sessions}] {} facts ({elapsed:.0}s) | total: {total_facts} | elapsed: {} | ETA: {}",
-                resp.facts_stored,
-                fmt_elapsed(total_elapsed),
-                fmt_elapsed(eta),
-            );
-
-            // Per-session consolidation (incremental edit path)
-            if consolidate_per_session && resp.facts_stored > 0 {
-                let consolidate_url = format!("{api_url}/v1/banks/{}/consolidate", bank.id);
-                match api_post_retry::<ConsolidateResponse>(
-                    &http,
-                    &consolidate_url,
-                    &ConsolidateRequest {},
-                    3,
-                )
-                .await
+            if options.ingest_mode.ingest_per_session() {
+                let content = if options.ingest_mode.raw_json() {
+                    format_session_raw(conv, idx)
+                } else {
+                    format_session(&turns, &date_str)
+                };
+                match runtime
+                    .retain
+                    .retain(&RetainInput {
+                        bank_id: bank.id,
+                        content,
+                        timestamp,
+                        turn_id: None,
+                        context: None,
+                        custom_instructions: None,
+                        speaker: None,
+                    })
+                    .await
                 {
+                    Ok(resp) => {
+                        stored_facts += resp.facts_stored;
+                        println!(
+                            "[{tag}] ingest [{idx}/{ingest_sessions}] {} facts | elapsed: {}",
+                            resp.facts_stored,
+                            fmt_elapsed(ingest_start.elapsed().as_secs_f64()),
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("[{tag}] ingest [{idx}/{ingest_sessions}] FAILED: {e}");
+                        continue;
+                    }
+                }
+            } else {
+                let mut prior_turns: Vec<String> = Vec::new();
+                for (turn_idx, turn) in turns.iter().enumerate() {
+                    let turn_text = format_turn(turn);
+                    let turn_id = TurnId::new();
+                    let turn_ref = format!("D{idx}:{}", turn_idx + 1);
+
+                    let resp = runtime
+                        .retain
+                        .retain(&RetainInput {
+                            bank_id: bank.id,
+                            content: turn_text.clone(),
+                            timestamp,
+                            turn_id: Some(turn_id),
+                            context: if prior_turns.is_empty() {
+                                None
+                            } else {
+                                Some(prior_turns.join("\n"))
+                            },
+                            custom_instructions: None,
+                            speaker: Some(turn.speaker.clone()),
+                        })
+                        .await;
+
+                    match resp {
+                        Ok(retain_resp) => {
+                            stored_facts += retain_resp.facts_stored;
+                            shared.lock().await.record_turn_ref(turn_id, turn_ref);
+                            prior_turns.push(turn_text);
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "[{tag}] ingest [{idx}/{} turn {}] FAILED: {e}",
+                                ingest_sessions,
+                                turn_idx + 1
+                            );
+                        }
+                    }
+                }
+                println!(
+                    "[{tag}] ingest [{idx}/{ingest_sessions}] turn-level complete | elapsed: {}",
+                    fmt_elapsed(ingest_start.elapsed().as_secs_f64()),
+                );
+            }
+
+            if options.consolidation.per_session() {
+                match runtime.consolidator.consolidate(bank.id).await {
                     Ok(cr) => {
                         println!(
                             "[{tag}]   consolidate: {} created, {} updated",
@@ -827,30 +1581,26 @@ async fn run_conversation(
             }
         }
 
-        let total_elapsed = ingest_start.elapsed().as_secs_f64();
         println!(
-            "[{tag}] Ingestion complete: {total_facts} facts in {}",
-            fmt_elapsed(total_elapsed)
+            "[{tag}] Ingestion complete: {stored_facts} facts in {}",
+            fmt_elapsed(ingest_start.elapsed().as_secs_f64())
         );
 
         bank.id
     };
 
-    // Record bank ID for resume
-    shared.lock().await.record_bank(entry.sample_id.clone(), bank_id.clone());
+    shared
+        .lock()
+        .await
+        .record_bank(entry.sample_id.clone(), bank_id.to_string());
 
-    // Consolidation phase (optional) — skip if already consolidated per-session
-    if consolidate && !consolidate_per_session {
+    if options.consolidation.enabled()
+        && !options.consolidation.per_session()
+        && options.existing_bank.is_none()
+    {
         println!("[{tag}] Consolidating...");
         let t0 = Instant::now();
-        let consolidate_url = format!("{api_url}/v1/banks/{bank_id}/consolidate");
-        match api_post::<ConsolidateResponse>(
-            &http,
-            &consolidate_url,
-            &ConsolidateRequest {},
-        )
-        .await
-        {
+        match runtime.consolidator.consolidate(bank_id).await {
             Ok(resp) => {
                 let elapsed = t0.elapsed().as_secs_f64();
                 println!(
@@ -861,87 +1611,132 @@ async fn run_conversation(
                 );
             }
             Err(e) => {
-                eprintln!("[{tag}] Consolidation failed: {e}");
+                eprintln!("[{tag}] consolidate FAILED: {e}");
             }
         }
     }
 
-    // Skip questions if ingest-only mode
-    if ingest_only {
-        println!("[{tag}] Ingest-only mode — skipping questions");
+    if options.ingest_only {
         return Ok(());
     }
 
-    // Question phase
-    let qa_list: &[QaPair] = if let Some(max) = max_questions {
+    let qa_list: &[QaPair] = if let Some(max) = options.max_questions {
         &entry.qa[..max.min(entry.qa.len())]
     } else {
         &entry.qa
     };
 
-    println!("[{tag}] Asking {} questions (concurrency: {question_concurrency})...", qa_list.len());
+    let scored_questions = qa_list
+        .iter()
+        .filter(|qa| should_score_question(qa))
+        .count();
+    println!(
+        "[{tag}] Asking {scored_questions} questions (concurrency: {})...",
+        options.question_concurrency
+    );
     let qa_start = Instant::now();
     let local_correct = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let local_total = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
-    let qa_sem = Arc::new(Semaphore::new(question_concurrency));
+    let turn_refs = Arc::new(shared.lock().await.turn_refs.clone());
+    let qa_sem = Arc::new(Semaphore::new(options.question_concurrency));
     let mut qa_handles = Vec::new();
 
-    for (qa_idx, qa) in qa_list.iter().enumerate() {
-        // Skip category 5 (adversarial/unanswerable) — no ground truth answer.
-        let gold = match &qa.answer {
-            Some(val) => answer_to_string(val),
-            None => continue,
-        };
-
+    for qa in qa_list.iter().filter(|qa| should_score_question(qa)) {
         let sem = qa_sem.clone();
-        let http = http.clone();
-        let api_url = api_url.clone();
-        let bank_id = bank_id.clone();
+        let runtime = runtime.clone();
         let judge = judge.clone();
         let shared = shared.clone();
         let tag = tag.clone();
         let sample_id = entry.sample_id.clone();
         let question = qa.question.clone();
+        let gold = answer_to_string(
+            qa.answer
+                .as_ref()
+                .expect("filtered questions always have an answer"),
+        );
         let category = qa.category;
-        let qa_len = qa_list.len();
+        let qa_len = scored_questions;
         let local_correct = local_correct.clone();
         let local_total = local_total.clone();
         let completed = completed.clone();
+        let evidence_refs = qa.evidence.clone();
+        let turn_refs = turn_refs.clone();
+        let bank_id = bank_id;
 
         qa_handles.push(tokio::spawn(async move {
             let _permit = sem.acquire().await.expect("semaphore closed");
             let cat_name = category_name(category);
 
             let t0 = Instant::now();
-            let (hypothesis, confidence, retrieved_context) = match api_post_retry::<ReflectResponse>(
-                &http,
-                &format!("{api_url}/v1/banks/{bank_id}/reflect"),
-                &ReflectRequest {
-                    bank_id: bank_id.clone(),
+            let reflect_result = runtime
+                .reflect
+                .reflect(&ReflectQuery {
+                    bank_id,
                     question: question.clone(),
                     budget_tokens: 4096,
-                },
-                3,
-            )
-            .await
-            {
-                Ok(resp) => (resp.response, resp.confidence, resp.retrieved_context),
-                Err(e) => {
-                    eprintln!("[{tag}] [{}/{}] ERROR after retries: {e}", qa_idx + 1, qa_len);
-                    (String::new(), 0.0, Default::default())
-                }
-            };
+                })
+                .await;
             let elapsed = t0.elapsed().as_secs_f64();
 
-            let f1 = token_f1(&hypothesis, &gold);
+            let (hypothesis, confidence, retrieved_context, status, error) = match reflect_result {
+                Ok(resp) => {
+                    let retrieved_context = resp
+                        .retrieved_context
+                        .into_iter()
+                        .map(|fact| RetrievedFactEntry {
+                            id: fact.id.to_string(),
+                            content: fact.content,
+                            score: fact.score,
+                            network: network_name(fact.network).to_string(),
+                            source_turn_id: fact.source_turn_id.map(|id| id.to_string()),
+                            source_turn_ref: fact
+                                .source_turn_id
+                                .and_then(|id| turn_refs.get(&id.to_string()).cloned()),
+                        })
+                        .collect::<Vec<_>>();
+                    (
+                        resp.response,
+                        resp.confidence,
+                        retrieved_context,
+                        "ok".to_string(),
+                        None,
+                    )
+                }
+                Err(e) => (
+                    String::new(),
+                    0.0,
+                    Vec::new(),
+                    "reflect_error".to_string(),
+                    Some(e.to_string()),
+                ),
+            };
 
-            // LLM judge
-            let (judge_correct, judge_reasoning) = if hypothesis.is_empty() {
-                (false, "empty response".into())
+            let f1 = token_f1(&hypothesis, &gold);
+            let retrieved_turn_refs = retrieved_context
+                .iter()
+                .filter_map(|fact| fact.source_turn_ref.clone())
+                .collect::<Vec<_>>();
+            let (evidence_hit, evidence_recall) = evidence_recall(&evidence_refs, &retrieved_turn_refs);
+
+            let (judge_correct, judge_reasoning, status, error) = if hypothesis.is_empty() {
+                (
+                    false,
+                    error.clone().unwrap_or_else(|| "empty response".into()),
+                    status,
+                    error,
+                )
             } else {
-                llm_judge(judge.as_ref(), &question, &gold, &hypothesis).await
+                match llm_judge(judge.as_ref(), &question, &gold, &hypothesis).await {
+                    Ok((correct, reasoning)) => (correct, reasoning, status, error),
+                    Err(judge_error) => (
+                        false,
+                        judge_error.clone(),
+                        "judge_error".into(),
+                        Some(judge_error),
+                    ),
+                }
             };
 
             local_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -950,14 +1745,8 @@ async fn run_conversation(
             }
             let done = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
 
-            let qid = {
-                let mut h = DefaultHasher::new();
-                sample_id.hash(&mut h);
-                question.hash(&mut h);
-                format!("{:06x}", h.finish() & 0xFFFFFF)
-            };
             let result = QuestionResult {
-                question_id: qid,
+                question_id: question_id_for(&sample_id, &question),
                 sample_id,
                 question,
                 ground_truth: gold,
@@ -968,25 +1757,38 @@ async fn run_conversation(
                 judge_reasoning,
                 confidence,
                 elapsed_s: elapsed,
+                status,
+                error,
+                evidence_refs,
+                retrieved_turn_refs,
+                evidence_hit,
+                evidence_recall,
                 retrieved_context,
             };
 
-            // Push to shared results and flush to disk
             shared.lock().await.push_and_flush(result);
 
-            // Progress
             let total = local_total.load(std::sync::atomic::Ordering::Relaxed);
             let correct = local_correct.load(std::sync::atomic::Ordering::Relaxed);
-            let running_acc = if total > 0 { correct as f64 / total as f64 } else { 0.0 };
+            let running_acc = if total > 0 {
+                correct as f64 / total as f64
+            } else {
+                0.0
+            };
             let qa_elapsed = qa_start.elapsed().as_secs_f64();
-            let avg_time = if done > 0 { qa_elapsed / done as f64 } else { 0.0 };
+            let avg_time = if done > 0 {
+                qa_elapsed / done as f64
+            } else {
+                0.0
+            };
             let remaining = qa_len.saturating_sub(done);
             let eta = avg_time * remaining as f64;
 
             let label = if judge_correct { "CORRECT" } else { "WRONG  " };
             println!(
-                "[{tag}] [{done}/{}] {label} F1={f1:.2} ({cat_name}) | acc: {:.1}% | elapsed: {} | ETA: {}",
+                "[{tag}] [{done}/{}] {label} F1={f1:.2} ER={:.2} ({cat_name}) | acc: {:.1}% | elapsed: {} | ETA: {}",
                 qa_len,
+                evidence_recall,
                 running_acc * 100.0,
                 fmt_elapsed(qa_elapsed),
                 fmt_elapsed(eta),
@@ -1003,26 +1805,79 @@ async fn run_conversation(
     Ok(())
 }
 
+fn git_commit_sha() -> Option<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--short=12", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8(output.stdout).ok()?;
+    let sha = sha.trim();
+    if sha.is_empty() {
+        None
+    } else {
+        Some(sha.to_string())
+    }
+}
+
+fn git_dirty_worktree() -> Option<bool> {
+    let output = Command::new("git")
+        .args(["status", "--porcelain"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(!output.stdout.is_empty())
+}
+
 // --- Main ---
 
 #[tokio::main]
 async fn main() {
     let _ = dotenvy::dotenv();
 
-    let args = parse_args();
-
-    // Resolve output path: --output overrides --tag, --tag maps to results/<tag>.json, default is locomo.json
-    let output_path = if let Some(ref p) = args.output {
+    let invocation = parse_args();
+    let command = invocation.command;
+    let artifact_path = invocation.artifact_path.clone();
+    let config = invocation.config;
+    let output_path = if let Some(ref p) = config.output {
         p.clone()
-    } else if let Some(ref tag) = args.tag {
+    } else if let Some(ref tag) = config.tag {
         PathBuf::from(format!("bench/locomo/results/{tag}.json"))
+    } else if let Some(ref artifact) = artifact_path {
+        artifact.clone()
     } else {
-        PathBuf::from("bench/locomo/results/locomo.json")
+        PathBuf::from(format!(
+            "bench/locomo/results/{}-{}.json",
+            config.profile.as_str(),
+            command.as_str()
+        ))
     };
 
-    // Validate dataset exists
-    if !args.data.exists() {
-        eprintln!("Dataset not found: {}", args.data.display());
+    let artifact_state = artifact_path.as_ref().map(|path| {
+        let prev = load_benchmark_output(path).unwrap_or_else(|e| {
+            eprintln!("{e}");
+            std::process::exit(1);
+        });
+        println!(
+            "Using artifact {} ({} banks, {} turn refs)",
+            path.display(),
+            prev.banks.len(),
+            prev.turn_refs.len()
+        );
+        prev
+    });
+    let (existing_banks, existing_turn_refs) = if let Some(prev) = artifact_state.as_ref() {
+        (prev.banks.clone(), prev.turn_refs.clone())
+    } else {
+        (HashMap::new(), HashMap::new())
+    };
+
+    if !config.dataset.exists() {
+        eprintln!("Dataset not found: {}", config.dataset.display());
         eprintln!("Download it:");
         eprintln!("  mkdir -p data");
         eprintln!(
@@ -1031,161 +1886,149 @@ async fn main() {
         std::process::exit(1);
     }
 
-    // Check Elephant is reachable
-    let http = Client::builder()
-        .timeout(std::time::Duration::from_secs(3600))
-        .build()
-        .expect("failed to build HTTP client");
-    // Fetch server info (model config)
-    let server_info: ServerInfoResponse = match http.get(format!("{}/v1/info", args.api_url)).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            resp.json().await.unwrap_or_else(|e| {
-                eprintln!("Failed to parse /v1/info: {e}");
-                std::process::exit(1);
-            })
-        }
-        Ok(resp) => {
-            eprintln!(
-                "Elephant returned HTTP {}: is the server running?",
-                resp.status()
-            );
-            eprintln!("  Start it with: docker compose up -d");
-            std::process::exit(1);
-        }
-        Err(e) => {
-            eprintln!("Cannot reach Elephant at {}: {e}", args.api_url);
-            eprintln!("  Start it with: docker compose up -d");
-            std::process::exit(1);
-        }
-    };
-    println!("retain_model: {}", server_info.retain_model);
-    println!("reflect_model: {}", server_info.reflect_model);
-    println!("reranker_model: {}", server_info.reranker_model);
-    println!("embedding_model: {}", server_info.embedding_model);
-
-    // Build LLM judge client.
-    // JUDGE_* env vars override LLM_* so you can use a different model for judging.
-    let judge_provider_str = env::var("JUDGE_PROVIDER")
-        .or_else(|_| env::var("LLM_PROVIDER"))
-        .expect("JUDGE_PROVIDER or LLM_PROVIDER must be set");
-    let judge_api_key = env::var("JUDGE_API_KEY")
-        .or_else(|_| env::var("LLM_API_KEY"))
-        .expect("JUDGE_API_KEY or LLM_API_KEY must be set");
-    let judge_model = args.judge_model.clone().unwrap_or_else(|| {
-        env::var("JUDGE_MODEL")
-            .or_else(|_| env::var("LLM_MODEL"))
-            .expect("JUDGE_MODEL or LLM_MODEL must be set")
-    });
-    let provider = match judge_provider_str.as_str() {
-        "openai" => Provider::OpenAi,
-        _ => Provider::Anthropic,
-    };
-    let judge_config = ProviderConfig {
-        provider,
-        api_key: judge_api_key,
-        model: judge_model.clone(),
-        base_url: None,
-    };
-    let judge: Arc<dyn LlmClient> = Arc::new(RetryingLlmClient::new(
-        Arc::from(llm::build_client(&judge_config).unwrap()),
-        RetryPolicy::default(),
-    ));
-
-    let judge_label = format!("{judge_provider_str}/{judge_model}");
-    println!("LLM judge: {judge_label}");
-    // Reset consolidation state if --reconsolidate
-    if args.reconsolidate {
-        let resume_path = args.resume.as_ref().expect("--reconsolidate requires --resume");
-        println!("Resetting consolidation state...");
-        let status = std::process::Command::new("cargo")
-            .args(["run", "--bin", "reset-consolidation", "--", resume_path.to_str().unwrap()])
-            .status()
-            .expect("failed to run reset-consolidation");
-        if !status.success() {
-            eprintln!("reset-consolidation failed");
-            std::process::exit(1);
-        }
-    }
-
-    // Load bank IDs from a previous run (--resume)
-    let resume_banks: HashMap<String, String> = if let Some(ref path) = args.resume {
-        let raw = fs::read_to_string(path).expect("failed to read resume file");
-        let prev: BenchmarkOutput = serde_json::from_str(&raw).expect("failed to parse resume file");
-        println!("Resuming from {} ({} banks)", path.display(), prev.banks.len());
-        prev.banks
-    } else {
-        HashMap::new()
-    };
-
-    println!("Conversation concurrency: {}", args.concurrency);
-    println!("Question concurrency: {}", args.question_concurrency);
-
-    // Load dataset
-    let raw = fs::read_to_string(&args.data).expect("failed to read dataset");
+    let raw_bytes = fs::read(&config.dataset).expect("failed to read dataset");
     let mut dataset: Vec<LocomoEntry> =
-        serde_json::from_str(&raw).expect("failed to parse dataset");
+        serde_json::from_slice(&raw_bytes).expect("failed to parse dataset");
 
-    if let Some(max) = args.max_conversations {
-        dataset.truncate(max);
+    if !config.conversations.is_empty() {
+        let mut by_id = dataset
+            .into_iter()
+            .map(|entry| (entry.sample_id.clone(), entry))
+            .collect::<HashMap<_, _>>();
+        let mut selected = Vec::with_capacity(config.conversations.len());
+        for sample_id in &config.conversations {
+            let entry = by_id.remove(sample_id).unwrap_or_else(|| {
+                eprintln!("Conversation not found in dataset: {sample_id}");
+                std::process::exit(1);
+            });
+            selected.push(entry);
+        }
+        dataset = selected;
     }
 
-    let total_convs = dataset.len();
-    let bench_start = Instant::now();
+    if matches!(command, BenchCommand::Qa) {
+        let missing_banks = dataset
+            .iter()
+            .filter(|entry| !existing_banks.contains_key(&entry.sample_id))
+            .map(|entry| entry.sample_id.clone())
+            .collect::<Vec<_>>();
+        if !missing_banks.is_empty() {
+            eprintln!(
+                "`qa` requires bank ids for every selected conversation; missing: {}",
+                missing_banks.join(", ")
+            );
+            std::process::exit(1);
+        }
+    }
 
-    // Ensure output directory exists
+    let metrics = Arc::new(MetricsCollector::new());
+    let runtime = Arc::new(
+        build_runtime_from_env(BuildRuntimeOptions {
+            metrics: Some(metrics.clone()),
+        })
+        .await
+        .expect("failed to build Elephant runtime"),
+    );
+
+    let judge = build_judge_client(metrics.clone(), config.judge_model.clone());
+    let judge_label = judge_label(&config.judge_model);
+
+    println!("retain_model: {}", runtime.info.retain_model);
+    println!("reflect_model: {}", runtime.info.reflect_model);
+    println!("reranker_model: {}", runtime.info.reranker_model);
+    println!("embedding_model: {}", runtime.info.embedding_model);
+    println!("LLM judge: {judge_label}");
+    println!("Profile: {}", config.profile.as_str());
+    println!("Mode: {}", command.as_str());
+    println!("Ingest: {}", config.ingest.as_str());
+    println!("Consolidation: {}", config.consolidation.as_str());
+    println!("Conversation concurrency: {}", config.conversation_jobs);
+    println!("Question concurrency: {}", config.question_jobs);
+
+    let run_timestamp = Utc::now().to_rfc3339();
+    let commit = git_commit_sha();
+    let bench_start = Instant::now();
+    let total_convs = dataset.len();
+
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent).ok();
     }
 
-    // Shared results — flushed to disk after each question
+    let consolidation_strategy = config.consolidation.as_str();
+
+    let cli_command = env::args().collect::<Vec<_>>().join(" ");
+    let manifest = BenchmarkManifest {
+        protocol_version: "2026-03-10-config-v1".into(),
+        profile: config.profile.as_str().into(),
+        mode: command.as_str().into(),
+        config_path: config
+            .config_path
+            .as_ref()
+            .map(|path| path.display().to_string()),
+        dataset_path: config.dataset.display().to_string(),
+        dataset_fingerprint: format!("{:016x}", fnv1a64(&raw_bytes)),
+        command: cli_command,
+        category_filter: vec![1, 2, 3, 4],
+        selected_conversations: config.conversations.clone(),
+        image_policy: config.ingest.image_policy().into(),
+        ingestion_granularity: config.ingest.ingestion_granularity().into(),
+        question_concurrency: config.question_jobs,
+        conversation_concurrency: config.conversation_jobs,
+        consolidation_strategy: consolidation_strategy.into(),
+        session_limit: config.session_limit,
+        question_limit: config.question_limit,
+        raw_json: config.ingest.raw_json(),
+        dirty_worktree: git_dirty_worktree(),
+    };
+
     let shared = Arc::new(Mutex::new(SharedResults {
         results: Vec::new(),
-        banks: HashMap::new(),
+        banks: existing_banks.clone(),
+        turn_refs: existing_turn_refs,
         output_path: output_path.clone(),
         judge_label: judge_label.clone(),
-        tag: args.tag.clone(),
-        retain_model: server_info.retain_model.clone(),
-        reflect_model: server_info.reflect_model.clone(),
-        embedding_model: server_info.embedding_model.clone(),
-        reranker_model: server_info.reranker_model.clone(),
-        consolidation_strategy: if args.consolidate_per_session {
-            "per-session".into()
-        } else if args.consolidate {
-            "end".into()
-        } else {
-            "none".into()
-        },
+        tag: config.tag.clone(),
+        retain_model: runtime.info.retain_model.clone(),
+        reflect_model: runtime.info.reflect_model.clone(),
+        embedding_model: runtime.info.embedding_model.clone(),
+        reranker_model: runtime.info.reranker_model.clone(),
+        consolidation_strategy: consolidation_strategy.into(),
+        manifest,
+        metrics: metrics.clone(),
+        run_timestamp,
+        commit,
         bench_start,
     }));
 
-    // Spawn conversations concurrently, capped by semaphore.
-    let semaphore = Arc::new(Semaphore::new(args.concurrency));
+    let semaphore = Arc::new(Semaphore::new(config.conversation_jobs));
     let mut handles = Vec::new();
 
     for (conv_idx, entry) in dataset.into_iter().enumerate() {
         let sem = semaphore.clone();
-        let http = http.clone();
-        let api_url = args.api_url.clone();
+        let runtime = runtime.clone();
         let judge = judge.clone();
-        let max_sessions = args.max_sessions;
-        let max_questions = args.max_questions;
-        let question_concurrency = args.question_concurrency;
-        let consolidate = args.consolidate;
-        let consolidate_per_session = args.consolidate_per_session;
-        let reuse_bank = resume_banks.get(&entry.sample_id).cloned()
-            .or_else(|| if conv_idx == 0 { args.bank_id.clone() } else { None });
+        let options = ConversationRunOptions {
+            max_sessions: config.session_limit,
+            max_questions: config.question_limit,
+            question_concurrency: config.question_jobs,
+            ingest_mode: config.ingest,
+            consolidation: config.consolidation,
+            existing_bank: existing_banks.get(&entry.sample_id).cloned(),
+            require_existing_bank: matches!(command, BenchCommand::Qa),
+            ingest_only: matches!(command, BenchCommand::Ingest),
+        };
         let tag = format!("conv {}/{total_convs}", conv_idx + 1);
         let shared = shared.clone();
-        let ingest_only = args.ingest_only;
-        let raw_json = args.raw_json;
 
         handles.push(tokio::spawn(async move {
-            let _permit = sem.acquire().await.map_err(|e| format!("semaphore closed: {e}"))?;
-            run_conversation(tag, http, api_url, entry, judge, max_sessions, max_questions, question_concurrency, consolidate, consolidate_per_session, reuse_bank, ingest_only, raw_json, shared).await
+            let _permit = sem
+                .acquire()
+                .await
+                .map_err(|e| format!("semaphore closed: {e}"))?;
+            run_conversation(tag, runtime, entry, judge, options, shared).await
         }));
     }
 
-    // Wait for all conversations.
     for handle in handles {
         match handle.await {
             Ok(Ok(())) => {}
@@ -1194,88 +2037,296 @@ async fn main() {
         }
     }
 
-    // Final aggregation from shared results.
-    let all_results = {
-        let lock = shared.lock().await;
-        lock.results.clone()
+    let shared_snapshot = shared.lock().await;
+    let total_questions = shared_snapshot.results.len();
+    let total_correct = shared_snapshot
+        .results
+        .iter()
+        .filter(|r| r.judge_correct)
+        .count();
+    let accuracy = if total_questions > 0 {
+        total_correct as f64 / total_questions as f64
+    } else {
+        0.0
     };
-
-    let bench_elapsed = bench_start.elapsed().as_secs_f64();
-    let total_questions = all_results.len();
-
-    let mut category_f1: HashMap<String, Vec<f64>> = HashMap::new();
-    let mut category_judge: HashMap<String, Vec<f64>> = HashMap::new();
-    for r in &all_results {
-        category_f1.entry(r.category_name.clone()).or_default().push(r.f1);
-        let score = if r.judge_correct { 1.0 } else { 0.0 };
-        category_judge.entry(r.category_name.clone()).or_default().push(score);
-    }
-
     let mean_f1 = if total_questions > 0 {
-        all_results.iter().map(|r| r.f1).sum::<f64>() / total_questions as f64
+        shared_snapshot.results.iter().map(|r| r.f1).sum::<f64>() / total_questions as f64
     } else {
         0.0
     };
-    let total_correct: f64 = category_judge.values().map(|v| v.iter().sum::<f64>()).sum();
-    let total_judged: usize = category_judge.values().map(|v| v.len()).sum();
-    let accuracy = if total_judged > 0 {
-        total_correct / total_judged as f64
+    let mean_evidence_recall = if total_questions > 0 {
+        shared_snapshot
+            .results
+            .iter()
+            .map(|r| r.evidence_recall)
+            .sum::<f64>()
+            / total_questions as f64
     } else {
         0.0
     };
+    let total_stage_usage = metrics.total_usage();
 
     println!();
     println!("{}", "=".repeat(60));
     println!("LOCOMO BENCHMARK RESULTS");
     println!("{}", "=".repeat(60));
     println!("Total questions: {total_questions}");
-    println!("Total time: {}", fmt_elapsed(bench_elapsed));
+    println!(
+        "Total time: {}",
+        fmt_elapsed(bench_start.elapsed().as_secs_f64())
+    );
     println!("Judge model: {judge_label}");
     println!();
     println!(
         "Accuracy (LLM judge): {:.1}% ({}/{})",
         accuracy * 100.0,
-        total_correct as usize,
-        total_judged
+        total_correct,
+        total_questions
     );
     println!("Token F1 (reference): {mean_f1:.4}");
-    println!();
-    println!("Per-category breakdown:");
-    println!("  {:15}  {:>6}  {:>6}  {:>4}", "category", "acc", "F1", "n");
+    println!("Evidence recall: {mean_evidence_recall:.4}");
     println!(
-        "  {:15}  {:>6}  {:>6}  {:>4}",
-        "-".repeat(15),
-        "-".repeat(6),
-        "-".repeat(6),
-        "-".repeat(4)
+        "Stage usage: {} prompt + {} completion = {} total tokens across {} calls",
+        total_stage_usage.prompt_tokens,
+        total_stage_usage.completion_tokens,
+        total_stage_usage.total_tokens(),
+        total_stage_usage.calls,
     );
 
-    let mut cat_names: Vec<&String> = category_f1.keys().collect();
-    cat_names.sort();
-    for name in cat_names {
-        let f1_scores = &category_f1[name];
-        let j_scores = category_judge.get(name);
-        let n = f1_scores.len();
-        let f1_avg = f1_scores.iter().sum::<f64>() / n as f64;
-        let j_avg = j_scores
-            .map(|v| v.iter().sum::<f64>() / v.len() as f64)
-            .unwrap_or(0.0);
-        println!("  {name:15}  {:.1}%  {f1_avg:.3}  {n:>4}", j_avg * 100.0);
-    }
-
-    // Final flush
-    let all_banks = {
-        let lock = shared.lock().await;
-        lock.banks.clone()
-    };
-    let consolidation_strategy = if args.consolidate_per_session {
-        "per-session"
-    } else if args.consolidate {
-        "end"
-    } else {
-        "none"
-    };
-    flush_results(&all_results, &all_banks, &output_path, &judge_label, &args.tag, &server_info.retain_model, &server_info.reflect_model, &server_info.embedding_model, &server_info.reranker_model, consolidation_strategy, bench_start);
+    shared_snapshot.flush();
     println!();
     println!("Results saved to {}", output_path.display());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn excludes_category_five_even_when_answer_is_present() {
+        let qa = QaPair {
+            question: "Is Oscar Melanie's pet?".into(),
+            answer: Some(json!("No")),
+            category: 5,
+            evidence: vec![],
+        };
+        assert!(!should_score_question(&qa));
+    }
+
+    #[test]
+    fn includes_answered_category_four_questions() {
+        let qa = QaPair {
+            question: "Who painted the bowl?".into(),
+            answer: Some(json!("Melanie")),
+            category: 4,
+            evidence: vec!["D1:3".into()],
+        };
+        assert!(should_score_question(&qa));
+    }
+
+    #[test]
+    fn computes_evidence_recall_on_unique_refs() {
+        let expected = vec!["D1:3".into(), "D2:1".into()];
+        let retrieved = vec!["D1:3".into(), "D1:3".into()];
+        let (hit, recall) = evidence_recall(&expected, &retrieved);
+        assert!(hit);
+        assert!((recall - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn smoke_profile_loads_expected_defaults() {
+        let raw = vec![
+            "locomo-bench".to_string(),
+            "run".to_string(),
+            "--profile".to_string(),
+            "smoke".to_string(),
+        ];
+        let invocation = parse_args_from(&raw).unwrap().unwrap();
+        assert_eq!(invocation.command, BenchCommand::Run);
+        let config = invocation.config;
+        assert_eq!(config.profile, RunProfile::Smoke);
+        assert_eq!(config.ingest, IngestMode::Turn);
+        assert_eq!(config.consolidation, ConsolidationMode::End);
+        assert_eq!(config.conversations, vec!["conv-26".to_string()]);
+        assert_eq!(config.session_limit, Some(1));
+        assert_eq!(config.question_limit, Some(5));
+    }
+
+    #[test]
+    fn unknown_subcommand_is_rejected() {
+        let raw = vec!["locomo-bench".to_string(), "resume".to_string()];
+        let err = parse_args_from(&raw).unwrap_err();
+        assert!(err.contains("unknown subcommand"));
+    }
+
+    #[test]
+    fn qa_loads_scope_from_artifact_manifest() {
+        let artifact_path =
+            env::temp_dir().join(format!("locomo-qa-test-{}.json", std::process::id()));
+        let artifact = json!({
+            "benchmark": "locomo",
+            "timestamp": "2026-03-10T00:00:00Z",
+            "judge_model": "anthropic/test-judge",
+            "retain_model": "anthropic/test-main",
+            "reflect_model": "anthropic/test-main",
+            "embedding_model": "local/test-embedding",
+            "reranker_model": "local/test-reranker",
+            "consolidation_strategy": "end",
+            "total_questions": 0,
+            "accuracy": 0.0,
+            "mean_f1": 0.0,
+            "mean_evidence_recall": 0.0,
+            "per_category": {},
+            "per_conversation": {},
+            "bank_ids": {
+                "conv-26": "01KK623GTJJB2WW3RKHSDSCDT6"
+            },
+            "turn_refs": {},
+            "manifest": {
+                "protocol_version": "2026-03-10-config-v1",
+                "profile": "smoke",
+                "mode": "ingest",
+                "config_path": null,
+                "dataset_path": "data/locomo10.json",
+                "dataset_fingerprint": "9f7f4c0a5fbb2df2",
+                "command": "locomo-bench ingest --profile smoke",
+                "category_filter": [1, 2, 3, 4],
+                "selected_conversations": ["conv-26"],
+                "image_policy": "blip_caption_inline",
+                "ingestion_granularity": "turn",
+                "question_concurrency": 1,
+                "conversation_concurrency": 1,
+                "consolidation_strategy": "end",
+                "session_limit": 1,
+                "question_limit": 5,
+                "raw_json": false,
+                "dirty_worktree": false
+            },
+            "stage_metrics": {},
+            "total_stage_usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "calls": 0,
+                "errors": 0,
+                "latency_ms": 0
+            },
+            "results": [],
+            "total_time_s": 0.0
+        });
+        fs::write(
+            &artifact_path,
+            serde_json::to_string(&artifact).expect("serialize test artifact"),
+        )
+        .expect("write test artifact");
+
+        let raw = vec![
+            "locomo-bench".to_string(),
+            "qa".to_string(),
+            artifact_path.display().to_string(),
+            "--question-jobs".to_string(),
+            "4".to_string(),
+        ];
+        let invocation = parse_args_from(&raw).unwrap().unwrap();
+        assert_eq!(invocation.command, BenchCommand::Qa);
+        assert_eq!(invocation.artifact_path, Some(artifact_path.clone()));
+        assert_eq!(invocation.config.profile, RunProfile::Smoke);
+        assert_eq!(
+            invocation.config.dataset,
+            PathBuf::from("data/locomo10.json")
+        );
+        assert_eq!(invocation.config.conversations, vec!["conv-26".to_string()]);
+        assert_eq!(invocation.config.session_limit, Some(1));
+        assert_eq!(invocation.config.question_limit, Some(5));
+        assert_eq!(invocation.config.question_jobs, 4);
+
+        fs::remove_file(&artifact_path).ok();
+    }
+
+    #[test]
+    fn qa_rejects_protocol_overrides() {
+        let artifact_path = env::temp_dir().join(format!(
+            "locomo-qa-test-override-{}.json",
+            std::process::id()
+        ));
+        let artifact = json!({
+            "benchmark": "locomo",
+            "timestamp": "2026-03-10T00:00:00Z",
+            "judge_model": "anthropic/test-judge",
+            "retain_model": "anthropic/test-main",
+            "reflect_model": "anthropic/test-main",
+            "embedding_model": "local/test-embedding",
+            "reranker_model": "local/test-reranker",
+            "consolidation_strategy": "end",
+            "total_questions": 0,
+            "accuracy": 0.0,
+            "mean_f1": 0.0,
+            "mean_evidence_recall": 0.0,
+            "per_category": {},
+            "per_conversation": {},
+            "bank_ids": {
+                "conv-26": "01KK623GTJJB2WW3RKHSDSCDT6"
+            },
+            "turn_refs": {},
+            "manifest": {
+                "protocol_version": "2026-03-10-config-v1",
+                "profile": "full",
+                "mode": "ingest",
+                "config_path": null,
+                "dataset_path": "data/locomo10.json",
+                "dataset_fingerprint": "9f7f4c0a5fbb2df2",
+                "command": "locomo-bench ingest --profile full",
+                "category_filter": [1, 2, 3, 4],
+                "selected_conversations": [],
+                "image_policy": "blip_caption_inline",
+                "ingestion_granularity": "turn",
+                "question_concurrency": 1,
+                "conversation_concurrency": 1,
+                "consolidation_strategy": "end",
+                "session_limit": null,
+                "question_limit": null,
+                "raw_json": false,
+                "dirty_worktree": false
+            },
+            "stage_metrics": {},
+            "total_stage_usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "calls": 0,
+                "errors": 0,
+                "latency_ms": 0
+            },
+            "results": [],
+            "total_time_s": 0.0
+        });
+        fs::write(
+            &artifact_path,
+            serde_json::to_string(&artifact).expect("serialize test artifact"),
+        )
+        .expect("write test artifact");
+
+        let raw = vec![
+            "locomo-bench".to_string(),
+            "qa".to_string(),
+            artifact_path.display().to_string(),
+            "--profile".to_string(),
+            "smoke".to_string(),
+        ];
+        let err = parse_args_from(&raw).unwrap_err();
+        assert!(err.contains("`qa` does not accept --profile"));
+
+        fs::remove_file(&artifact_path).ok();
+    }
+
+    #[test]
+    fn removed_alias_falls_back_to_unknown_argument() {
+        let raw = vec![
+            "locomo-bench".to_string(),
+            "run".to_string(),
+            "--question-concurrency".to_string(),
+            "4".to_string(),
+        ];
+        let err = parse_args_from(&raw).unwrap_err();
+        assert!(err.contains("Unknown argument"));
+    }
 }

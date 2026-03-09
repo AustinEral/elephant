@@ -204,6 +204,8 @@ pub struct RetrievedFact {
     pub score: f32,
     /// Which memory network this fact belongs to.
     pub network: NetworkType,
+    /// Provenance turn id when known.
+    pub source_turn_id: Option<TurnId>,
 }
 
 /// Result of a reflect operation.

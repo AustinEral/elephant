@@ -78,7 +78,6 @@ struct AnthropicRequest {
     tool_choice: Option<AnthropicToolChoice>,
 }
 
-
 #[derive(Serialize)]
 struct AnthropicTool {
     name: String,
@@ -140,7 +139,6 @@ struct AnthropicUsage {
     output_tokens: usize,
 }
 
-
 #[async_trait]
 impl LlmClient for AnthropicClient {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
@@ -152,7 +150,9 @@ impl LlmClient for AnthropicClient {
         for m in &request.messages {
             let mut blocks = Vec::new();
             if !m.content.is_empty() {
-                blocks.push(ContentBlock::Text { text: m.content.clone() });
+                blocks.push(ContentBlock::Text {
+                    text: m.content.clone(),
+                });
             }
             for tc in &m.tool_calls {
                 blocks.push(ContentBlock::ToolUse {
@@ -236,8 +236,9 @@ impl LlmClient for AnthropicClient {
         )
         .await?;
 
-        let parsed: AnthropicResponse = serde_json::from_str(&resp_text)
-            .map_err(|e| crate::error::Error::Llm(format!("failed to parse Anthropic response: {e}")))?;
+        let parsed: AnthropicResponse = serde_json::from_str(&resp_text).map_err(|e| {
+            crate::error::Error::Llm(format!("failed to parse Anthropic response: {e}"))
+        })?;
 
         let mut content = String::new();
         let mut tool_calls = Vec::new();
@@ -279,9 +280,14 @@ mod tests {
     #[ignore = "requires LLM_API_KEY"]
     async fn integration_simple_prompt() {
         let _ = dotenvy::dotenv();
-        let api_key =
-            std::env::var("LLM_API_KEY").expect("LLM_API_KEY must be set");
-        let client = AnthropicClient::new(api_key, std::env::var("LLM_MODEL").or_else(|_| std::env::var("RETAIN_LLM_MODEL")).expect("LLM_MODEL or RETAIN_LLM_MODEL must be set")).unwrap();
+        let api_key = std::env::var("LLM_API_KEY").expect("LLM_API_KEY must be set");
+        let client = AnthropicClient::new(
+            api_key,
+            std::env::var("LLM_MODEL")
+                .or_else(|_| std::env::var("RETAIN_LLM_MODEL"))
+                .expect("LLM_MODEL or RETAIN_LLM_MODEL must be set"),
+        )
+        .unwrap();
 
         let request = CompletionRequest {
             model: String::new(),
@@ -305,9 +311,14 @@ mod tests {
         use crate::llm::complete_structured;
         use serde::Deserialize;
 
-        let api_key =
-            std::env::var("LLM_API_KEY").expect("LLM_API_KEY must be set");
-        let client = AnthropicClient::new(api_key, std::env::var("LLM_MODEL").or_else(|_| std::env::var("RETAIN_LLM_MODEL")).expect("LLM_MODEL or RETAIN_LLM_MODEL must be set")).unwrap();
+        let api_key = std::env::var("LLM_API_KEY").expect("LLM_API_KEY must be set");
+        let client = AnthropicClient::new(
+            api_key,
+            std::env::var("LLM_MODEL")
+                .or_else(|_| std::env::var("RETAIN_LLM_MODEL"))
+                .expect("LLM_MODEL or RETAIN_LLM_MODEL must be set"),
+        )
+        .unwrap();
 
         #[derive(Deserialize, Debug)]
         struct Color {
@@ -317,7 +328,10 @@ mod tests {
 
         let request = CompletionRequest {
             model: String::new(),
-            messages: vec![Message::text("user", "Return a JSON object with fields \"name\" and \"hex\" for the color red. Only output JSON, nothing else.")],
+            messages: vec![Message::text(
+                "user",
+                "Return a JSON object with fields \"name\" and \"hex\" for the color red. Only output JSON, nothing else.",
+            )],
             max_tokens: Some(64),
             temperature: Some(0.0),
             system: None,
@@ -334,7 +348,10 @@ mod tests {
     async fn integration_oauth() {
         let _ = dotenvy::dotenv();
         let api_key = std::env::var("LLM_API_KEY").expect("LLM_API_KEY must be set");
-        assert!(api_key.starts_with("sk-ant-oat"), "this test requires an OAuth token (sk-ant-oat...)");
+        assert!(
+            api_key.starts_with("sk-ant-oat"),
+            "this test requires an OAuth token (sk-ant-oat...)"
+        );
         let client = AnthropicClient::new(api_key, "claude-sonnet-4-20250514".into()).unwrap();
 
         let request = CompletionRequest {

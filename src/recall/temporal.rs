@@ -43,10 +43,7 @@ impl Retriever for TemporalRetriever {
             ..Default::default()
         };
 
-        let facts = self
-            .store
-            .get_facts_by_bank(query.bank_id, filter)
-            .await?;
+        let facts = self.store.get_facts_by_bank(query.bank_id, filter).await?;
 
         let now = Utc::now();
         let mut scored: Vec<ScoredFact> = facts
@@ -61,7 +58,11 @@ impl Retriever for TemporalRetriever {
             })
             .collect();
 
-        scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         Ok(scored)
     }
 }

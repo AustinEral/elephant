@@ -2,6 +2,14 @@
 
 ## Run: temporal-consolidation (2026-03-08)
 
+### Status
+
+| Field | Value |
+|---|---|
+| Publication status | **Not leaderboard-valid yet** |
+| Why | This artifact predates the 2026-03-09 harness fix that hard-excludes LoCoMo Category 5 |
+| Required action | Rerun with the current harness before using externally |
+
 ### Scope
 
 | Field | Value |
@@ -9,10 +17,9 @@
 | Dataset | LoCoMo (ACL 2024) |
 | Conversations | conv-26 only (1 of 10) |
 | Sessions ingested | 26 |
-| Questions | 154 |
-| LoCoMo categories evaluated | **Category 1-4 only** (single-hop, temporal, multi-hop, open-domain) |
-| Category 5 (adversarial) | None present in this slice |
-| Local answer subtypes | unanswerable = 2 |
+| Questions scored in legacy JSON | 154 |
+| Protocol-correct Cat.1-4 slice | 152 |
+| Cat.5 leakage in legacy JSON | 2 (`unanswerable`) |
 
 Full protocol: [benchmark-protocol.md](benchmark-protocol.md)
 
@@ -29,15 +36,19 @@ Full protocol: [benchmark-protocol.md](benchmark-protocol.md)
 
 ### Results
 
+| Slice | Accuracy | n |
+|---|---|---|
+| Legacy artifact (includes leaked Cat.5) | 94.2% | 154 |
+| Protocol-correct Cat.1-4 slice | **94.1%** | **152** |
+
+Cat.1-4 breakdown from the protocol-correct slice:
+
 | Category | Accuracy | n |
 |---|---|---|
 | Temporal | **100.0%** | 13 |
 | Multi-hop | 94.6% | 37 |
 | Open-domain | 94.3% | 70 |
 | Single-hop | 90.6% | 32 |
-| **Overall** | **94.2%** | **154** |
-
-Local subtypes: unanswerable 100.0% (2/2)
 
 ### Efficiency
 
@@ -49,35 +60,34 @@ Local subtypes: unanswerable 100.0% (2/2)
 
 ### Variance
 
-Not yet measured. A judge-only rerun and a full rerun are planned to establish variance bounds. For reference, Backboard's benchmark notes 2-3% variance across runs with GPT-4.1 as judge; our variance is unknown until measured.
+Not yet measured. A judge-only rerun and a fresh end-to-end rerun are still required to establish variance bounds. Backboard reports roughly 2-3% judge variance with GPT-4.1; Elephant has no measured variance yet.
 
 ### Reproduction
 
 ```bash
-# Commit: f58610f
-# Requires: Elephant server running on localhost:3001
-
-# Full run (fresh bank, ingestion + consolidation + questions)
+# Legacy reproduction command (kept for traceability)
 cargo run --release --bin locomo-bench -- \
-  --tag temporal-consolidation \
-  --max-conversations 1 \
-  --question-concurrency 5
+  run \
+  --profile full \
+  --conversation conv-26 \
+  --tag temporal-consolidation-legacy-shape
 
-# Questions only (reuse existing bank)
+# Required next step: rerun with the current harness to get a clean Cat.1-4 artifact
 cargo run --release --bin locomo-bench -- \
-  --tag temporal-consolidation-rerun \
-  --max-conversations 1 \
-  --question-concurrency 5 \
-  --resume bench/locomo/results/temporal-consolidation.json
+  run \
+  --profile full \
+  --conversation conv-26 \
+  --tag temporal-consolidation-rerun
 ```
 
-Results JSON: `bench/locomo/results/temporal-consolidation.json`
+Legacy results JSON: `bench/locomo/results/temporal-consolidation.json`
 Schema: [results-format.md](results-format.md)
 
 ### Caveats
 
-- **Single conversation only** — this is a stress test, not a full leaderboard claim
-- **No token/cost data yet** — instrumentation required before full run
-- **No variance data yet** — single run, no repeat measurements
+- **Single conversation only** — still a stress test, not a full leaderboard claim
+- **Legacy artifact** — includes 2 Category 5 rows and should not be used for public comparison
+- **Fresh rerun still needed** — the checked-in JSON is legacy, even though the current harness now records token/cost data
+- **No variance data yet** — still single-run only
 - **Same model for all stages** — extraction, reflection, consolidation, and judging all use Sonnet 4.6
 - **BLIP-2 image captions** — images replaced with captions per LoCoMo evaluation protocol

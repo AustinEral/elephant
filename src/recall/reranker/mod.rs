@@ -41,11 +41,11 @@ pub fn build_reranker(config: &RerankerConfig) -> Result<Box<dyn Reranker>> {
     match config.provider {
         RerankerProvider::None => Ok(Box::new(NoOpReranker)),
         RerankerProvider::Local => {
-            let model_path = config
-                .model_path
-                .as_deref()
-                .ok_or_else(|| Error::Reranker("RERANKER_MODEL_PATH must be set for local reranker".into()))?;
-            let reranker = local::LocalReranker::new(std::path::Path::new(model_path), config.max_seq_len)?;
+            let model_path = config.model_path.as_deref().ok_or_else(|| {
+                Error::Reranker("RERANKER_MODEL_PATH must be set for local reranker".into())
+            })?;
+            let reranker =
+                local::LocalReranker::new(std::path::Path::new(model_path), config.max_seq_len)?;
             Ok(Box::new(reranker))
         }
         RerankerProvider::Api => {
@@ -72,11 +72,12 @@ pub fn build_reranker(config: &RerankerConfig) -> Result<Box<dyn Reranker>> {
 /// (e.g. "what happened last week?").
 pub fn format_reranker_input(fact: &crate::types::ScoredFact) -> String {
     if let Some(ref tr) = fact.fact.temporal_range
-        && let Some(start) = tr.start {
-            let date_iso = start.format("%Y-%m-%d");
-            let date_readable = start.format("%B %d, %Y");
-            return format!("[Date: {date_readable} ({date_iso})] {}", fact.fact.content);
-        }
+        && let Some(start) = tr.start
+    {
+        let date_iso = start.format("%Y-%m-%d");
+        let date_readable = start.format("%B %d, %Y");
+        return format!("[Date: {date_readable} ({date_iso})] {}", fact.fact.content);
+    }
     fact.fact.content.clone()
 }
 

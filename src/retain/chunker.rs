@@ -120,7 +120,12 @@ impl Chunker for SimpleChunker {
             }
             byte_offset = chunk_end.saturating_sub(overlap_bytes);
             // Make sure we actually advance
-            if byte_offset <= chunks.last().map(|c| chunk_end - c.content.len()).unwrap_or(0) {
+            if byte_offset
+                <= chunks
+                    .last()
+                    .map(|c| chunk_end - c.content.len())
+                    .unwrap_or(0)
+            {
                 byte_offset = chunk_end;
             }
         }
@@ -181,7 +186,10 @@ mod tests {
         // Verify first chunk has no context, others do
         assert!(chunks[0].context.is_none());
         for chunk in &chunks[1..] {
-            assert!(chunk.context.is_some(), "non-first chunks should have context");
+            assert!(
+                chunk.context.is_some(),
+                "non-first chunks should have context"
+            );
         }
     }
 
@@ -232,7 +240,8 @@ mod tests {
              Assistant: Sure! What kind of project are you working on?\n\n\
              User: It's a Rust application for managing memory in an AI system. \
              We need to handle facts, entities, and graph links between them. \
-             The system should support semantic search and temporal filtering.".to_string();
+             The system should support semantic search and temporal filtering."
+            .to_string();
         let chunks = chunker.chunk(&input, &config);
         assert!(chunks.len() > 1);
         // With preserve_turns, chunks should prefer splitting at \n\n boundaries

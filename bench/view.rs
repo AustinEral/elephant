@@ -10,15 +10,65 @@ use std::fs;
 use std::process;
 
 use serde::Deserialize;
+use tabled::settings::object::Columns;
 use tabled::settings::style::Style;
 use tabled::settings::{Alignment, Modify};
-use tabled::settings::object::Columns;
 use tabled::{Table, Tabled};
+
+#[derive(Debug, Default, Deserialize)]
+struct BenchmarkManifest {
+    #[serde(default)]
+    protocol_version: String,
+    #[serde(default)]
+    profile: String,
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    dataset_fingerprint: String,
+    #[serde(default)]
+    selected_conversations: Vec<String>,
+    #[serde(default)]
+    session_limit: Option<usize>,
+    #[serde(default)]
+    question_limit: Option<usize>,
+    #[serde(default)]
+    ingestion_granularity: String,
+    #[serde(default)]
+    question_concurrency: usize,
+    #[serde(default)]
+    conversation_concurrency: usize,
+    #[serde(default)]
+    raw_json: bool,
+    #[serde(default)]
+    dirty_worktree: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct StageUsage {
+    #[serde(default)]
+    prompt_tokens: u64,
+    #[serde(default)]
+    completion_tokens: u64,
+    #[serde(default)]
+    calls: u64,
+    #[serde(default)]
+    errors: u64,
+    #[serde(default)]
+    latency_ms: u64,
+}
+
+impl StageUsage {
+    fn total_tokens(&self) -> u64 {
+        self.prompt_tokens + self.completion_tokens
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct BenchmarkOutput {
     #[serde(default)]
     tag: Option<String>,
+    #[serde(default)]
+    commit: Option<String>,
     #[serde(default)]
     judge_model: String,
     #[serde(default)]
@@ -32,11 +82,25 @@ struct BenchmarkOutput {
     #[serde(default)]
     consolidation_strategy: String,
     total_questions: usize,
-    #[allow(dead_code)]
+    #[serde(default)]
     accuracy: f64,
+    #[serde(default)]
+    mean_f1: f64,
+    #[serde(default)]
+    mean_evidence_recall: f64,
+    #[serde(default)]
+    manifest: BenchmarkManifest,
+    #[serde(default)]
+    stage_metrics: BTreeMap<String, StageUsage>,
+    #[serde(default)]
+    total_stage_usage: StageUsage,
     #[serde(default)]
     results: Vec<QuestionResult>,
     total_time_s: f64,
+}
+
+fn default_status() -> String {
+    "ok".into()
 }
 
 #[derive(Debug, Deserialize)]
@@ -50,6 +114,7 @@ struct QuestionResult {
     #[allow(dead_code)]
     #[serde(default)]
     ground_truth: String,
+    #[allow(dead_code)]
     #[serde(default)]
     hypothesis: String,
     #[serde(default)]
@@ -58,6 +123,19 @@ struct QuestionResult {
     confidence: f32,
     #[serde(default)]
     elapsed_s: f64,
+    #[serde(default = "default_status")]
+    status: String,
+    #[allow(dead_code)]
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    evidence_refs: Vec<String>,
+    #[serde(default)]
+    retrieved_turn_refs: Vec<String>,
+    #[serde(default)]
+    evidence_hit: bool,
+    #[serde(default)]
+    evidence_recall: f64,
 }
 
 type QKey = (String, String);
@@ -78,58 +156,105 @@ fn file_label(output: &BenchmarkOutput, path: &str) -> String {
     }
 }
 
-fn fmt_time(s: f64) -> String {
-    if s < 60.0 {
-        format!("{s:.1}s")
+fn fmt_time(seconds: f64) -> String {
+    if seconds < 60.0 {
+        format!("{seconds:.1}s")
     } else {
-        let m = (s / 60.0).floor() as u64;
-        let rem = s - m as f64 * 60.0;
-        format!("{m}m{rem:.0}s")
+        let minutes = (seconds / 60.0).floor() as u64;
+        let rem = seconds - minutes as f64 * 60.0;
+        format!("{minutes}m{rem:.0}s")
     }
+}
+
+fn fmt_ms(ms: u64) -> String {
+    fmt_time(ms as f64 / 1000.0)
 }
 
 fn fmt_pct(v: f64) -> String {
     format!("{:.1}%", v * 100.0)
 }
 
-fn fmt_delta(a: f64, b: f64) -> String {
-    let d = (b - a) * 100.0;
-    if d.abs() < 0.05 {
-        "0.0%".to_string()
-    } else if d > 0.0 {
-        format!("\x1b[32m+{d:.1}%\x1b[0m")
+fn fmt_stage_value(usage: &StageUsage) -> String {
+    if usage.calls == 0 {
+        "-".into()
     } else {
-        format!("\x1b[31m{d:.1}%\x1b[0m")
+        format!("{} tok / {} calls", usage.total_tokens(), usage.calls)
     }
 }
 
-fn fmt_num_delta(a: f64, b: f64, precision: usize) -> String {
-    let d = b - a;
-    if d.abs() < 0.005 {
-        format!("{d:+.0$}", precision)
-    } else if d > 0.0 {
-        format!("\x1b[32m{d:+.0$}\x1b[0m", precision)
+fn fmt_float_delta(a: f64, b: f64, precision: usize, higher_is_better: bool) -> String {
+    let delta = b - a;
+    let threshold = 0.5 * 10f64.powi(-(precision as i32));
+    let rendered = format!("{:+.*}", precision, delta);
+    if delta.abs() < threshold {
+        rendered
+    } else if (delta > 0.0) == higher_is_better {
+        format!("\x1b[32m{rendered}\x1b[0m")
     } else {
-        format!("\x1b[31m{d:+.0$}\x1b[0m", precision)
+        format!("\x1b[31m{rendered}\x1b[0m")
     }
 }
 
-fn fmt_time_delta(a: f64, b: f64) -> String {
-    let d = b - a;
-    if d.abs() < 0.05 {
-        format!("{d:+.1}s")
-    } else if d > 0.0 {
-        format!("\x1b[31m{d:+.1}s\x1b[0m") // slower = red
+fn fmt_pct_delta(a: f64, b: f64) -> String {
+    let delta = (b - a) * 100.0;
+    let rendered = format!("{delta:+.1}%");
+    if delta.abs() < 0.05 {
+        rendered
+    } else if delta > 0.0 {
+        format!("\x1b[32m{rendered}\x1b[0m")
     } else {
-        format!("\x1b[32m{d:+.1}s\x1b[0m") // faster = green
+        format!("\x1b[31m{rendered}\x1b[0m")
+    }
+}
+
+fn fmt_cost_delta_u64(a: u64, b: u64) -> String {
+    let delta = b as i128 - a as i128;
+    let rendered = format!("{delta:+}");
+    if delta == 0 {
+        rendered
+    } else if delta < 0 {
+        format!("\x1b[32m{rendered}\x1b[0m")
+    } else {
+        format!("\x1b[31m{rendered}\x1b[0m")
     }
 }
 
 fn avg(v: &[f64]) -> f64 {
-    if v.is_empty() { 0.0 } else { v.iter().sum::<f64>() / v.len() as f64 }
+    if v.is_empty() {
+        0.0
+    } else {
+        v.iter().sum::<f64>() / v.len() as f64
+    }
 }
 
-// --- Config row for tabled ---
+fn has_evidence(output: &BenchmarkOutput) -> bool {
+    output.mean_evidence_recall > 0.0
+        || output
+            .results
+            .iter()
+            .any(|r| !r.evidence_refs.is_empty() || !r.retrieved_turn_refs.is_empty())
+}
+
+fn manifest_scope(manifest: &BenchmarkManifest) -> Option<String> {
+    if !manifest.selected_conversations.is_empty() {
+        return Some(manifest.selected_conversations.join(","));
+    }
+    None
+}
+
+fn failed_count(results: &[QuestionResult]) -> usize {
+    results.iter().filter(|r| r.status != "ok").count()
+}
+
+fn question_mark(r: &QuestionResult) -> String {
+    if r.status != "ok" {
+        "!".into()
+    } else if r.judge_correct {
+        "\x1b[32m✓\x1b[0m".into()
+    } else {
+        "\x1b[31m✗\x1b[0m".into()
+    }
+}
 
 #[derive(Tabled)]
 struct ConfigRow {
@@ -140,8 +265,6 @@ struct ConfigRow {
     #[tabled(rename = "B")]
     val_b: String,
 }
-
-// --- Summary row for tabled ---
 
 #[derive(Tabled)]
 struct SummaryRow {
@@ -155,8 +278,6 @@ struct SummaryRow {
     n: usize,
 }
 
-// --- Metrics row for tabled ---
-
 #[derive(Tabled)]
 struct MetricsRow {
     metric: String,
@@ -167,8 +288,6 @@ struct MetricsRow {
     #[tabled(rename = "Δ")]
     delta: String,
 }
-
-// --- Per-question row for tabled ---
 
 #[derive(Tabled)]
 struct QuestionRow {
@@ -181,8 +300,6 @@ struct QuestionRow {
     #[tabled(rename = "B")]
     b: String,
 }
-
-// --- Single-file view types ---
 
 #[derive(Tabled)]
 struct SingleConfigRow {
@@ -208,10 +325,13 @@ struct ConversationRow {
     acc: String,
     #[tabled(rename = "F1")]
     f1: String,
+    #[tabled(rename = "ER")]
+    evidence_recall: String,
     #[tabled(rename = "conf")]
     conf: String,
     #[tabled(rename = "avg time")]
     avg_time: String,
+    failed: usize,
     #[tabled(rename = "n")]
     n: usize,
 }
@@ -223,164 +343,398 @@ struct SingleQuestionRow {
     sample: String,
     category: String,
     result: String,
+    status: String,
+    #[tabled(rename = "ER")]
+    evidence_recall: String,
 }
 
-fn view_single(a: &BenchmarkOutput, path: &str) {
-    let label = file_label(a, path);
+#[derive(Tabled)]
+struct StageRow {
+    stage: String,
+    tokens: String,
+    calls: u64,
+    errors: u64,
+    latency: String,
+}
 
-    // --- Config table ---
+#[derive(Tabled)]
+struct StageCompareRow {
+    stage: String,
+    #[tabled(rename = "A")]
+    val_a: String,
+    #[tabled(rename = "B")]
+    val_b: String,
+    #[tabled(rename = "Δ tokens")]
+    delta: String,
+}
+
+fn view_single(output: &BenchmarkOutput, path: &str) {
+    let label = file_label(output, path);
+    let evidence_available = has_evidence(output);
+
     let mut config_rows = vec![
-        SingleConfigRow { key: "tag".into(), value: label },
-        SingleConfigRow { key: "judge".into(), value: a.judge_model.clone() },
-        SingleConfigRow { key: "retain".into(), value: a.retain_model.clone() },
-        SingleConfigRow { key: "reflect".into(), value: a.reflect_model.clone() },
-        SingleConfigRow { key: "embedding".into(), value: a.embedding_model.clone() },
-        SingleConfigRow { key: "reranker".into(), value: a.reranker_model.clone() },
-        SingleConfigRow { key: "consolidation".into(), value: a.consolidation_strategy.clone() },
-        SingleConfigRow { key: "questions".into(), value: a.total_questions.to_string() },
+        SingleConfigRow {
+            key: "tag".into(),
+            value: label,
+        },
+        SingleConfigRow {
+            key: "judge".into(),
+            value: output.judge_model.clone(),
+        },
+        SingleConfigRow {
+            key: "retain".into(),
+            value: output.retain_model.clone(),
+        },
+        SingleConfigRow {
+            key: "reflect".into(),
+            value: output.reflect_model.clone(),
+        },
+        SingleConfigRow {
+            key: "embedding".into(),
+            value: output.embedding_model.clone(),
+        },
+        SingleConfigRow {
+            key: "reranker".into(),
+            value: output.reranker_model.clone(),
+        },
+        SingleConfigRow {
+            key: "consolidation".into(),
+            value: output.consolidation_strategy.clone(),
+        },
+        SingleConfigRow {
+            key: "questions".into(),
+            value: output.total_questions.to_string(),
+        },
     ];
-    if a.total_time_s > 0.0 {
-        config_rows.push(SingleConfigRow { key: "total time".into(), value: fmt_time(a.total_time_s) });
+
+    if let Some(commit) = &output.commit {
+        config_rows.push(SingleConfigRow {
+            key: "commit".into(),
+            value: commit.clone(),
+        });
     }
-
-    let config_table = Table::new(&config_rows)
-        .with(Style::rounded())
-        .to_string();
-    println!("{config_table}");
-    println!();
-
-    // --- Detect incomplete conversations (any empty hypothesis = error) ---
-    let incomplete_convs: BTreeSet<&str> = a.results.iter()
-        .filter(|r| r.hypothesis.is_empty())
-        .map(|r| r.sample_id.as_str())
-        .collect();
-    let complete_results: Vec<&QuestionResult> = a.results.iter()
-        .filter(|r| !incomplete_convs.contains(r.sample_id.as_str()))
-        .collect();
-
-    // --- Per-category accuracy (complete conversations only) ---
-    let mut cat_stats: BTreeMap<&str, (usize, usize)> = BTreeMap::new(); // (correct, total)
-    for r in &complete_results {
-        if r.category_name.is_empty() { continue; }
-        let e = cat_stats.entry(&r.category_name).or_insert((0, 0));
-        e.1 += 1;
-        if r.judge_correct { e.0 += 1; }
+    if !output.manifest.profile.is_empty() {
+        config_rows.push(SingleConfigRow {
+            key: "profile".into(),
+            value: output.manifest.profile.clone(),
+        });
     }
-
-    let categories: Vec<&str> = cat_stats.keys().copied().collect();
-    let mut summary_rows = Vec::new();
-    for cat in &categories {
-        if let Some(&(correct, total)) = cat_stats.get(cat) {
-            summary_rows.push(SingleSummaryRow {
-                category: cat.to_string(),
-                acc: fmt_pct(correct as f64 / total.max(1) as f64),
-                n: total,
-            });
-        }
+    if !output.manifest.mode.is_empty() {
+        config_rows.push(SingleConfigRow {
+            key: "mode".into(),
+            value: output.manifest.mode.clone(),
+        });
     }
-    let total_correct: usize = cat_stats.values().map(|v| v.0).sum();
-    let total_n = complete_results.len();
-    summary_rows.push(SingleSummaryRow {
-        category: "TOTAL".into(),
-        acc: fmt_pct(total_correct as f64 / total_n.max(1) as f64),
-        n: total_n,
-    });
-
-    let summary_table = Table::new(&summary_rows)
-        .with(Style::rounded())
-        .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
-        .to_string();
-    println!("{summary_table}");
-
-    // --- Per-conversation table ---
-    let conv_ids: BTreeSet<&str> = a.results.iter().map(|r| r.sample_id.as_str()).collect();
-    let mut conv_rows = Vec::new();
-
-    for cid in &conv_ids {
-        if incomplete_convs.contains(cid) {
-            conv_rows.push(ConversationRow {
-                sample_id: format!("{cid} *"),
-                acc: "-".into(),
-                f1: "-".into(),
-                conf: "-".into(),
-                avg_time: "-".into(),
-                n: 0,
-            });
-        } else {
-            let qs: Vec<&QuestionResult> = a.results.iter().filter(|r| r.sample_id == *cid).collect();
-            let correct = qs.iter().filter(|r| r.judge_correct).count();
-            let f1 = avg(&qs.iter().map(|r| r.f1).collect::<Vec<_>>());
-            let conf = avg(&qs.iter().map(|r| r.confidence as f64).collect::<Vec<_>>());
-            let time = avg(&qs.iter().map(|r| r.elapsed_s).collect::<Vec<_>>());
-
-            conv_rows.push(ConversationRow {
-                sample_id: cid.to_string(),
-                acc: fmt_pct(correct as f64 / qs.len().max(1) as f64),
-                f1: format!("{f1:.3}"),
-                conf: format!("{conf:.3}"),
-                avg_time: fmt_time(time),
-                n: qs.len(),
-            });
-        }
+    if !output.manifest.protocol_version.is_empty() {
+        config_rows.push(SingleConfigRow {
+            key: "protocol".into(),
+            value: output.manifest.protocol_version.clone(),
+        });
     }
-
-    // Total row — only complete conversations
-    let total_correct = complete_results.iter().filter(|r| r.judge_correct).count();
-    let total_f1 = avg(&complete_results.iter().map(|r| r.f1).collect::<Vec<_>>());
-    let total_conf = avg(&complete_results.iter().map(|r| r.confidence as f64).collect::<Vec<_>>());
-    let total_time = avg(&complete_results.iter().map(|r| r.elapsed_s).collect::<Vec<_>>());
-
-    conv_rows.push(ConversationRow {
-        sample_id: "TOTAL".into(),
-        acc: fmt_pct(total_correct as f64 / total_n.max(1) as f64),
-        f1: format!("{total_f1:.3}"),
-        conf: format!("{total_conf:.3}"),
-        avg_time: fmt_time(total_time),
-        n: total_n,
-    });
-
-    println!();
-    let conv_table = Table::new(&conv_rows)
-        .with(Style::rounded())
-        .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
-        .to_string();
-    println!("{conv_table}");
-
-    if !incomplete_convs.is_empty() {
-        println!("  * incomplete (excluded from TOTAL)");
+    if !output.manifest.dataset_fingerprint.is_empty() {
+        config_rows.push(SingleConfigRow {
+            key: "dataset".into(),
+            value: output.manifest.dataset_fingerprint.clone(),
+        });
     }
-
-    // --- Per-question table ---
-    if a.results.is_empty() { return; }
-    println!();
-
-    let mut question_rows: Vec<SingleQuestionRow> = Vec::new();
-    let mut sorted: Vec<&QuestionResult> = a.results.iter().collect();
-    sorted.sort_by(|a, b| a.category_name.cmp(&b.category_name)
-        .then(a.sample_id.cmp(&b.sample_id))
-        .then(a.question_id.cmp(&b.question_id)));
-
-    for r in &sorted {
-        let mark = if r.judge_correct { "\x1b[32m✓\x1b[0m".to_string() } else { "\x1b[31m✗\x1b[0m".to_string() };
-        question_rows.push(SingleQuestionRow {
-            qid: r.question_id.clone(),
-            sample: r.sample_id.clone(),
-            category: r.category_name.clone(),
-            result: mark,
+    if !output.manifest.ingestion_granularity.is_empty() {
+        config_rows.push(SingleConfigRow {
+            key: "ingest".into(),
+            value: output.manifest.ingestion_granularity.clone(),
+        });
+    }
+    if let Some(scope) = manifest_scope(&output.manifest) {
+        config_rows.push(SingleConfigRow {
+            key: "scope".into(),
+            value: scope,
+        });
+    }
+    if output.manifest.question_concurrency > 0 {
+        config_rows.push(SingleConfigRow {
+            key: "q concurrency".into(),
+            value: output.manifest.question_concurrency.to_string(),
+        });
+    }
+    if output.manifest.conversation_concurrency > 0 {
+        config_rows.push(SingleConfigRow {
+            key: "conv concurrency".into(),
+            value: output.manifest.conversation_concurrency.to_string(),
+        });
+    }
+    if output.manifest.raw_json {
+        config_rows.push(SingleConfigRow {
+            key: "raw json".into(),
+            value: "true".into(),
+        });
+    }
+    if let Some(limit) = output.manifest.session_limit {
+        config_rows.push(SingleConfigRow {
+            key: "session limit".into(),
+            value: limit.to_string(),
+        });
+    }
+    if let Some(limit) = output.manifest.question_limit {
+        config_rows.push(SingleConfigRow {
+            key: "question limit".into(),
+            value: limit.to_string(),
+        });
+    }
+    if let Some(dirty) = output.manifest.dirty_worktree {
+        config_rows.push(SingleConfigRow {
+            key: "dirty tree".into(),
+            value: dirty.to_string(),
+        });
+    }
+    if output.total_time_s > 0.0 {
+        config_rows.push(SingleConfigRow {
+            key: "total time".into(),
+            value: fmt_time(output.total_time_s),
         });
     }
 
-    let q_table = Table::new(&question_rows)
-        .with(Style::rounded())
-        .with(Modify::new(Columns::new(3..=3)).with(Alignment::center()))
-        .to_string();
-    println!("{q_table}");
-
-    // Summary line
-    let correct = a.results.iter().filter(|r| r.judge_correct).count();
-    let wrong = a.results.len() - correct;
+    println!("{}", Table::new(&config_rows).with(Style::rounded()));
     println!();
-    println!("\x1b[32m{correct} correct\x1b[0m, \x1b[31m{wrong} wrong\x1b[0m");
+
+    let mut cat_stats: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+    for result in &output.results {
+        if result.category_name.is_empty() {
+            continue;
+        }
+        let entry = cat_stats.entry(&result.category_name).or_insert((0, 0));
+        entry.1 += 1;
+        if result.judge_correct {
+            entry.0 += 1;
+        }
+    }
+
+    let mut summary_rows = Vec::new();
+    for (category, (correct, total)) in &cat_stats {
+        summary_rows.push(SingleSummaryRow {
+            category: (*category).to_string(),
+            acc: fmt_pct(*correct as f64 / (*total).max(1) as f64),
+            n: *total,
+        });
+    }
+    summary_rows.push(SingleSummaryRow {
+        category: "TOTAL".into(),
+        acc: fmt_pct(output.accuracy),
+        n: output.results.len(),
+    });
+
+    println!(
+        "{}",
+        Table::new(&summary_rows)
+            .with(Style::rounded())
+            .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
+    );
+
+    let mut metrics_rows = vec![
+        SingleConfigRow {
+            key: "accuracy".into(),
+            value: fmt_pct(output.accuracy),
+        },
+        SingleConfigRow {
+            key: "F1".into(),
+            value: format!("{:.3}", output.mean_f1),
+        },
+    ];
+    if evidence_available {
+        metrics_rows.push(SingleConfigRow {
+            key: "evidence recall".into(),
+            value: format!("{:.3}", output.mean_evidence_recall),
+        });
+    }
+    metrics_rows.push(SingleConfigRow {
+        key: "confidence".into(),
+        value: format!(
+            "{:.3}",
+            avg(&output
+                .results
+                .iter()
+                .map(|r| r.confidence as f64)
+                .collect::<Vec<_>>())
+        ),
+    });
+    metrics_rows.push(SingleConfigRow {
+        key: "avg time".into(),
+        value: fmt_time(avg(&output
+            .results
+            .iter()
+            .map(|r| r.elapsed_s)
+            .collect::<Vec<_>>())),
+    });
+    metrics_rows.push(SingleConfigRow {
+        key: "failed".into(),
+        value: failed_count(&output.results).to_string(),
+    });
+    if output.total_stage_usage.calls > 0 {
+        metrics_rows.push(SingleConfigRow {
+            key: "tokens".into(),
+            value: output.total_stage_usage.total_tokens().to_string(),
+        });
+        metrics_rows.push(SingleConfigRow {
+            key: "calls".into(),
+            value: output.total_stage_usage.calls.to_string(),
+        });
+        metrics_rows.push(SingleConfigRow {
+            key: "latency".into(),
+            value: fmt_ms(output.total_stage_usage.latency_ms),
+        });
+    }
+
+    println!();
+    println!("{}", Table::new(&metrics_rows).with(Style::rounded()));
+
+    if !output.stage_metrics.is_empty() {
+        let stage_rows = output
+            .stage_metrics
+            .iter()
+            .map(|(stage, usage)| StageRow {
+                stage: stage.clone(),
+                tokens: usage.total_tokens().to_string(),
+                calls: usage.calls,
+                errors: usage.errors,
+                latency: fmt_ms(usage.latency_ms),
+            })
+            .collect::<Vec<_>>();
+
+        println!();
+        println!(
+            "{}",
+            Table::new(&stage_rows)
+                .with(Style::rounded())
+                .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
+        );
+    }
+
+    let conv_ids: BTreeSet<&str> = output
+        .results
+        .iter()
+        .map(|r| r.sample_id.as_str())
+        .collect();
+    let mut conv_rows = Vec::new();
+    for conv_id in conv_ids {
+        let questions = output
+            .results
+            .iter()
+            .filter(|r| r.sample_id == conv_id)
+            .collect::<Vec<_>>();
+        let correct = questions.iter().filter(|r| r.judge_correct).count();
+        conv_rows.push(ConversationRow {
+            sample_id: conv_id.to_string(),
+            acc: fmt_pct(correct as f64 / questions.len().max(1) as f64),
+            f1: format!(
+                "{:.3}",
+                avg(&questions.iter().map(|r| r.f1).collect::<Vec<_>>())
+            ),
+            evidence_recall: if evidence_available {
+                format!(
+                    "{:.3}",
+                    avg(&questions
+                        .iter()
+                        .map(|r| r.evidence_recall)
+                        .collect::<Vec<_>>())
+                )
+            } else {
+                "-".into()
+            },
+            conf: format!(
+                "{:.3}",
+                avg(&questions
+                    .iter()
+                    .map(|r| r.confidence as f64)
+                    .collect::<Vec<_>>())
+            ),
+            avg_time: fmt_time(avg(&questions
+                .iter()
+                .map(|r| r.elapsed_s)
+                .collect::<Vec<_>>())),
+            failed: questions.iter().filter(|r| r.status != "ok").count(),
+            n: questions.len(),
+        });
+    }
+    conv_rows.push(ConversationRow {
+        sample_id: "TOTAL".into(),
+        acc: fmt_pct(output.accuracy),
+        f1: format!("{:.3}", output.mean_f1),
+        evidence_recall: if evidence_available {
+            format!("{:.3}", output.mean_evidence_recall)
+        } else {
+            "-".into()
+        },
+        conf: format!(
+            "{:.3}",
+            avg(&output
+                .results
+                .iter()
+                .map(|r| r.confidence as f64)
+                .collect::<Vec<_>>())
+        ),
+        avg_time: fmt_time(avg(&output
+            .results
+            .iter()
+            .map(|r| r.elapsed_s)
+            .collect::<Vec<_>>())),
+        failed: failed_count(&output.results),
+        n: output.results.len(),
+    });
+
+    println!();
+    println!(
+        "{}",
+        Table::new(&conv_rows)
+            .with(Style::rounded())
+            .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
+    );
+
+    if output.results.is_empty() {
+        return;
+    }
+
+    let mut sorted = output.results.iter().collect::<Vec<_>>();
+    sorted.sort_by(|a, b| {
+        a.category_name
+            .cmp(&b.category_name)
+            .then(a.sample_id.cmp(&b.sample_id))
+            .then(a.question_id.cmp(&b.question_id))
+    });
+
+    let question_rows = sorted
+        .iter()
+        .map(|result| SingleQuestionRow {
+            qid: result.question_id.clone(),
+            sample: result.sample_id.clone(),
+            category: result.category_name.clone(),
+            result: question_mark(result),
+            status: result.status.clone(),
+            evidence_recall: if evidence_available {
+                format!("{:.2}", result.evidence_recall)
+            } else {
+                "-".into()
+            },
+        })
+        .collect::<Vec<_>>();
+
+    println!();
+    println!(
+        "{}",
+        Table::new(&question_rows)
+            .with(Style::rounded())
+            .with(Modify::new(Columns::new(3..=5)).with(Alignment::center()))
+    );
+
+    let correct = output.results.iter().filter(|r| r.judge_correct).count();
+    let wrong = output.results.len().saturating_sub(correct);
+    let failed = failed_count(&output.results);
+    let evidence_hits = output.results.iter().filter(|r| r.evidence_hit).count();
+    println!();
+    if evidence_available {
+        println!(
+            "\x1b[32m{correct} correct\x1b[0m, \x1b[31m{wrong} wrong\x1b[0m, {failed} failed, {evidence_hits} evidence hits"
+        );
+    } else {
+        println!("\x1b[32m{correct} correct\x1b[0m, \x1b[31m{wrong} wrong\x1b[0m, {failed} failed");
+    }
 }
 
 fn load_file(path: &str) -> BenchmarkOutput {
@@ -396,34 +750,48 @@ fn load_file(path: &str) -> BenchmarkOutput {
 
 fn filter_conv(mut output: BenchmarkOutput, conv: &str) -> BenchmarkOutput {
     output.results.retain(|r| r.sample_id == conv);
+    output.total_questions = output.results.len();
+    output.accuracy = if output.results.is_empty() {
+        0.0
+    } else {
+        output.results.iter().filter(|r| r.judge_correct).count() as f64
+            / output.results.len() as f64
+    };
+    output.mean_f1 = avg(&output.results.iter().map(|r| r.f1).collect::<Vec<_>>());
+    output.mean_evidence_recall = avg(&output
+        .results
+        .iter()
+        .map(|r| r.evidence_recall)
+        .collect::<Vec<_>>());
     output
 }
 
 fn main() {
-    let raw_args: Vec<String> = env::args().collect();
+    let raw_args = env::args().collect::<Vec<_>>();
 
-    // Parse --conv flag
     let mut conv_filter: Option<String> = None;
-    let mut files: Vec<String> = Vec::new();
-    let mut i = 1;
-    while i < raw_args.len() {
-        if raw_args[i] == "--conv" {
-            i += 1;
-            if i >= raw_args.len() {
+    let mut files = Vec::new();
+    let mut index = 1;
+    while index < raw_args.len() {
+        if raw_args[index] == "--conv" {
+            index += 1;
+            if index >= raw_args.len() {
                 eprintln!("--conv requires a conversation ID");
                 process::exit(1);
             }
-            conv_filter = Some(raw_args[i].clone());
+            conv_filter = Some(raw_args[index].clone());
         } else {
-            files.push(raw_args[i].clone());
+            files.push(raw_args[index].clone());
         }
-        i += 1;
+        index += 1;
     }
 
     if files.len() == 1 {
-        let mut a = load_file(&files[0]);
-        if let Some(ref conv) = conv_filter { a = filter_conv(a, conv); }
-        view_single(&a, &files[0]);
+        let mut output = load_file(&files[0]);
+        if let Some(ref conv) = conv_filter {
+            output = filter_conv(output, conv);
+        }
+        view_single(&output, &files[0]);
         return;
     }
     if files.len() != 2 {
@@ -438,50 +806,131 @@ fn main() {
         b = filter_conv(b, conv);
     }
 
+    let evidence_available = has_evidence(&a) || has_evidence(&b);
     let label_a = file_label(&a, &files[0]);
     let label_b = file_label(&b, &files[1]);
 
-    // Match questions across runs
-    let map_b: HashMap<QKey, &QuestionResult> = b.results.iter().map(|r| (qkey(r), r)).collect();
-
-    let matched: Vec<(&QuestionResult, &QuestionResult)> = a.results
+    let map_b = b
+        .results
         .iter()
-        .filter_map(|ra| map_b.get(&qkey(ra)).map(|rb| (ra, *rb)))
-        .collect();
+        .map(|result| (qkey(result), result))
+        .collect::<HashMap<_, _>>();
+    let matched = a
+        .results
+        .iter()
+        .filter_map(|left| map_b.get(&qkey(left)).map(|right| (left, *right)))
+        .collect::<Vec<_>>();
 
-    // Discover categories & compute per-category stats
-    let categories: Vec<String> = {
+    let categories = {
         let mut cats = BTreeSet::new();
-        for r in &a.results { cats.insert(r.category_name.clone()); }
-        for r in &b.results { cats.insert(r.category_name.clone()); }
-        cats.into_iter().filter(|c| !c.is_empty()).collect()
+        for result in &a.results {
+            cats.insert(result.category_name.clone());
+        }
+        for result in &b.results {
+            cats.insert(result.category_name.clone());
+        }
+        cats.into_iter()
+            .filter(|c| !c.is_empty())
+            .collect::<Vec<_>>()
     };
 
-    let mut cat_stats: BTreeMap<&str, (usize, usize, usize)> = BTreeMap::new(); // (correct_a, correct_b, total)
-    for (ra, rb) in &matched {
-        let e = cat_stats.entry(&ra.category_name).or_insert((0, 0, 0));
-        e.2 += 1;
-        if ra.judge_correct { e.0 += 1; }
-        if rb.judge_correct { e.1 += 1; }
+    let mut cat_stats: BTreeMap<&str, (usize, usize, usize)> = BTreeMap::new();
+    for (left, right) in &matched {
+        let entry = cat_stats.entry(&left.category_name).or_insert((0, 0, 0));
+        entry.2 += 1;
+        if left.judge_correct {
+            entry.0 += 1;
+        }
+        if right.judge_correct {
+            entry.1 += 1;
+        }
     }
 
-    // --- Config table ---
     let mut config_rows = vec![
-        ConfigRow { key: "tag".into(), val_a: label_a.clone(), val_b: label_b.clone() },
-        ConfigRow { key: "judge".into(), val_a: a.judge_model.clone(), val_b: b.judge_model.clone() },
-        ConfigRow { key: "retain".into(), val_a: a.retain_model.clone(), val_b: b.retain_model.clone() },
-        ConfigRow { key: "reflect".into(), val_a: a.reflect_model.clone(), val_b: b.reflect_model.clone() },
-        ConfigRow { key: "embedding".into(), val_a: a.embedding_model.clone(), val_b: b.embedding_model.clone() },
-        ConfigRow { key: "reranker".into(), val_a: a.reranker_model.clone(), val_b: b.reranker_model.clone() },
-        ConfigRow { key: "consolidation".into(), val_a: a.consolidation_strategy.clone(), val_b: b.consolidation_strategy.clone() },
+        ConfigRow {
+            key: "tag".into(),
+            val_a: label_a.clone(),
+            val_b: label_b.clone(),
+        },
+        ConfigRow {
+            key: "judge".into(),
+            val_a: a.judge_model.clone(),
+            val_b: b.judge_model.clone(),
+        },
+        ConfigRow {
+            key: "retain".into(),
+            val_a: a.retain_model.clone(),
+            val_b: b.retain_model.clone(),
+        },
+        ConfigRow {
+            key: "reflect".into(),
+            val_a: a.reflect_model.clone(),
+            val_b: b.reflect_model.clone(),
+        },
+        ConfigRow {
+            key: "embedding".into(),
+            val_a: a.embedding_model.clone(),
+            val_b: b.embedding_model.clone(),
+        },
+        ConfigRow {
+            key: "reranker".into(),
+            val_a: a.reranker_model.clone(),
+            val_b: b.reranker_model.clone(),
+        },
+        ConfigRow {
+            key: "consolidation".into(),
+            val_a: a.consolidation_strategy.clone(),
+            val_b: b.consolidation_strategy.clone(),
+        },
+        ConfigRow {
+            key: "questions".into(),
+            val_a: a.total_questions.to_string(),
+            val_b: b.total_questions.to_string(),
+        },
     ];
-    config_rows.push(ConfigRow {
-        key: "questions".into(),
-        val_a: a.total_questions.to_string(),
-        val_b: b.total_questions.to_string(),
-    });
+
+    if a.commit.is_some() || b.commit.is_some() {
+        config_rows.push(ConfigRow {
+            key: "commit".into(),
+            val_a: a.commit.clone().unwrap_or_else(|| "-".into()),
+            val_b: b.commit.clone().unwrap_or_else(|| "-".into()),
+        });
+    }
+    if !a.manifest.profile.is_empty() || !b.manifest.profile.is_empty() {
+        config_rows.push(ConfigRow {
+            key: "profile".into(),
+            val_a: a.manifest.profile.clone(),
+            val_b: b.manifest.profile.clone(),
+        });
+    }
+    if !a.manifest.mode.is_empty() || !b.manifest.mode.is_empty() {
+        config_rows.push(ConfigRow {
+            key: "mode".into(),
+            val_a: a.manifest.mode.clone(),
+            val_b: b.manifest.mode.clone(),
+        });
+    }
     if matched.len() != a.results.len() || matched.len() != b.results.len() {
-        config_rows.push(ConfigRow { key: "matched".into(), val_a: matched.len().to_string(), val_b: matched.len().to_string() });
+        config_rows.push(ConfigRow {
+            key: "matched".into(),
+            val_a: matched.len().to_string(),
+            val_b: matched.len().to_string(),
+        });
+    }
+    if !a.manifest.ingestion_granularity.is_empty() || !b.manifest.ingestion_granularity.is_empty()
+    {
+        config_rows.push(ConfigRow {
+            key: "ingest".into(),
+            val_a: a.manifest.ingestion_granularity.clone(),
+            val_b: b.manifest.ingestion_granularity.clone(),
+        });
+    }
+    if manifest_scope(&a.manifest).is_some() || manifest_scope(&b.manifest).is_some() {
+        config_rows.push(ConfigRow {
+            key: "scope".into(),
+            val_a: manifest_scope(&a.manifest).unwrap_or_else(|| "-".into()),
+            val_b: manifest_scope(&b.manifest).unwrap_or_else(|| "-".into()),
+        });
     }
     if a.total_time_s > 0.0 || b.total_time_s > 0.0 {
         config_rows.push(ConfigRow {
@@ -491,31 +940,31 @@ fn main() {
         });
     }
 
-    let config_table = Table::new(&config_rows)
-        .with(Style::rounded())
-        .to_string();
-    println!("{config_table}");
+    println!("{}", Table::new(&config_rows).with(Style::rounded()));
     println!();
 
-    // --- Summary table ---
     let mut summary_rows = Vec::new();
-
-    for cat in &categories {
-        if let Some(&(ca, cb, n)) = cat_stats.get(cat.as_str()) {
-            let aa = ca as f64 / n.max(1) as f64;
-            let ab = cb as f64 / n.max(1) as f64;
+    for category in &categories {
+        if let Some(&(correct_a, correct_b, total)) = cat_stats.get(category.as_str()) {
+            let acc_a = correct_a as f64 / total.max(1) as f64;
+            let acc_b = correct_b as f64 / total.max(1) as f64;
             summary_rows.push(SummaryRow {
-                category: cat.clone(),
-                acc_a: fmt_pct(aa),
-                acc_b: fmt_pct(ab),
-                delta: fmt_delta(aa, ab),
-                n,
+                category: category.clone(),
+                acc_a: fmt_pct(acc_a),
+                acc_b: fmt_pct(acc_b),
+                delta: fmt_pct_delta(acc_a, acc_b),
+                n: total,
             });
         }
     }
-
-    let total_a: usize = cat_stats.values().map(|v| v.0).sum();
-    let total_b: usize = cat_stats.values().map(|v| v.1).sum();
+    let total_a = matched
+        .iter()
+        .filter(|(left, _)| left.judge_correct)
+        .count();
+    let total_b = matched
+        .iter()
+        .filter(|(_, right)| right.judge_correct)
+        .count();
     let total_n = matched.len();
     let acc_a = total_a as f64 / total_n.max(1) as f64;
     let acc_b = total_b as f64 / total_n.max(1) as f64;
@@ -523,92 +972,219 @@ fn main() {
         category: "TOTAL".into(),
         acc_a: fmt_pct(acc_a),
         acc_b: fmt_pct(acc_b),
-        delta: fmt_delta(acc_a, acc_b),
+        delta: fmt_pct_delta(acc_a, acc_b),
         n: total_n,
     });
 
-    let summary_table = Table::new(&summary_rows)
-        .with(Style::rounded())
-        .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
-        .to_string();
-    println!("{summary_table}");
+    println!(
+        "{}",
+        Table::new(&summary_rows)
+            .with(Style::rounded())
+            .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
+    );
 
-    // --- Metrics table ---
-    let avg_f1_a = avg(&matched.iter().map(|(ra, _)| ra.f1).collect::<Vec<_>>());
-    let avg_f1_b = avg(&matched.iter().map(|(_, rb)| rb.f1).collect::<Vec<_>>());
-    let avg_conf_a = avg(&matched.iter().map(|(ra, _)| ra.confidence as f64).collect::<Vec<_>>());
-    let avg_conf_b = avg(&matched.iter().map(|(_, rb)| rb.confidence as f64).collect::<Vec<_>>());
-    let avg_time_a = avg(&matched.iter().map(|(ra, _)| ra.elapsed_s).collect::<Vec<_>>());
-    let avg_time_b = avg(&matched.iter().map(|(_, rb)| rb.elapsed_s).collect::<Vec<_>>());
-
-    let metrics_rows = vec![
+    let mut metrics_rows = vec![
+        MetricsRow {
+            metric: "accuracy".into(),
+            val_a: fmt_pct(acc_a),
+            val_b: fmt_pct(acc_b),
+            delta: fmt_pct_delta(acc_a, acc_b),
+        },
         MetricsRow {
             metric: "F1".into(),
-            val_a: format!("{avg_f1_a:.3}"),
-            val_b: format!("{avg_f1_b:.3}"),
-            delta: fmt_num_delta(avg_f1_a, avg_f1_b, 3),
-        },
-        MetricsRow {
-            metric: "confidence".into(),
-            val_a: format!("{avg_conf_a:.3}"),
-            val_b: format!("{avg_conf_b:.3}"),
-            delta: fmt_num_delta(avg_conf_a, avg_conf_b, 3),
-        },
-        MetricsRow {
-            metric: "avg time".into(),
-            val_a: fmt_time(avg_time_a),
-            val_b: fmt_time(avg_time_b),
-            delta: fmt_time_delta(avg_time_a, avg_time_b),
+            val_a: format!(
+                "{:.3}",
+                avg(&matched.iter().map(|(left, _)| left.f1).collect::<Vec<_>>())
+            ),
+            val_b: format!(
+                "{:.3}",
+                avg(&matched
+                    .iter()
+                    .map(|(_, right)| right.f1)
+                    .collect::<Vec<_>>())
+            ),
+            delta: fmt_float_delta(
+                avg(&matched.iter().map(|(left, _)| left.f1).collect::<Vec<_>>()),
+                avg(&matched
+                    .iter()
+                    .map(|(_, right)| right.f1)
+                    .collect::<Vec<_>>()),
+                3,
+                true,
+            ),
         },
     ];
 
-    println!();
-    let metrics_table = Table::new(&metrics_rows)
-        .with(Style::rounded())
-        .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
-        .to_string();
-    println!("{metrics_table}");
+    if evidence_available {
+        let evidence_a = avg(&matched
+            .iter()
+            .map(|(left, _)| left.evidence_recall)
+            .collect::<Vec<_>>());
+        let evidence_b = avg(&matched
+            .iter()
+            .map(|(_, right)| right.evidence_recall)
+            .collect::<Vec<_>>());
+        metrics_rows.push(MetricsRow {
+            metric: "evidence recall".into(),
+            val_a: format!("{evidence_a:.3}"),
+            val_b: format!("{evidence_b:.3}"),
+            delta: fmt_float_delta(evidence_a, evidence_b, 3, true),
+        });
+    }
 
-    // --- Per-question table ---
+    let conf_a = avg(&matched
+        .iter()
+        .map(|(left, _)| left.confidence as f64)
+        .collect::<Vec<_>>());
+    let conf_b = avg(&matched
+        .iter()
+        .map(|(_, right)| right.confidence as f64)
+        .collect::<Vec<_>>());
+    metrics_rows.push(MetricsRow {
+        metric: "confidence".into(),
+        val_a: format!("{conf_a:.3}"),
+        val_b: format!("{conf_b:.3}"),
+        delta: fmt_float_delta(conf_a, conf_b, 3, true),
+    });
+
+    let time_a = avg(&matched
+        .iter()
+        .map(|(left, _)| left.elapsed_s)
+        .collect::<Vec<_>>());
+    let time_b = avg(&matched
+        .iter()
+        .map(|(_, right)| right.elapsed_s)
+        .collect::<Vec<_>>());
+    metrics_rows.push(MetricsRow {
+        metric: "avg time".into(),
+        val_a: fmt_time(time_a),
+        val_b: fmt_time(time_b),
+        delta: fmt_float_delta(time_a, time_b, 1, false),
+    });
+
+    let failed_a = matched
+        .iter()
+        .filter(|(left, _)| left.status != "ok")
+        .count() as u64;
+    let failed_b = matched
+        .iter()
+        .filter(|(_, right)| right.status != "ok")
+        .count() as u64;
+    metrics_rows.push(MetricsRow {
+        metric: "failed".into(),
+        val_a: failed_a.to_string(),
+        val_b: failed_b.to_string(),
+        delta: fmt_cost_delta_u64(failed_a, failed_b),
+    });
+
+    if a.total_stage_usage.calls > 0 || b.total_stage_usage.calls > 0 {
+        metrics_rows.push(MetricsRow {
+            metric: "tokens".into(),
+            val_a: a.total_stage_usage.total_tokens().to_string(),
+            val_b: b.total_stage_usage.total_tokens().to_string(),
+            delta: fmt_cost_delta_u64(
+                a.total_stage_usage.total_tokens(),
+                b.total_stage_usage.total_tokens(),
+            ),
+        });
+        metrics_rows.push(MetricsRow {
+            metric: "calls".into(),
+            val_a: a.total_stage_usage.calls.to_string(),
+            val_b: b.total_stage_usage.calls.to_string(),
+            delta: fmt_cost_delta_u64(a.total_stage_usage.calls, b.total_stage_usage.calls),
+        });
+        metrics_rows.push(MetricsRow {
+            metric: "latency".into(),
+            val_a: fmt_ms(a.total_stage_usage.latency_ms),
+            val_b: fmt_ms(b.total_stage_usage.latency_ms),
+            delta: fmt_cost_delta_u64(
+                a.total_stage_usage.latency_ms,
+                b.total_stage_usage.latency_ms,
+            ),
+        });
+    }
+
+    println!();
+    println!(
+        "{}",
+        Table::new(&metrics_rows)
+            .with(Style::rounded())
+            .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
+    );
+
+    if !a.stage_metrics.is_empty() || !b.stage_metrics.is_empty() {
+        let stages = a
+            .stage_metrics
+            .keys()
+            .chain(b.stage_metrics.keys())
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let stage_rows = stages
+            .into_iter()
+            .map(|stage| {
+                let usage_a = a.stage_metrics.get(&stage).cloned().unwrap_or_default();
+                let usage_b = b.stage_metrics.get(&stage).cloned().unwrap_or_default();
+                StageCompareRow {
+                    stage,
+                    val_a: fmt_stage_value(&usage_a),
+                    val_b: fmt_stage_value(&usage_b),
+                    delta: fmt_cost_delta_u64(usage_a.total_tokens(), usage_b.total_tokens()),
+                }
+            })
+            .collect::<Vec<_>>();
+
+        println!();
+        println!(
+            "{}",
+            Table::new(&stage_rows)
+                .with(Style::rounded())
+                .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
+        );
+    }
+
     if matched.is_empty() {
         return;
     }
 
-    println!();
-
-    let mut question_rows: Vec<QuestionRow> = Vec::new();
-
-    for cat in &categories {
-        let mut cat_qs: Vec<&(&QuestionResult, &QuestionResult)> = matched
+    let mut question_rows = Vec::new();
+    for category in &categories {
+        let mut per_category = matched
             .iter()
-            .filter(|(ra, _rb)| ra.category_name == *cat)
-            .collect();
-        cat_qs.sort_by(|a, b| a.0.sample_id.cmp(&b.0.sample_id).then(a.0.question_id.cmp(&b.0.question_id)));
-
-        for (ra, rb) in &cat_qs {
-            let mark_a = if ra.judge_correct { "\x1b[32m✓\x1b[0m".to_string() } else { "\x1b[31m✗\x1b[0m".to_string() };
-            let mark_b = if rb.judge_correct { "\x1b[32m✓\x1b[0m".to_string() } else { "\x1b[31m✗\x1b[0m".to_string() };
-
+            .filter(|(left, _)| left.category_name == *category)
+            .collect::<Vec<_>>();
+        per_category.sort_by(|a, b| {
+            a.0.sample_id
+                .cmp(&b.0.sample_id)
+                .then(a.0.question_id.cmp(&b.0.question_id))
+        });
+        for (left, right) in per_category {
             question_rows.push(QuestionRow {
-                qid: ra.question_id.clone(),
-                sample: ra.sample_id.clone(),
-                category: ra.category_name.clone(),
-                a: mark_a,
-                b: mark_b,
+                qid: left.question_id.clone(),
+                sample: left.sample_id.clone(),
+                category: left.category_name.clone(),
+                a: question_mark(left),
+                b: question_mark(right),
             });
         }
     }
 
-    let q_table = Table::new(&question_rows)
-        .with(Style::rounded())
-        .with(Modify::new(Columns::new(3..=4)).with(Alignment::center()))
-        .to_string();
-    println!("{q_table}");
+    println!();
+    println!(
+        "{}",
+        Table::new(&question_rows)
+            .with(Style::rounded())
+            .with(Modify::new(Columns::new(3..=4)).with(Alignment::center()))
+    );
 
-    // Summary line
-    let regressions = matched.iter().filter(|(ra, rb)| ra.judge_correct && !rb.judge_correct).count();
-    let improvements = matched.iter().filter(|(ra, rb)| !ra.judge_correct && rb.judge_correct).count();
-    let unchanged = matched.len() - improvements - regressions;
+    let regressions = matched
+        .iter()
+        .filter(|(left, right)| left.judge_correct && !right.judge_correct)
+        .count();
+    let improvements = matched
+        .iter()
+        .filter(|(left, right)| !left.judge_correct && right.judge_correct)
+        .count();
+    let unchanged = matched.len().saturating_sub(improvements + regressions);
     println!();
     println!(
         "\x1b[32m{improvements} improved\x1b[0m, \x1b[31m{regressions} regressed\x1b[0m, {unchanged} unchanged"

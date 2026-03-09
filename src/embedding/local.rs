@@ -41,10 +41,12 @@ impl LocalEmbeddings {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(512);
-        tokenizer.with_truncation(Some(tokenizers::TruncationParams {
-            max_length: max_seq_len,
-            ..Default::default()
-        })).map_err(|e| Error::Embedding(format!("truncation config error: {e}")))?;
+        tokenizer
+            .with_truncation(Some(tokenizers::TruncationParams {
+                max_length: max_seq_len,
+                ..Default::default()
+            }))
+            .map_err(|e| Error::Embedding(format!("truncation config error: {e}")))?;
 
         Ok(Self {
             session: Arc::new(Mutex::new(session)),
@@ -84,7 +86,11 @@ fn embed_sync(
         .map_err(|e| Error::Embedding(format!("tokenization error: {e}")))?;
 
     let batch_size = encodings.len();
-    let seq_len = encodings.iter().map(|e| e.get_ids().len()).max().unwrap_or(0);
+    let seq_len = encodings
+        .iter()
+        .map(|e| e.get_ids().len())
+        .max()
+        .unwrap_or(0);
 
     // Build input tensors: input_ids, attention_mask, token_type_ids
     let mut input_ids = Array2::<i64>::zeros((batch_size, seq_len));
@@ -132,7 +138,11 @@ fn embed_sync(
     // Mean pooling with attention mask
     let mut results = Vec::with_capacity(batch_size);
     for (i, encoding) in encodings.iter().enumerate().take(batch_size) {
-        let token_count = encoding.get_attention_mask().iter().filter(|&&m| m == 1).count();
+        let token_count = encoding
+            .get_attention_mask()
+            .iter()
+            .filter(|&&m| m == 1)
+            .count();
         let sentence = hidden.index_axis(Axis(0), i);
         let mut pooled = vec![0.0f32; 384];
         for j in 0..token_count {

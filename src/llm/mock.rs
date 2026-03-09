@@ -28,12 +28,15 @@ impl MockLlmClient {
 
     /// Queue a text-only response to be returned by the next `complete` call.
     pub fn push_response(&self, text: impl Into<String>) {
-        self.responses.lock().unwrap().push_back(CompletionResponse {
-            content: text.into(),
-            input_tokens: 10,
-            output_tokens: 20,
-            tool_calls: vec![],
-        });
+        self.responses
+            .lock()
+            .unwrap()
+            .push_back(CompletionResponse {
+                content: text.into(),
+                input_tokens: 10,
+                output_tokens: 20,
+                tool_calls: vec![],
+            });
     }
 
     /// Queue a full `CompletionResponse` (e.g. with tool_calls).

@@ -47,8 +47,7 @@ pub async fn complete_structured<T: DeserializeOwned>(
                 .map_err(|e| Error::Llm(format!("JSON parse error: {e}")))?
         }
     };
-    serde_json::from_value::<T>(value)
-        .map_err(|e| Error::Llm(format!("JSON structure error: {e}")))
+    serde_json::from_value::<T>(value).map_err(|e| Error::Llm(format!("JSON structure error: {e}")))
 }
 
 /// Extract a JSON value from text that may contain markdown fences or surrounding prose.
@@ -189,16 +188,13 @@ pub(crate) async fn send_and_check(
     provider: &str,
     request_builder: reqwest::RequestBuilder,
 ) -> Result<String> {
-    let resp = request_builder
-        .send()
-        .await
-        .map_err(|e| {
-            if e.is_timeout() {
-                Error::ServerError(format!("{provider} request timed out"))
-            } else {
-                Error::Llm(format!("{provider} request failed: {e}"))
-            }
-        })?;
+    let resp = request_builder.send().await.map_err(|e| {
+        if e.is_timeout() {
+            Error::ServerError(format!("{provider} request timed out"))
+        } else {
+            Error::Llm(format!("{provider} request failed: {e}"))
+        }
+    })?;
 
     let status = resp.status();
     let resp_text = resp

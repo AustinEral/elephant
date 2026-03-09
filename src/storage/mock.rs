@@ -57,7 +57,11 @@ impl MemoryStore for MockMemoryStore {
 
     async fn get_facts(&self, ids: &[FactId]) -> Result<Vec<Fact>> {
         let store = self.facts.lock().unwrap();
-        Ok(store.iter().filter(|f| ids.contains(&f.id)).cloned().collect())
+        Ok(store
+            .iter()
+            .filter(|f| ids.contains(&f.id))
+            .cloned()
+            .collect())
     }
 
     async fn get_facts_by_bank(&self, bank: BankId, filter: FactFilter) -> Result<Vec<Fact>> {
@@ -114,16 +118,23 @@ impl MemoryStore for MockMemoryStore {
     async fn find_entity(&self, bank: BankId, name: &str) -> Result<Option<Entity>> {
         let store = self.entities.lock().unwrap();
         let lower = name.to_lowercase();
-        Ok(store.iter().find(|e| {
-            e.bank_id == bank
-                && (e.canonical_name.to_lowercase() == lower
-                    || e.aliases.iter().any(|a| a.to_lowercase() == lower))
-        }).cloned())
+        Ok(store
+            .iter()
+            .find(|e| {
+                e.bank_id == bank
+                    && (e.canonical_name.to_lowercase() == lower
+                        || e.aliases.iter().any(|a| a.to_lowercase() == lower))
+            })
+            .cloned())
     }
 
     async fn get_entity_facts(&self, entity: EntityId) -> Result<Vec<Fact>> {
         let store = self.facts.lock().unwrap();
-        Ok(store.iter().filter(|f| f.entity_ids.contains(&entity)).cloned().collect())
+        Ok(store
+            .iter()
+            .filter(|f| f.entity_ids.contains(&entity))
+            .cloned()
+            .collect())
     }
 
     async fn insert_links(&self, links: &[GraphLink]) -> Result<()> {
@@ -145,7 +156,11 @@ impl MemoryStore for MockMemoryStore {
                     && link_type.as_ref().is_none_or(|t| l.link_type == *t)
             })
             .map(|l| {
-                let other = if l.source_id == fact_id { l.target_id } else { l.source_id };
+                let other = if l.source_id == fact_id {
+                    l.target_id
+                } else {
+                    l.source_id
+                };
                 (other, l.weight, l.link_type)
             })
             .collect())
@@ -174,7 +189,11 @@ impl MemoryStore for MockMemoryStore {
                 })
             })
             .collect();
-        scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         scored.truncate(limit);
         Ok(scored)
     }
@@ -212,7 +231,11 @@ impl MemoryStore for MockMemoryStore {
 
     async fn list_entities(&self, bank: BankId) -> Result<Vec<Entity>> {
         let store = self.entities.lock().unwrap();
-        Ok(store.iter().filter(|e| e.bank_id == bank).cloned().collect())
+        Ok(store
+            .iter()
+            .filter(|e| e.bank_id == bank)
+            .cloned()
+            .collect())
     }
 
     async fn get_bank(&self, id: BankId) -> Result<MemoryBank> {
@@ -235,7 +258,11 @@ impl MemoryStore for MockMemoryStore {
         Ok(store.clone())
     }
 
-    async fn mark_consolidated(&self, ids: &[FactId], at: chrono::DateTime<chrono::Utc>) -> Result<()> {
+    async fn mark_consolidated(
+        &self,
+        ids: &[FactId],
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
         let mut store = self.facts.lock().unwrap();
         for fact in store.iter_mut() {
             if ids.contains(&fact.id) {
@@ -313,7 +340,9 @@ impl MemoryStore for MockTransactionHandle {
         limit: usize,
         network_filter: Option<&[NetworkType]>,
     ) -> Result<Vec<ScoredFact>> {
-        self.inner.vector_search(embedding, bank, limit, network_filter).await
+        self.inner
+            .vector_search(embedding, bank, limit, network_filter)
+            .await
     }
 
     async fn update_fact(&self, fact: &Fact) -> Result<()> {
@@ -327,7 +356,9 @@ impl MemoryStore for MockTransactionHandle {
         limit: usize,
         network_filter: Option<&[NetworkType]>,
     ) -> Result<Vec<ScoredFact>> {
-        self.inner.keyword_search(query, bank, limit, network_filter).await
+        self.inner
+            .keyword_search(query, bank, limit, network_filter)
+            .await
     }
 
     async fn list_entities(&self, bank: BankId) -> Result<Vec<Entity>> {
@@ -346,7 +377,11 @@ impl MemoryStore for MockTransactionHandle {
         self.inner.list_banks().await
     }
 
-    async fn mark_consolidated(&self, ids: &[FactId], at: chrono::DateTime<chrono::Utc>) -> Result<()> {
+    async fn mark_consolidated(
+        &self,
+        ids: &[FactId],
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
         self.inner.mark_consolidated(ids, at).await
     }
 }

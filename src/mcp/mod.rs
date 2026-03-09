@@ -124,10 +124,7 @@ impl ElephantMcp {
 
     /// Store information to long-term memory.
     #[tool(description = "Store information to long-term memory.")]
-    async fn retain(
-        &self,
-        Parameters(params): Parameters<RetainParams>,
-    ) -> Result<String, String> {
+    async fn retain(&self, Parameters(params): Parameters<RetainParams>) -> Result<String, String> {
         let bank_id = parse_bank_id(&params.bank_id).map_err(|e| e.message.to_string())?;
         let timestamp = params
             .timestamp
@@ -146,16 +143,18 @@ impl ElephantMcp {
             speaker: None,
         };
 
-        let output = self.state.retain.retain(&input).await.map_err(|e| e.to_string())?;
+        let output = self
+            .state
+            .retain
+            .retain(&input)
+            .await
+            .map_err(|e| e.to_string())?;
         json_text(&output).map_err(|e| e.message.to_string())
     }
 
     /// Search memories to provide personalized, context-aware responses.
     #[tool(description = "Search memories to provide personalized, context-aware responses.")]
-    async fn recall(
-        &self,
-        Parameters(params): Parameters<RecallParams>,
-    ) -> Result<String, String> {
+    async fn recall(&self, Parameters(params): Parameters<RecallParams>) -> Result<String, String> {
         let bank_id = parse_bank_id(&params.bank_id).map_err(|e| e.message.to_string())?;
         let query = RecallQuery {
             bank_id,
@@ -165,7 +164,12 @@ impl ElephantMcp {
             temporal_anchor: None,
         };
 
-        let result = self.state.recall.recall(&query).await.map_err(|e| e.to_string())?;
+        let result = self
+            .state
+            .recall
+            .recall(&query)
+            .await
+            .map_err(|e| e.to_string())?;
         json_text(&result).map_err(|e| e.message.to_string())
     }
 
@@ -200,7 +204,12 @@ impl ElephantMcp {
     /// List all available memory banks.
     #[tool(description = "List all available memory banks.")]
     async fn list_banks(&self) -> Result<String, String> {
-        let banks = self.state.store.list_banks().await.map_err(|e| e.to_string())?;
+        let banks = self
+            .state
+            .store
+            .list_banks()
+            .await
+            .map_err(|e| e.to_string())?;
         json_text(&banks).map_err(|e| e.message.to_string())
     }
 

@@ -19,7 +19,9 @@ pub struct TemporalRange {
 
 /// Deserialize a DateTime<Utc> accepting both full ISO8601 ("2015-01-01T00:00:00Z")
 /// and date-only ("2015-01-01") formats. LLMs commonly produce date-only strings.
-fn deserialize_flexible_datetime<'de, D>(deserializer: D) -> std::result::Result<Option<DateTime<Utc>>, D::Error>
+fn deserialize_flexible_datetime<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<DateTime<Utc>>, D::Error>
 where
     D: Deserializer<'de>,
 {

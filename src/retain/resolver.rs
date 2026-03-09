@@ -7,12 +7,12 @@ use async_trait::async_trait;
 
 use crate::embedding::EmbeddingClient;
 use crate::error::Result;
-use crate::util::cosine_similarity;
 use crate::llm::LlmClient;
 use crate::storage::MemoryStore;
 use crate::types::{
     BankId, CompletionRequest, Entity, EntityId, EntityType, Message, ResolvedEntity,
 };
+use crate::util::cosine_similarity;
 
 /// Trait for resolving raw entity mention strings to canonical entities.
 #[async_trait]
@@ -46,10 +46,7 @@ pub struct LayeredEntityResolver {
 
 impl LayeredEntityResolver {
     /// Create a new resolver.
-    pub fn new(
-        embeddings: Box<dyn EmbeddingClient>,
-        llm: Arc<dyn LlmClient>,
-    ) -> Self {
+    pub fn new(embeddings: Box<dyn EmbeddingClient>, llm: Arc<dyn LlmClient>) -> Self {
         Self {
             embeddings,
             llm,
@@ -119,11 +116,7 @@ impl LayeredEntityResolver {
     }
 
     /// Use LLM to confirm whether a mention matches a candidate entity.
-    async fn llm_confirm(
-        &self,
-        mention: &str,
-        candidate: &Entity,
-    ) -> Result<bool> {
+    async fn llm_confirm(&self, mention: &str, candidate: &Entity) -> Result<bool> {
         let prompt = format!(
             "Is the mention \"{}\" referring to the same entity as \"{}\" (aliases: {:?})?\n\
              Answer with just \"yes\" or \"no\".",
@@ -132,7 +125,9 @@ impl LayeredEntityResolver {
 
         let request = CompletionRequest {
             model: String::new(),
-            system: Some("You are an entity resolution assistant. Answer only 'yes' or 'no'.".into()),
+            system: Some(
+                "You are an entity resolution assistant. Answer only 'yes' or 'no'.".into(),
+            ),
             messages: vec![Message::text("user", prompt)],
             temperature: Some(0.0),
             max_tokens: Some(10),
@@ -202,7 +197,9 @@ impl EntityResolver for LayeredEntityResolver {
             }
 
             // Layer 2: Embedding similarity
-            if let Some((candidate, score)) = self.try_embedding_match(mention, bank_id, store).await? {
+            if let Some((candidate, score)) =
+                self.try_embedding_match(mention, bank_id, store).await?
+            {
                 // High similarity → accept directly
                 if score >= 0.9 {
                     let resolved = ResolvedEntity {
@@ -291,10 +288,7 @@ mod tests {
         embeddings: &MockEmbeddings,
         llm: Arc<MockLlmClient>,
     ) -> LayeredEntityResolver {
-        LayeredEntityResolver::new(
-            Box::new(embeddings.clone()),
-            llm,
-        )
+        LayeredEntityResolver::new(Box::new(embeddings.clone()), llm)
     }
 
     #[tokio::test]
@@ -312,7 +306,10 @@ mod tests {
         store.upsert_entity(&entity).await.unwrap();
 
         let resolver = make_resolver(&embeddings, llm);
-        let results = resolver.resolve(&["Rust".into()], bank_id, &store).await.unwrap();
+        let results = resolver
+            .resolve(&["Rust".into()], bank_id, &store)
+            .await
+            .unwrap();
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].entity_id, entity.id);
@@ -334,7 +331,10 @@ mod tests {
         store.upsert_entity(&entity).await.unwrap();
 
         let resolver = make_resolver(&embeddings, llm);
-        let results = resolver.resolve(&["rust-lang".into()], bank_id, &store).await.unwrap();
+        let results = resolver
+            .resolve(&["rust-lang".into()], bank_id, &store)
+            .await
+            .unwrap();
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].entity_id, entity.id);
@@ -346,7 +346,10 @@ mod tests {
         let (store, embeddings, llm, bank_id) = setup().await;
 
         let resolver = make_resolver(&embeddings, llm);
-        let results = resolver.resolve(&["Rust".into()], bank_id, &store).await.unwrap();
+        let results = resolver
+            .resolve(&["Rust".into()], bank_id, &store)
+            .await
+            .unwrap();
 
         assert_eq!(results.len(), 1);
         assert!(results[0].is_new);
@@ -363,7 +366,11 @@ mod tests {
 
         let resolver = make_resolver(&embeddings, llm);
         let results = resolver
-            .resolve(&["Rust".into(), "rust".into(), "RUST".into()], bank_id, &store)
+            .resolve(
+                &["Rust".into(), "rust".into(), "RUST".into()],
+                bank_id,
+                &store,
+            )
             .await
             .unwrap();
 
@@ -407,7 +414,11 @@ mod tests {
 
         let resolver = make_resolver(&embeddings, llm);
         let results = resolver
-            .resolve(&["Rust".into(), "Python".into(), "Go".into()], bank_id, &store)
+            .resolve(
+                &["Rust".into(), "Python".into(), "Go".into()],
+                bank_id,
+                &store,
+            )
             .await
             .unwrap();
 
@@ -418,4 +429,3 @@ mod tests {
         assert!(results.iter().all(|r| r.is_new));
     }
 }
-

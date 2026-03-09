@@ -10,35 +10,35 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use sqlx::PgPool;
+use testcontainers::GenericImage;
 use testcontainers::core::ContainerPort;
 use testcontainers::runners::AsyncRunner;
-use testcontainers::GenericImage;
 use testcontainers_modules::testcontainers::ImageExt;
 
 use elephant::consolidation::{DefaultConsolidator, DefaultOpinionMerger};
 use elephant::embedding::{self, EmbeddingClient, EmbeddingConfig, EmbeddingProvider};
 use elephant::llm::{self, LlmClient, Provider, ProviderConfig};
+use elephant::recall::DefaultRecallPipeline;
 use elephant::recall::budget::EstimateTokenizer;
 use elephant::recall::graph::{GraphRetriever, GraphRetrieverConfig};
 use elephant::recall::keyword::KeywordRetriever;
 use elephant::recall::reranker::{self, RerankerConfig, RerankerProvider};
 use elephant::recall::semantic::SemanticRetriever;
 use elephant::recall::temporal::TemporalRetriever;
-use elephant::recall::DefaultRecallPipeline;
 use elephant::reflect::DefaultReflectPipeline;
+use elephant::retain::DefaultRetainPipeline;
 use elephant::retain::chunker::SimpleChunker;
 use elephant::retain::extractor::LlmFactExtractor;
 use elephant::retain::graph_builder::{DefaultGraphBuilder, GraphConfig};
 use elephant::retain::resolver::LayeredEntityResolver;
-use elephant::retain::DefaultRetainPipeline;
-use elephant::server::{router, AppState};
+use elephant::server::{AppState, router};
 use elephant::storage::pg::PgMemoryStore;
 use elephant::types::*;
 
+use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use axum::Router;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tower::util::ServiceExt;
 
 // ---------------------------------------------------------------------------
@@ -49,29 +49,46 @@ fn env(key: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| panic!("{key} must be set in .env"))
 }
 
-fn llm_api_key() -> String { env("LLM_API_KEY") }
-fn llm_model() -> String { env("LLM_MODEL") }
+fn llm_api_key() -> String {
+    env("LLM_API_KEY")
+}
+fn llm_model() -> String {
+    env("LLM_MODEL")
+}
 fn llm_provider() -> Provider {
     match std::env::var("LLM_PROVIDER").unwrap_or_default().as_str() {
         "openai" => Provider::OpenAi,
         _ => Provider::Anthropic,
     }
 }
-fn llm_base_url() -> Option<String> { std::env::var("LLM_BASE_URL").ok() }
+fn llm_base_url() -> Option<String> {
+    std::env::var("LLM_BASE_URL").ok()
+}
 
 fn make_test_llm() -> Arc<dyn LlmClient> {
-    Arc::from(llm::build_client(&ProviderConfig {
-        provider: llm_provider(),
-        api_key: llm_api_key(),
-        model: llm_model(),
-        base_url: llm_base_url(),
-    }).unwrap())
+    Arc::from(
+        llm::build_client(&ProviderConfig {
+            provider: llm_provider(),
+            api_key: llm_api_key(),
+            model: llm_model(),
+            base_url: llm_base_url(),
+        })
+        .unwrap(),
+    )
 }
-fn embedding_model_path() -> String { env("EMBEDDING_MODEL_PATH") }
-fn embedding_api_key() -> String { env("EMBEDDING_API_KEY") }
-fn embedding_api_model() -> String { env("EMBEDDING_API_MODEL") }
+fn embedding_model_path() -> String {
+    env("EMBEDDING_MODEL_PATH")
+}
+fn embedding_api_key() -> String {
+    env("EMBEDDING_API_KEY")
+}
+fn embedding_api_model() -> String {
+    env("EMBEDDING_API_MODEL")
+}
 fn embedding_api_dims() -> usize {
-    env("EMBEDDING_API_DIMS").parse().expect("EMBEDDING_API_DIMS must be a number")
+    env("EMBEDDING_API_DIMS")
+        .parse()
+        .expect("EMBEDDING_API_DIMS must be a number")
 }
 
 // ---------------------------------------------------------------------------
@@ -120,10 +137,17 @@ impl RealTestHarness {
 
         let llm: Arc<dyn LlmClient> = make_test_llm();
 
-        let embeddings: Arc<dyn EmbeddingClient> =
-            Arc::from(embedding::build_client(&emb_config).expect("failed to build embedding client"));
+        let embeddings: Arc<dyn EmbeddingClient> = Arc::from(
+            embedding::build_client(&emb_config).expect("failed to build embedding client"),
+        );
 
-        Self { pool, store, embeddings, llm, _container: container }
+        Self {
+            pool,
+            store,
+            embeddings,
+            llm,
+            _container: container,
+        }
     }
 
     fn app(&self) -> Router {
@@ -135,9 +159,9 @@ impl RealTestHarness {
             let model_name = self.embeddings.model_name().to_string();
             if model_name.contains("bge") {
                 Box::new(
-                    elephant::embedding::local::LocalEmbeddings::new(
-                        std::path::Path::new(&embedding_model_path()),
-                    )
+                    elephant::embedding::local::LocalEmbeddings::new(std::path::Path::new(
+                        &embedding_model_path(),
+                    ))
                     .expect("local embeddings"),
                 )
             } else {
@@ -152,14 +176,8 @@ impl RealTestHarness {
         let retain = Arc::new(DefaultRetainPipeline::new(
             Box::new(SimpleChunker),
             Box::new(LlmFactExtractor::new(make_llm())),
-            Box::new(LayeredEntityResolver::new(
-                make_emb(),
-                make_llm(),
-            )),
-            Box::new(DefaultGraphBuilder::new(
-                make_llm(),
-                GraphConfig::default(),
-            )),
+            Box::new(LayeredEntityResolver::new(make_emb(), make_llm())),
+            Box::new(DefaultGraphBuilder::new(make_llm(), GraphConfig::default())),
             Box::new(PgMemoryStore::new(self.pool.clone())),
             make_emb(),
             make_llm(),
@@ -176,9 +194,17 @@ impl RealTestHarness {
         let embed_arc: Arc<dyn EmbeddingClient> = self.embeddings.clone();
 
         let recall = Arc::new(DefaultRecallPipeline::new(
-            Box::new(SemanticRetriever::new(store_arc.clone(), embed_arc.clone(), 20)),
+            Box::new(SemanticRetriever::new(
+                store_arc.clone(),
+                embed_arc.clone(),
+                20,
+            )),
             Box::new(KeywordRetriever::new(store_arc.clone(), 20)),
-            Box::new(GraphRetriever::new(store_arc.clone(), embed_arc.clone(), GraphRetrieverConfig::default())),
+            Box::new(GraphRetriever::new(
+                store_arc.clone(),
+                embed_arc.clone(),
+                GraphRetrieverConfig::default(),
+            )),
             Box::new(TemporalRetriever::new(store_arc.clone())),
             reranker::build_reranker(&RerankerConfig {
                 provider: RerankerProvider::None,
@@ -187,7 +213,8 @@ impl RealTestHarness {
                 api_key: None,
                 api_url: None,
                 api_model: None,
-            }).expect("reranker"),
+            })
+            .expect("reranker"),
             Box::new(EstimateTokenizer),
             60.0,
             50,
@@ -200,10 +227,24 @@ impl RealTestHarness {
             8,
         ));
 
-        let consolidator = Arc::new(DefaultConsolidator::new(store_arc.clone(), self.llm.clone(), self.embeddings.clone(), recall.clone()));
-        let opinion_merger = Arc::new(DefaultOpinionMerger::new(store_arc.clone(), self.llm.clone(), self.embeddings.clone()));
+        let consolidator = Arc::new(DefaultConsolidator::new(
+            store_arc.clone(),
+            self.llm.clone(),
+            self.embeddings.clone(),
+            recall.clone(),
+        ));
+        let opinion_merger = Arc::new(DefaultOpinionMerger::new(
+            store_arc.clone(),
+            self.llm.clone(),
+            self.embeddings.clone(),
+        ));
         let state = AppState {
-            info: elephant::server::ServerInfo { retain_model: "test".into(), reflect_model: "test".into(), embedding_model: "test".into(), reranker_model: "none".into() },
+            info: elephant::server::ServerInfo {
+                retain_model: "test".into(),
+                reflect_model: "test".into(),
+                embedding_model: "test".into(),
+                reranker_model: "none".into(),
+            },
             retain,
             recall,
             reflect,
@@ -261,12 +302,18 @@ fn get_request(uri: &str) -> Request<Body> {
 }
 
 async fn json_body(resp: axum::response::Response) -> Value {
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     serde_json::from_slice(&bytes).unwrap()
 }
 
 async fn create_bank(app: &Router, name: &str) -> String {
-    let req = json_request("POST", "/v1/banks", json!({ "name": name, "mission": "real integration test" }));
+    let req = json_request(
+        "POST",
+        "/v1/banks",
+        json!({ "name": name, "mission": "real integration test" }),
+    );
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     json_body(resp).await["id"].as_str().unwrap().to_string()
@@ -362,8 +409,18 @@ async fn local_retain_then_reflect() {
     let app = h.app();
     let bank_id = create_bank(&app, "local-reflect").await;
 
-    do_retain(&app, &bank_id, "The borrow checker in Rust prevents data races at compile time.").await;
-    do_retain(&app, &bank_id, "Rust's ownership model ensures memory safety without a garbage collector.").await;
+    do_retain(
+        &app,
+        &bank_id,
+        "The borrow checker in Rust prevents data races at compile time.",
+    )
+    .await;
+    do_retain(
+        &app,
+        &bank_id,
+        "Rust's ownership model ensures memory safety without a garbage collector.",
+    )
+    .await;
 
     let reflect_body = do_reflect(&app, &bank_id, "How does Rust ensure memory safety?").await;
     let response = reflect_body["response"].as_str().unwrap_or("");
@@ -382,21 +439,45 @@ async fn local_full_roundtrip() {
     let app = h.app();
     let bank_id = create_bank(&app, "local-roundtrip").await;
 
-    do_retain(&app, &bank_id, "Python was created by Guido van Rossum and first released in 1991.").await;
-    do_retain(&app, &bank_id, "Python uses dynamic typing and garbage collection.").await;
-    do_retain(&app, &bank_id, "Python's standard library is often described as 'batteries included'.").await;
+    do_retain(
+        &app,
+        &bank_id,
+        "Python was created by Guido van Rossum and first released in 1991.",
+    )
+    .await;
+    do_retain(
+        &app,
+        &bank_id,
+        "Python uses dynamic typing and garbage collection.",
+    )
+    .await;
+    do_retain(
+        &app,
+        &bank_id,
+        "Python's standard library is often described as 'batteries included'.",
+    )
+    .await;
 
     let recall_body = do_recall(&app, &bank_id, "Python language features").await;
     let facts = recall_body["facts"].as_array().unwrap();
     eprintln!("local_full_roundtrip: recalled {} facts", facts.len());
     assert!(!facts.is_empty(), "should recall facts about Python");
 
-    let reflect_body = do_reflect(&app, &bank_id, "What are the key characteristics of Python?").await;
+    let reflect_body = do_reflect(
+        &app,
+        &bank_id,
+        "What are the key characteristics of Python?",
+    )
+    .await;
     let response = reflect_body["response"].as_str().unwrap_or("");
     eprintln!("local_full_roundtrip reflect: {response}");
     assert!(!response.is_empty(), "reflect should produce a response");
 
-    let req = json_request("POST", &format!("/v1/banks/{bank_id}/consolidate"), json!({ "since": "2020-01-01T00:00:00Z" }));
+    let req = json_request(
+        "POST",
+        &format!("/v1/banks/{bank_id}/consolidate"),
+        json!({ "since": "2020-01-01T00:00:00Z" }),
+    );
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let consolidate_body = json_body(resp).await;
@@ -410,8 +491,18 @@ async fn local_entity_resolution() {
     let app = h.app();
     let bank_id = create_bank(&app, "local-entities").await;
 
-    do_retain(&app, &bank_id, "PostgreSQL is a powerful open-source database system.").await;
-    do_retain(&app, &bank_id, "Postgres supports advanced indexing including GiST and GIN indexes.").await;
+    do_retain(
+        &app,
+        &bank_id,
+        "PostgreSQL is a powerful open-source database system.",
+    )
+    .await;
+    do_retain(
+        &app,
+        &bank_id,
+        "Postgres supports advanced indexing including GiST and GIN indexes.",
+    )
+    .await;
 
     let req = get_request(&format!("/v1/banks/{bank_id}/entities"));
     let resp = app.clone().oneshot(req).await.unwrap();
@@ -421,14 +512,29 @@ async fn local_entity_resolution() {
 
     eprintln!("local_entity_resolution: {} entities", entities.len());
     for e in entities {
-        eprintln!("  - {} ({})", e["canonical_name"].as_str().unwrap_or("?"), e["id"].as_str().unwrap_or("?"));
+        eprintln!(
+            "  - {} ({})",
+            e["canonical_name"].as_str().unwrap_or("?"),
+            e["id"].as_str().unwrap_or("?")
+        );
     }
 
-    let pg_entities: Vec<_> = entities.iter().filter(|e| {
-        e["canonical_name"].as_str().unwrap_or("").to_lowercase().contains("postgres")
-    }).collect();
+    let pg_entities: Vec<_> = entities
+        .iter()
+        .filter(|e| {
+            e["canonical_name"]
+                .as_str()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains("postgres")
+        })
+        .collect();
 
-    assert_eq!(pg_entities.len(), 1, "Postgres/PostgreSQL should resolve to exactly one entity, got {pg_entities:?}");
+    assert_eq!(
+        pg_entities.len(),
+        1,
+        "Postgres/PostgreSQL should resolve to exactly one entity, got {pg_entities:?}"
+    );
 }
 
 // ===========================================================================
@@ -482,8 +588,18 @@ async fn openai_retain_then_reflect() {
     let app = h.app();
     let bank_id = create_bank(&app, "openai-reflect").await;
 
-    do_retain(&app, &bank_id, "The borrow checker in Rust prevents data races at compile time.").await;
-    do_retain(&app, &bank_id, "Rust's ownership model ensures memory safety without a garbage collector.").await;
+    do_retain(
+        &app,
+        &bank_id,
+        "The borrow checker in Rust prevents data races at compile time.",
+    )
+    .await;
+    do_retain(
+        &app,
+        &bank_id,
+        "Rust's ownership model ensures memory safety without a garbage collector.",
+    )
+    .await;
 
     let reflect_body = do_reflect(&app, &bank_id, "How does Rust ensure memory safety?").await;
     let response = reflect_body["response"].as_str().unwrap_or("");
@@ -502,21 +618,45 @@ async fn openai_full_roundtrip() {
     let app = h.app();
     let bank_id = create_bank(&app, "openai-roundtrip").await;
 
-    do_retain(&app, &bank_id, "Python was created by Guido van Rossum and first released in 1991.").await;
-    do_retain(&app, &bank_id, "Python uses dynamic typing and garbage collection.").await;
-    do_retain(&app, &bank_id, "Python's standard library is often described as 'batteries included'.").await;
+    do_retain(
+        &app,
+        &bank_id,
+        "Python was created by Guido van Rossum and first released in 1991.",
+    )
+    .await;
+    do_retain(
+        &app,
+        &bank_id,
+        "Python uses dynamic typing and garbage collection.",
+    )
+    .await;
+    do_retain(
+        &app,
+        &bank_id,
+        "Python's standard library is often described as 'batteries included'.",
+    )
+    .await;
 
     let recall_body = do_recall(&app, &bank_id, "Python language features").await;
     let facts = recall_body["facts"].as_array().unwrap();
     eprintln!("openai_full_roundtrip: recalled {} facts", facts.len());
     assert!(!facts.is_empty(), "should recall facts about Python");
 
-    let reflect_body = do_reflect(&app, &bank_id, "What are the key characteristics of Python?").await;
+    let reflect_body = do_reflect(
+        &app,
+        &bank_id,
+        "What are the key characteristics of Python?",
+    )
+    .await;
     let response = reflect_body["response"].as_str().unwrap_or("");
     eprintln!("openai_full_roundtrip reflect: {response}");
     assert!(!response.is_empty(), "reflect should produce a response");
 
-    let req = json_request("POST", &format!("/v1/banks/{bank_id}/consolidate"), json!({ "since": "2020-01-01T00:00:00Z" }));
+    let req = json_request(
+        "POST",
+        &format!("/v1/banks/{bank_id}/consolidate"),
+        json!({ "since": "2020-01-01T00:00:00Z" }),
+    );
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let consolidate_body = json_body(resp).await;
@@ -530,8 +670,18 @@ async fn openai_entity_resolution() {
     let app = h.app();
     let bank_id = create_bank(&app, "openai-entities").await;
 
-    do_retain(&app, &bank_id, "PostgreSQL is a powerful open-source database system.").await;
-    do_retain(&app, &bank_id, "Postgres supports advanced indexing including GiST and GIN indexes.").await;
+    do_retain(
+        &app,
+        &bank_id,
+        "PostgreSQL is a powerful open-source database system.",
+    )
+    .await;
+    do_retain(
+        &app,
+        &bank_id,
+        "Postgres supports advanced indexing including GiST and GIN indexes.",
+    )
+    .await;
 
     let req = get_request(&format!("/v1/banks/{bank_id}/entities"));
     let resp = app.clone().oneshot(req).await.unwrap();
@@ -541,12 +691,27 @@ async fn openai_entity_resolution() {
 
     eprintln!("openai_entity_resolution: {} entities", entities.len());
     for e in entities {
-        eprintln!("  - {} ({})", e["canonical_name"].as_str().unwrap_or("?"), e["id"].as_str().unwrap_or("?"));
+        eprintln!(
+            "  - {} ({})",
+            e["canonical_name"].as_str().unwrap_or("?"),
+            e["id"].as_str().unwrap_or("?")
+        );
     }
 
-    let pg_entities: Vec<_> = entities.iter().filter(|e| {
-        e["canonical_name"].as_str().unwrap_or("").to_lowercase().contains("postgres")
-    }).collect();
+    let pg_entities: Vec<_> = entities
+        .iter()
+        .filter(|e| {
+            e["canonical_name"]
+                .as_str()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains("postgres")
+        })
+        .collect();
 
-    assert_eq!(pg_entities.len(), 1, "Postgres/PostgreSQL should resolve to exactly one entity, got {pg_entities:?}");
+    assert_eq!(
+        pg_entities.len(),
+        1,
+        "Postgres/PostgreSQL should resolve to exactly one entity, got {pg_entities:?}"
+    );
 }

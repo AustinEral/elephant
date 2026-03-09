@@ -176,7 +176,9 @@ async fn eval_extract_simple() {
     }
 
     // "Alice joined in 2020" should be experience (something a person did)
-    let joined_fact = facts.iter().find(|f| f.content.to_lowercase().contains("joined"));
+    let joined_fact = facts
+        .iter()
+        .find(|f| f.content.to_lowercase().contains("joined"));
     if let Some(fact) = joined_fact {
         assert_eq!(
             fact.fact_type,
@@ -278,7 +280,11 @@ async fn eval_extract_selectivity() {
         "should extract at least the pgvector decision"
     );
 
-    let all_content: String = facts.iter().map(|f| f.content.as_str()).collect::<Vec<_>>().join(" ");
+    let all_content: String = facts
+        .iter()
+        .map(|f| f.content.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
     let lower = all_content.to_lowercase();
     assert!(
         lower.contains("pgvector"),
@@ -286,7 +292,9 @@ async fn eval_extract_selectivity() {
     );
     // Should NOT extract greetings or task chatter
     assert!(
-        !lower.contains("how's it going") && !lower.contains("one sec") && !lower.contains("let me know"),
+        !lower.contains("how's it going")
+            && !lower.contains("one sec")
+            && !lower.contains("let me know"),
         "should skip filler, got: {all_content}"
     );
 }
@@ -431,4 +439,3 @@ async fn eval_merge_consistent_opinions() {
         );
     }
 }
-

@@ -77,14 +77,17 @@ impl Reranker for LocalReranker {
             score_pairs(&session, &tokenizer, &query, &documents)
         })
         .await
-        .map_err(|e| Error::Reranker(format!("spawn_blocking error: {e}")))?
-        ?;
+        .map_err(|e| Error::Reranker(format!("spawn_blocking error: {e}")))??;
 
         // Assign cross-encoder scores and sort descending
         for (sf, &score) in facts.iter_mut().zip(scores.iter()) {
             sf.score = score;
         }
-        facts.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        facts.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         facts.truncate(top_k);
         Ok(facts)
     }
@@ -107,7 +110,11 @@ fn score_pairs(
         .map_err(|e| Error::Reranker(format!("tokenization error: {e}")))?;
 
     let batch_size = encodings.len();
-    let seq_len = encodings.iter().map(|e| e.get_ids().len()).max().unwrap_or(0);
+    let seq_len = encodings
+        .iter()
+        .map(|e| e.get_ids().len())
+        .max()
+        .unwrap_or(0);
 
     let mut input_ids = Array2::<i64>::zeros((batch_size, seq_len));
     let mut attention_mask = Array2::<i64>::zeros((batch_size, seq_len));

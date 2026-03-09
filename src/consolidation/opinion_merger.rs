@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 use crate::embedding::EmbeddingClient;
 use crate::error::Result;
-use crate::llm::{complete_structured, LlmClient};
+use crate::llm::{LlmClient, complete_structured};
 use crate::storage::MemoryStore;
 use crate::types::id::BankId;
 use crate::types::llm::{CompletionRequest, Message};
@@ -208,8 +208,7 @@ impl OpinionMerger for DefaultOpinionMerger {
                         .unwrap_or(0);
 
                     let mut weakened = cluster_opinions[weakest_idx].clone();
-                    weakened.confidence =
-                        Some(weakened.confidence.unwrap_or(0.5) * 0.7);
+                    weakened.confidence = Some(weakened.confidence.unwrap_or(0.5) * 0.7);
                     weakened.updated_at = Utc::now();
                     txn.update_fact(&weakened).await?;
 
@@ -217,12 +216,13 @@ impl OpinionMerger for DefaultOpinionMerger {
                 }
                 "superseded" => {
                     // Lower older opinion's confidence *= 0.7
-                    let superseded_idx =
-                        resp.superseded_index.unwrap_or(0).min(cluster_opinions.len() - 1);
+                    let superseded_idx = resp
+                        .superseded_index
+                        .unwrap_or(0)
+                        .min(cluster_opinions.len() - 1);
 
                     let mut superseded = cluster_opinions[superseded_idx].clone();
-                    superseded.confidence =
-                        Some(superseded.confidence.unwrap_or(0.5) * 0.7);
+                    superseded.confidence = Some(superseded.confidence.unwrap_or(0.5) * 0.7);
                     superseded.updated_at = Utc::now();
                     txn.update_fact(&superseded).await?;
 
@@ -247,7 +247,11 @@ mod tests {
     use crate::types::id::FactId;
     use crate::types::{Fact, FactType};
 
-    fn setup() -> (Arc<MockMemoryStore>, Arc<MockLlmClient>, Arc<MockEmbeddings>) {
+    fn setup() -> (
+        Arc<MockMemoryStore>,
+        Arc<MockLlmClient>,
+        Arc<MockEmbeddings>,
+    ) {
         (
             Arc::new(MockMemoryStore::new()),
             Arc::new(MockLlmClient::new()),
@@ -283,7 +287,12 @@ mod tests {
         // Two opinions with identical embeddings (will cluster)
         let emb = vec![1.0; 384];
         let o1 = make_opinion(bank_id, "Rust is great for systems", 0.7, emb.clone());
-        let o2 = make_opinion(bank_id, "Rust is excellent for systems programming", 0.8, emb);
+        let o2 = make_opinion(
+            bank_id,
+            "Rust is excellent for systems programming",
+            0.8,
+            emb,
+        );
         store.insert_facts(&[o1.clone(), o2.clone()]).await.unwrap();
 
         llm.push_response(

@@ -11,16 +11,18 @@ use async_trait::async_trait;
 use chrono::Utc;
 use futures::future::join_all;
 use serde::Deserialize;
-use tracing::{debug, info, warn, info_span, Instrument};
+use tracing::{Instrument, debug, info, info_span, warn};
 
 use crate::embedding::EmbeddingClient;
 use crate::error::Result;
-use crate::llm::{complete_structured, LlmClient};
+use crate::llm::{LlmClient, complete_structured};
 use crate::recall::RecallPipeline;
 use crate::storage::MemoryStore;
 use crate::types::id::{BankId, FactId};
 use crate::types::llm::{CompletionRequest, Message};
-use crate::types::{ConsolidationReport, Fact, FactFilter, FactType, NetworkType, RecallQuery, TemporalRange};
+use crate::types::{
+    ConsolidationReport, Fact, FactFilter, FactType, NetworkType, RecallQuery, TemporalRange,
+};
 
 /// Consolidates raw facts into topic-scoped observations.
 #[async_trait]
@@ -142,7 +144,9 @@ impl Consolidator for DefaultConsolidator {
             created = tracing::field::Empty,
             updated = tracing::field::Empty,
         );
-        self.consolidate_inner(bank_id).instrument(consolidate_span).await
+        self.consolidate_inner(bank_id)
+            .instrument(consolidate_span)
+            .await
     }
 }
 
@@ -175,21 +179,29 @@ impl DefaultConsolidator {
         let bs = batch_size();
         let total_batches = unconsolidated.len().div_ceil(bs);
         for (batch_idx, batch) in unconsolidated.chunks(bs).enumerate() {
-            debug!(batch = batch_idx + 1, total_batches, facts = batch.len(), "processing batch");
+            debug!(
+                batch = batch_idx + 1,
+                total_batches,
+                facts = batch.len(),
+                "processing batch"
+            );
             // 3a. Per-fact recall: full pipeline (semantic + keyword + graph + temporal)
             // for each fact in parallel, then union/dedup the results.
             let budget = recall_budget();
-            let recall_futures: Vec<_> = batch.iter().map(|fact| {
-                let recall = self.recall.clone();
-                let query = RecallQuery {
-                    bank_id,
-                    query: fact.content.clone(),
-                    budget_tokens: budget,
-                    network_filter: Some(vec![NetworkType::Observation]),
-                    temporal_anchor: fact.temporal_range.clone(),
-                };
-                async move { recall.recall(&query).await }
-            }).collect();
+            let recall_futures: Vec<_> = batch
+                .iter()
+                .map(|fact| {
+                    let recall = self.recall.clone();
+                    let query = RecallQuery {
+                        bank_id,
+                        query: fact.content.clone(),
+                        budget_tokens: budget,
+                        network_filter: Some(vec![NetworkType::Observation]),
+                        temporal_anchor: fact.temporal_range.clone(),
+                    };
+                    async move { recall.recall(&query).await }
+                })
+                .collect();
 
             let recall_results = join_all(recall_futures).await;
 
@@ -241,8 +253,7 @@ impl DefaultConsolidator {
                 ..Default::default()
             };
 
-            let resp: ConsolidateResponse =
-                complete_structured(self.llm.as_ref(), request).await?;
+            let resp: ConsolidateResponse = complete_structured(self.llm.as_ref(), request).await?;
 
             // 3c. Execute actions inside a transaction
             let txn = self.store.begin().await?;
@@ -289,10 +300,8 @@ impl DefaultConsolidator {
                                     updated.entity_ids.push(*eid);
                                 }
                             }
-                            updated.temporal_range = merge_temporal(
-                                updated.temporal_range.as_ref(),
-                                &source_facts,
-                            );
+                            updated.temporal_range =
+                                merge_temporal(updated.temporal_range.as_ref(), &source_facts);
                             updated.updated_at = Utc::now();
                             txn.update_fact(&updated).await?;
                             report.observations_updated += 1;
@@ -337,10 +346,19 @@ impl DefaultConsolidator {
 
             // Commit the batch transaction
             txn.commit().await?;
-            debug!(batch = batch_idx + 1, created = report.observations_created, updated = report.observations_updated, "batch committed");
+            debug!(
+                batch = batch_idx + 1,
+                created = report.observations_created,
+                updated = report.observations_updated,
+                "batch committed"
+            );
         }
 
-        info!(created = report.observations_created, updated = report.observations_updated, "consolidate_complete");
+        info!(
+            created = report.observations_created,
+            updated = report.observations_updated,
+            "consolidate_complete"
+        );
         tracing::Span::current().record("created", report.observations_created);
         tracing::Span::current().record("updated", report.observations_updated);
 
@@ -354,7 +372,7 @@ mod tests {
     use crate::embedding::mock::MockEmbeddings;
     use crate::llm::mock::MockLlmClient;
     use crate::storage::mock::MockMemoryStore;
-    use crate::types::{RecallResult, ScoredFact, RetrievalSource};
+    use crate::types::{RecallResult, RetrievalSource, ScoredFact};
 
     /// Mock recall pipeline that returns Observation facts from the store via vector_search.
     struct MockRecallPipeline {
@@ -365,20 +383,36 @@ mod tests {
     impl RecallPipeline for MockRecallPipeline {
         async fn recall(&self, query: &RecallQuery) -> Result<RecallResult> {
             // Return all observations in the bank (simple mock)
-            let all = self.store.get_facts_by_bank(query.bank_id, FactFilter {
-                network: Some(vec![NetworkType::Observation]),
-                ..Default::default()
-            }).await?;
-            let facts = all.into_iter().map(|f| ScoredFact {
-                fact: f,
-                score: 1.0,
-                sources: vec![RetrievalSource::Semantic],
-            }).collect();
-            Ok(RecallResult { facts, total_tokens: 0 })
+            let all = self
+                .store
+                .get_facts_by_bank(
+                    query.bank_id,
+                    FactFilter {
+                        network: Some(vec![NetworkType::Observation]),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            let facts = all
+                .into_iter()
+                .map(|f| ScoredFact {
+                    fact: f,
+                    score: 1.0,
+                    sources: vec![RetrievalSource::Semantic],
+                })
+                .collect();
+            Ok(RecallResult {
+                facts,
+                total_tokens: 0,
+            })
         }
     }
 
-    fn setup() -> (Arc<MockMemoryStore>, Arc<MockLlmClient>, Arc<MockEmbeddings>) {
+    fn setup() -> (
+        Arc<MockMemoryStore>,
+        Arc<MockLlmClient>,
+        Arc<MockEmbeddings>,
+    ) {
         (
             Arc::new(MockMemoryStore::new()),
             Arc::new(MockLlmClient::new()),
@@ -415,7 +449,9 @@ mod tests {
             store.clone() as Arc<dyn MemoryStore>,
             llm.clone() as Arc<dyn LlmClient>,
             embeddings.clone() as Arc<dyn EmbeddingClient>,
-            Arc::new(MockRecallPipeline { store: store.clone() }) as Arc<dyn RecallPipeline>,
+            Arc::new(MockRecallPipeline {
+                store: store.clone(),
+            }) as Arc<dyn RecallPipeline>,
         )
     }
 
@@ -428,10 +464,12 @@ mod tests {
         let f2 = make_fact(bank_id, "Caroline has a son named James");
         store.insert_facts(&[f1, f2]).await.unwrap();
 
-        llm.push_response(r#"{"actions": [
+        llm.push_response(
+            r#"{"actions": [
             {"action": "create", "content": "Caroline works at Google.", "fact_indices": [0]},
             {"action": "create", "content": "Caroline has a son named James.", "fact_indices": [1]}
-        ]}"#);
+        ]}"#,
+        );
 
         let consolidator = make_consolidator(&store, &llm, &embeddings);
         let report = consolidator.consolidate(bank_id).await.unwrap();
@@ -461,9 +499,11 @@ mod tests {
         let f1 = make_fact(bank_id, "Caroline works at Google");
         store.insert_facts(&[f1]).await.unwrap();
 
-        llm.push_response(r#"{"actions": [
+        llm.push_response(
+            r#"{"actions": [
             {"action": "create", "content": "Caroline works at Google.", "fact_indices": [0]}
-        ]}"#);
+        ]}"#,
+        );
 
         let consolidator = make_consolidator(&store, &llm, &embeddings);
         let report = consolidator.consolidate(bank_id).await.unwrap();
@@ -516,10 +556,7 @@ mod tests {
         let f1 = make_fact(bank_id, "Some fact");
         let f1_id = f1.id;
         store.insert_facts(&[f1]).await.unwrap();
-        store
-            .mark_consolidated(&[f1_id], Utc::now())
-            .await
-            .unwrap();
+        store.mark_consolidated(&[f1_id], Utc::now()).await.unwrap();
 
         let consolidator = make_consolidator(&store, &llm, &embeddings);
         let report = consolidator.consolidate(bank_id).await.unwrap();
@@ -545,9 +582,11 @@ mod tests {
             {"action": "create", "content": "Batch 1 observation.", "fact_indices": [0,1,2,3,4,5,6,7]}
         ]}"#);
         // Second batch of 4
-        llm.push_response(r#"{"actions": [
+        llm.push_response(
+            r#"{"actions": [
             {"action": "create", "content": "Batch 2 observation.", "fact_indices": [0,1,2,3]}
-        ]}"#);
+        ]}"#,
+        );
 
         let consolidator = make_consolidator(&store, &llm, &embeddings);
         let report = consolidator.consolidate(bank_id).await.unwrap();
@@ -567,7 +606,10 @@ mod tests {
             start: Some(Utc.with_ymd_and_hms(2022, 1, 1, 0, 0, 0).unwrap()),
             end: Some(Utc.with_ymd_and_hms(2022, 12, 31, 0, 0, 0).unwrap()),
         };
-        assert_eq!(format_temporal_suffix(Some(&tr)), " | occurred: 2022-01-01 to 2022-12-31");
+        assert_eq!(
+            format_temporal_suffix(Some(&tr)),
+            " | occurred: 2022-01-01 to 2022-12-31"
+        );
 
         // Same start and end → no range
         let tr = TemporalRange {
@@ -584,7 +626,10 @@ mod tests {
         assert_eq!(format_temporal_suffix(Some(&tr)), " | occurred: 2024-03-01");
 
         // Both None inside TemporalRange
-        let tr = TemporalRange { start: None, end: None };
+        let tr = TemporalRange {
+            start: None,
+            end: None,
+        };
         assert_eq!(format_temporal_suffix(Some(&tr)), "");
     }
 

@@ -24,7 +24,10 @@ impl MockEmbeddings {
 #[async_trait]
 impl EmbeddingClient for MockEmbeddings {
     async fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-        Ok(texts.iter().map(|t| deterministic_vector(t, self.dims)).collect())
+        Ok(texts
+            .iter()
+            .map(|t| deterministic_vector(t, self.dims))
+            .collect())
     }
 
     fn dimensions(&self) -> usize {

@@ -1,7 +1,7 @@
 //! Reset consolidation state for banks in a benchmark results file.
 //!
 //! Deletes all Observation facts and sets consolidated_at = NULL on remaining facts,
-//! so the next bench run with --resume re-consolidates from scratch.
+//! so the next bench run with --reuse re-consolidates from scratch.
 //!
 //! Usage:
 //!     cargo run --bin reset-consolidation -- <results.json>
@@ -14,7 +14,7 @@ use serde::Deserialize;
 
 #[derive(Deserialize)]
 struct BenchmarkOutput {
-    #[serde(default)]
+    #[serde(rename = "bank_ids", alias = "banks", default)]
     banks: HashMap<String, String>,
 }
 
@@ -50,10 +50,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Resetting consolidation for {} banks...", bank_ids.len());
 
     // Delete all observation facts
-    let deleted = sqlx::query("DELETE FROM facts WHERE network = 'observation' AND bank_id = ANY($1)")
-        .bind(&bank_ids)
-        .execute(&pool)
-        .await?;
+    let deleted =
+        sqlx::query("DELETE FROM facts WHERE network = 'observation' AND bank_id = ANY($1)")
+            .bind(&bank_ids)
+            .execute(&pool)
+            .await?;
     println!("  Deleted {} observations", deleted.rows_affected());
 
     // Reset consolidated_at on remaining facts
@@ -71,6 +72,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  Cleaned {} orphaned links", links.rows_affected());
     }
 
-    println!("Done. Run bench with --resume to re-consolidate.");
+    println!("Done. Run bench with --reuse to re-consolidate.");
     Ok(())
 }

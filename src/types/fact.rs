@@ -167,25 +167,27 @@ mod tests {
                 proptest::option::of(0.0f32..=1.0),
                 proptest::collection::vec(-1.0f32..1.0, 0..4),
             )
-                .prop_map(|(content, fact_type, network, confidence, embedding)| Fact {
-                    id: FactId::new(),
-                    bank_id: BankId::new(),
-                    content,
-                    fact_type,
-                    network,
-                    entity_ids: vec![],
-                    temporal_range: None,
-                    embedding: if embedding.is_empty() {
-                        None
-                    } else {
-                        Some(embedding)
-                    },
-                    confidence,
-                    evidence_ids: vec![],
-                    source_turn_id: None,
-                    created_at: Utc::now(),
-                    updated_at: Utc::now(),
-                    consolidated_at: None,
+                .prop_map(|(content, fact_type, network, confidence, embedding)| {
+                    Fact {
+                        id: FactId::new(),
+                        bank_id: BankId::new(),
+                        content,
+                        fact_type,
+                        network,
+                        entity_ids: vec![],
+                        temporal_range: None,
+                        embedding: if embedding.is_empty() {
+                            None
+                        } else {
+                            Some(embedding)
+                        },
+                        confidence,
+                        evidence_ids: vec![],
+                        source_turn_id: None,
+                        created_at: Utc::now(),
+                        updated_at: Utc::now(),
+                        consolidated_at: None,
+                    }
                 })
         }
 

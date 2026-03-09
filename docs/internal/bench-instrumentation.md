@@ -1,105 +1,55 @@
-# Benchmark Instrumentation Plan
+# Benchmark Instrumentation Status
 
-Token and cost tracking for credible benchmark publication.
+Protocol reference: [../benchmark-protocol.md](../benchmark-protocol.md)
 
-**Priority: REQUIRED before full 10-conversation run.** Mnemis and EverMemOS both publish stage-by-stage token tables. Without cost data, our results are incomplete and we risk having to rerun the full benchmark.
+## Implemented
 
-Protocol reference: [benchmark-protocol.md](benchmark-protocol.md)
+The benchmark now instruments LLM-backed stages with a shared collector:
 
-## What to Track
+- `retain_extract`
+- `retain_resolve`
+- `retain_graph`
+- `retain_opinion`
+- `reflect`
+- `consolidate`
+- `opinion_merge`
+- `judge`
 
-### Per-stage token counts
+Implementation:
 
-| Stage | Prompt Tokens | Completion Tokens | LLM Calls | Notes |
-|---|---|---|---|---|
-| **Retain** (extraction) | per session | per session | 1 per session | Fact extraction from conversation text |
-| **Entity resolution** | per session | per session | 0-N per session | LLM verification calls (may be 0 if embedding-only) |
-| **Consolidation** | per batch | per batch | 1 per batch | Topic-scoped observation synthesis |
-| **Reflect** (per question) | per iteration | per iteration | 1-8 per question | Agentic loop: search + recall + synthesis |
-| **Judge** (per question) | per question | per question | 1 per question | Binary correct/wrong scoring |
+- [src/metrics.rs](/home/austin/elephant/src/metrics.rs)
+- [src/runtime.rs](/home/austin/elephant/src/runtime.rs)
+- [bench/locomo/locomo.rs](/home/austin/elephant/bench/locomo/locomo.rs)
 
-### Aggregates to publish
+The metering path wraps `LlmClient.complete` directly, so token counts come from the same provider responses the product already returns in `CompletionResponse`.
 
-- Total tokens (prompt + completion) per stage
-- Total tokens across all stages
-- Tokens per question (total / question count)
-- Average response time per question (reflect only)
-- Total wall-clock runtime
-- LLM call count per stage
+## What the benchmark artifact now records
 
-## Implementation
+- Prompt tokens
+- Completion tokens
+- Call count
+- Error count
+- Aggregate latency
 
-### 1. LLM client token tracking
+Both per stage and as a run total.
 
-The LLM client already returns token usage in `CompletionResponse`. We need to aggregate it.
+## Why the design changed
 
-```rust
-struct TokenUsage {
-    prompt_tokens: u64,
-    completion_tokens: u64,
-}
+The original plan assumed the benchmark harness would keep talking to the server over HTTP and somehow reconstruct server-internal stage cost. That was the wrong abstraction boundary.
 
-struct StageMetrics {
-    stage: String,          // "retain", "consolidation", "reflect", "judge"
-    total_prompt: u64,
-    total_completion: u64,
-    call_count: u64,
-}
-```
+The benchmark now runs Elephant in process against the shared runtime builder. This is the cleaner benchmark design because it:
 
-Options:
-- **Thread-local accumulator**: Each pipeline stage writes to a thread-local counter, bench harness reads at stage boundaries
-- **Return from pipeline**: Each pipeline operation returns its token usage alongside its result
-- **Metrics collector**: Shared `Arc<Metrics>` passed through the pipeline
+- uses the real pipelines
+- avoids adding benchmark-only data to public API responses
+- can meter every stage precisely
+- keeps the server and benchmark wired from the same construction code
 
-The cleanest approach is returning token usage from each pipeline call, since the bench harness already controls the call sequence.
+## Still missing
 
-### 2. Retain token tracking
+- Prompt/version hashes in the run manifest
+- Human-audited judge calibration sample
+- Cost normalization helpers for external reporting
 
-`RetainResult` should include token usage from extraction + entity resolution.
+## Recommendation
 
-### 3. Consolidation token tracking
-
-`ConsolidationReport` should include token usage from all LLM calls during consolidation.
-
-### 4. Reflect token tracking
-
-`ReflectResult` already has `elapsed_s`. Add token usage from all agentic loop iterations.
-
-### 5. Judge token tracking
-
-The bench harness makes judge calls directly. Track tokens there.
-
-### 6. Bench output format
-
-Add to the bench results JSON:
-
-```json
-{
-  "token_usage": {
-    "retain": { "prompt": 123456, "completion": 7890, "calls": 26 },
-    "consolidation": { "prompt": 45678, "completion": 2345, "calls": 67 },
-    "reflect": { "prompt": 234567, "completion": 12345, "calls": 462 },
-    "judge": { "prompt": 56789, "completion": 1234, "calls": 154 },
-    "total": { "prompt": 460490, "completion": 23814, "calls": 709 }
-  },
-  "tokens_per_question": 3145,
-  "total_runtime_s": 1234.5
-}
-```
-
-## Competitor Reference Points
-
-| System | Tokens/Question | Total Tokens | Runtime |
-|---|---|---|---|
-| EverMemOS (GPT-4.1-mini) | ~14.3k (incl judge) | ~22M | not published |
-| Mnemis | ~36.4k | ~56M | 8,622s (~5.6s/q) |
-| Elephant | unknown | unknown | ~38s/q reflect only |
-
-Our reflect time (~38s/q) is high but includes full agentic loop. Token count is the more meaningful comparison.
-
-## Priority
-
-**Phase 1 — required before the full 10-conversation run.** If we do the full run without token accounting, we will likely have to rerun it. EverMemOS publishes a stage-by-stage LoCoMo token table for 1,540 questions (9.42M add, 10.27M search+answer, 2.38M evaluate for GPT-4.1-mini). Mnemis publishes 56M total tokens and 8,622s runtime. These disclosures are now part of what makes a result credible.
-
-Results schema: [results-format.md](results-format.md)
+Do not add stage-token fields to the public REST API just for benchmarking unless a real product use case appears. The in-process runner is now the preferred benchmark path.

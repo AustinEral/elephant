@@ -131,11 +131,13 @@ mod tests {
     use super::semantic::SemanticRetriever;
     use super::temporal::TemporalRetriever;
     use super::{DefaultRecallPipeline, RecallPipeline};
-    use crate::embedding::mock::MockEmbeddings;
     use crate::embedding::EmbeddingClient;
-    use crate::storage::mock::MockMemoryStore;
+    use crate::embedding::mock::MockEmbeddings;
     use crate::storage::MemoryStore;
-    use crate::types::{BankId, Disposition, Fact, FactId, FactType, MemoryBank, NetworkType, RecallQuery};
+    use crate::storage::mock::MockMemoryStore;
+    use crate::types::{
+        BankId, Disposition, Fact, FactId, FactType, MemoryBank, NetworkType, RecallQuery,
+    };
     use chrono::Utc;
     use std::sync::Arc;
 
@@ -154,11 +156,7 @@ mod tests {
         id
     }
 
-    fn make_fact_with_embedding(
-        bank: BankId,
-        content: &str,
-        embedding: Vec<f32>,
-    ) -> Fact {
+    fn make_fact_with_embedding(bank: BankId, content: &str, embedding: Vec<f32>) -> Fact {
         Fact {
             id: FactId::new(),
             bank_id: bank,
@@ -194,7 +192,11 @@ mod tests {
         store.insert_facts(&facts).await.unwrap();
 
         let pipeline = DefaultRecallPipeline::new(
-            Box::new(SemanticRetriever::new(store.clone(), embeddings.clone(), 10)),
+            Box::new(SemanticRetriever::new(
+                store.clone(),
+                embeddings.clone(),
+                10,
+            )),
             Box::new(KeywordRetriever::new(store.clone(), 10)),
             Box::new(GraphRetriever::new(
                 store.clone(),
@@ -237,7 +239,11 @@ mod tests {
         store.insert_facts(&facts).await.unwrap();
 
         let pipeline = DefaultRecallPipeline::new(
-            Box::new(SemanticRetriever::new(store.clone(), embeddings.clone(), 20)),
+            Box::new(SemanticRetriever::new(
+                store.clone(),
+                embeddings.clone(),
+                20,
+            )),
             Box::new(KeywordRetriever::new(store.clone(), 20)),
             Box::new(GraphRetriever::new(
                 store.clone(),
@@ -280,7 +286,11 @@ mod tests {
         store.insert_facts(&facts).await.unwrap();
 
         let pipeline = DefaultRecallPipeline::new(
-            Box::new(SemanticRetriever::new(store.clone(), embeddings.clone(), 10)),
+            Box::new(SemanticRetriever::new(
+                store.clone(),
+                embeddings.clone(),
+                10,
+            )),
             Box::new(KeywordRetriever::new(store.clone(), 10)),
             Box::new(GraphRetriever::new(
                 store.clone(),
@@ -314,7 +324,11 @@ mod tests {
         let bank = create_test_bank(&store, 8).await;
 
         let pipeline = DefaultRecallPipeline::new(
-            Box::new(SemanticRetriever::new(store.clone(), embeddings.clone(), 10)),
+            Box::new(SemanticRetriever::new(
+                store.clone(),
+                embeddings.clone(),
+                10,
+            )),
             Box::new(KeywordRetriever::new(store.clone(), 10)),
             Box::new(GraphRetriever::new(
                 store.clone(),
@@ -351,13 +365,21 @@ mod tests {
 
         // Insert a World fact and an Opinion fact
         let world_fact = make_fact_with_embedding(bank, "world fact about testing", emb[0].clone());
-        let mut opinion_fact = make_fact_with_embedding(bank, "opinion about testing", emb[0].clone());
+        let mut opinion_fact =
+            make_fact_with_embedding(bank, "opinion about testing", emb[0].clone());
         opinion_fact.network = NetworkType::Opinion;
         opinion_fact.confidence = Some(0.8);
-        store.insert_facts(&[world_fact, opinion_fact]).await.unwrap();
+        store
+            .insert_facts(&[world_fact, opinion_fact])
+            .await
+            .unwrap();
 
         let pipeline = DefaultRecallPipeline::new(
-            Box::new(SemanticRetriever::new(store.clone(), embeddings.clone(), 10)),
+            Box::new(SemanticRetriever::new(
+                store.clone(),
+                embeddings.clone(),
+                10,
+            )),
             Box::new(KeywordRetriever::new(store.clone(), 10)),
             Box::new(GraphRetriever::new(
                 store.clone(),
@@ -383,7 +405,11 @@ mod tests {
         let result = pipeline.recall(&query).await.unwrap();
         assert!(!result.facts.is_empty(), "should return opinion facts");
         for sf in &result.facts {
-            assert_eq!(sf.fact.network, NetworkType::Opinion, "all results should be opinions");
+            assert_eq!(
+                sf.fact.network,
+                NetworkType::Opinion,
+                "all results should be opinions"
+            );
         }
     }
 }

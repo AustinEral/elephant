@@ -157,22 +157,37 @@ impl LlmClient for OpenAiClient {
         // Build messages: system prompt goes as a system message in the array
         let mut messages: Vec<OpenAiMessage> = Vec::new();
         if let Some(system) = request.system {
-            messages.push(OpenAiMessage { role: "system".into(), content: Some(system), ..Default::default() });
+            messages.push(OpenAiMessage {
+                role: "system".into(),
+                content: Some(system),
+                ..Default::default()
+            });
         }
         for m in &request.messages {
-            let tool_calls = if m.tool_calls.is_empty() { None } else {
-                Some(m.tool_calls.iter().map(|tc| OpenAiReqToolCall {
-                    id: tc.id.clone(),
-                    tool_type: "function".into(),
-                    function: OpenAiReqFunctionCall {
-                        name: tc.name.clone(),
-                        arguments: tc.arguments.to_string(),
-                    },
-                }).collect())
+            let tool_calls = if m.tool_calls.is_empty() {
+                None
+            } else {
+                Some(
+                    m.tool_calls
+                        .iter()
+                        .map(|tc| OpenAiReqToolCall {
+                            id: tc.id.clone(),
+                            tool_type: "function".into(),
+                            function: OpenAiReqFunctionCall {
+                                name: tc.name.clone(),
+                                arguments: tc.arguments.to_string(),
+                            },
+                        })
+                        .collect(),
+                )
             };
             messages.push(OpenAiMessage {
                 role: m.role.clone(),
-                content: if m.content.is_empty() { None } else { Some(m.content.clone()) },
+                content: if m.content.is_empty() {
+                    None
+                } else {
+                    Some(m.content.clone())
+                },
                 tool_calls,
                 ..Default::default()
             });
@@ -241,8 +256,9 @@ impl LlmClient for OpenAiClient {
         )
         .await?;
 
-        let parsed: OpenAiResponse = serde_json::from_str(&resp_text)
-            .map_err(|e| crate::error::Error::Llm(format!("failed to parse OpenAI response: {e}")))?;
+        let parsed: OpenAiResponse = serde_json::from_str(&resp_text).map_err(|e| {
+            crate::error::Error::Llm(format!("failed to parse OpenAI response: {e}"))
+        })?;
 
         let choice = parsed.choices.into_iter().next();
         let content = choice
@@ -292,7 +308,12 @@ mod tests {
     async fn integration_simple_prompt() {
         let _ = dotenvy::dotenv();
         let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
-        let client = OpenAiClient::new(api_key, std::env::var("LLM_MODEL").expect("LLM_MODEL must be set"), None).unwrap();
+        let client = OpenAiClient::new(
+            api_key,
+            std::env::var("LLM_MODEL").expect("LLM_MODEL must be set"),
+            None,
+        )
+        .unwrap();
 
         let request = CompletionRequest {
             messages: vec![Message::text("user", "Say hello in exactly 3 words.")],
@@ -313,7 +334,12 @@ mod tests {
         use serde::Deserialize;
 
         let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
-        let client = OpenAiClient::new(api_key, std::env::var("LLM_MODEL").expect("LLM_MODEL must be set"), None).unwrap();
+        let client = OpenAiClient::new(
+            api_key,
+            std::env::var("LLM_MODEL").expect("LLM_MODEL must be set"),
+            None,
+        )
+        .unwrap();
 
         #[derive(Deserialize, Debug)]
         struct Color {
@@ -322,7 +348,10 @@ mod tests {
         }
 
         let request = CompletionRequest {
-            messages: vec![Message::text("user", "Return a JSON object with fields \"name\" and \"hex\" for the color blue. Only output JSON, nothing else.")],
+            messages: vec![Message::text(
+                "user",
+                "Return a JSON object with fields \"name\" and \"hex\" for the color blue. Only output JSON, nothing else.",
+            )],
             max_tokens: Some(64),
             temperature: Some(0.0),
             ..Default::default()

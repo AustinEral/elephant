@@ -12,7 +12,7 @@ use std::time::Instant;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tracing::{debug, error, info, trace, info_span, Instrument};
+use tracing::{Instrument, debug, error, info, info_span, trace};
 
 use crate::error::Result;
 use crate::llm::LlmClient;
@@ -85,10 +85,7 @@ fn tool_defs() -> Vec<ToolDef> {
             "recall",
             "Search raw memories (facts and experiences). Ground truth data. Use to verify or fill gaps.",
         ),
-        ToolDef::from_schema::<DoneArgs>(
-            "done",
-            "Return the final answer with source citations.",
-        ),
+        ToolDef::from_schema::<DoneArgs>("done", "Return the final answer with source citations."),
     ]
 }
 
@@ -194,11 +191,18 @@ impl DefaultReflectPipeline {
                         let network_filter = if tc.name == "search_observations" {
                             Some(vec![NetworkType::Observation])
                         } else {
-                            Some(vec![NetworkType::World, NetworkType::Experience, NetworkType::Opinion])
+                            Some(vec![
+                                NetworkType::World,
+                                NetworkType::Experience,
+                                NetworkType::Opinion,
+                            ])
                         };
 
                         let args: SearchArgs = serde_json::from_value(tc.arguments.clone())
-                            .unwrap_or(SearchArgs { query: query.question.clone(), reason: String::new() });
+                            .unwrap_or(SearchArgs {
+                                query: query.question.clone(),
+                                reason: String::new(),
+                            });
 
                         let recall_start = Instant::now();
                         let result = self
@@ -227,12 +231,14 @@ impl DefaultReflectPipeline {
                             );
                             if is_new {
                                 facts_new += 1;
-                                writeln!(new_facts, "[FACT {}] {}", sf.fact.id, sf.fact.content).unwrap();
+                                writeln!(new_facts, "[FACT {}] {}", sf.fact.id, sf.fact.content)
+                                    .unwrap();
                                 retrieved_context.push(RetrievedFact {
                                     id: sf.fact.id,
                                     content: sf.fact.content.clone(),
                                     score: sf.score,
                                     network: sf.fact.network,
+                                    source_turn_id: sf.fact.source_turn_id,
                                 });
                             }
                         }
@@ -262,11 +268,16 @@ impl DefaultReflectPipeline {
                             Err(_) => {
                                 // LLM sometimes sends source_ids as a string instead of array.
                                 // Fall back to extracting just the response field.
-                                let response = tc.arguments.get("response")
+                                let response = tc
+                                    .arguments
+                                    .get("response")
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("")
                                     .to_string();
-                                DoneArgs { response, source_ids: vec![] }
+                                DoneArgs {
+                                    response,
+                                    source_ids: vec![],
+                                }
                             }
                         };
                         info!(
@@ -307,7 +318,9 @@ impl DefaultReflectPipeline {
 
         // Should not be reachable — last iteration forces done() — but handle gracefully.
         error!("reflect agent exhausted all iterations without calling done()");
-        Err(crate::error::Error::Llm("reflect agent exhausted all iterations without calling done()".into()))
+        Err(crate::error::Error::Llm(
+            "reflect agent exhausted all iterations without calling done()".into(),
+        ))
     }
 }
 
@@ -352,12 +365,11 @@ fn build_profile_prompt(profile: &crate::types::BankPromptContext) -> String {
     parts.join("\n\n")
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::embedding::mock::MockEmbeddings;
     use crate::embedding::EmbeddingClient;
+    use crate::embedding::mock::MockEmbeddings;
     use crate::llm::mock::MockLlmClient;
     use crate::recall::budget::EstimateTokenizer;
     use crate::recall::graph::{GraphRetriever, GraphRetrieverConfig};
@@ -366,10 +378,10 @@ mod tests {
     use crate::recall::semantic::SemanticRetriever;
     use crate::recall::temporal::TemporalRetriever;
     use crate::recall::{DefaultRecallPipeline, RecallPipeline};
-    use crate::storage::mock::MockMemoryStore;
     use crate::storage::MemoryStore;
-    use crate::types::*;
+    use crate::storage::mock::MockMemoryStore;
     use crate::types::llm::CompletionResponse;
+    use crate::types::*;
     use chrono::Utc;
 
     fn make_fact_with_embedding(
@@ -445,12 +457,7 @@ mod tests {
                 50,
             ));
 
-            DefaultReflectPipeline::new(
-                recall,
-                self.llm.clone(),
-                self.store.clone(),
-                8,
-            )
+            DefaultReflectPipeline::new(recall, self.llm.clone(), self.store.clone(), 8)
         }
     }
 
@@ -576,9 +583,17 @@ mod tests {
 
         // Build pipeline with max_iterations=3
         let recall: Arc<dyn RecallPipeline> = Arc::new(DefaultRecallPipeline::new(
-            Box::new(SemanticRetriever::new(h.store.clone(), h.embeddings.clone(), 20)),
+            Box::new(SemanticRetriever::new(
+                h.store.clone(),
+                h.embeddings.clone(),
+                20,
+            )),
             Box::new(KeywordRetriever::new(h.store.clone(), 20)),
-            Box::new(GraphRetriever::new(h.store.clone(), h.embeddings.clone(), GraphRetrieverConfig::default())),
+            Box::new(GraphRetriever::new(
+                h.store.clone(),
+                h.embeddings.clone(),
+                GraphRetrieverConfig::default(),
+            )),
             Box::new(TemporalRetriever::new(h.store.clone())),
             Box::new(NoOpReranker),
             Box::new(EstimateTokenizer),
@@ -795,7 +810,11 @@ mod tests {
         // Verify the system prompt would contain personality text
         let profile = verbalize_bank_profile(&bank);
         assert!(profile.disposition_prompt.contains("extremely skeptical"));
-        assert!(profile.disposition_prompt.contains("reads between the lines"));
+        assert!(
+            profile
+                .disposition_prompt
+                .contains("reads between the lines")
+        );
         assert!(profile.directives_prompt.contains("Never share secrets"));
         assert_eq!(profile.mission_prompt, "Remember developer context");
     }
@@ -815,7 +834,10 @@ mod tests {
             })
             .await;
 
-        assert!(result.is_err(), "reflect should fail when bank doesn't exist");
+        assert!(
+            result.is_err(),
+            "reflect should fail when bank doesn't exist"
+        );
     }
 
     #[tokio::test]

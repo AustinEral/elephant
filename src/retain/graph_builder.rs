@@ -7,11 +7,11 @@ use chrono::Duration;
 
 use crate::error::Result;
 use crate::llm::LlmClient;
-use crate::util::cosine_similarity;
 use crate::storage::MemoryStore;
 use crate::types::{
     BankId, CompletionRequest, Fact, FactFilter, GraphLink, LinkType, Message, NetworkType,
 };
+use crate::util::cosine_similarity;
 
 /// Trait for building graph links between facts.
 #[async_trait]
@@ -20,7 +20,12 @@ pub trait GraphBuilder: Send + Sync {
     ///
     /// The `store` parameter controls which store is used for reads/writes,
     /// allowing callers to pass a transaction handle for atomic operations.
-    async fn build_links(&self, new_facts: &[Fact], bank_id: BankId, store: &dyn MemoryStore) -> Result<Vec<GraphLink>>;
+    async fn build_links(
+        &self,
+        new_facts: &[Fact],
+        bank_id: BankId,
+        store: &dyn MemoryStore,
+    ) -> Result<Vec<GraphLink>>;
 }
 
 /// Configuration for graph link construction thresholds.
@@ -52,14 +57,8 @@ pub struct DefaultGraphBuilder {
 
 impl DefaultGraphBuilder {
     /// Create a new graph builder.
-    pub fn new(
-        llm: Arc<dyn LlmClient>,
-        config: GraphConfig,
-    ) -> Self {
-        Self {
-            llm,
-            config,
-        }
+    pub fn new(llm: Arc<dyn LlmClient>, config: GraphConfig) -> Self {
+        Self { llm, config }
     }
 
     /// Build temporal links between facts with overlapping/adjacent time ranges.
@@ -86,8 +85,7 @@ impl DefaultGraphBuilder {
                     if distance <= max_distance {
                         // Weight inversely proportional to distance (1.0 for same time, ~0 at max)
                         let weight = 1.0
-                            - (distance.num_seconds() as f32
-                                / max_distance.num_seconds() as f32);
+                            - (distance.num_seconds() as f32 / max_distance.num_seconds() as f32);
                         let weight = weight.max(0.1); // Minimum weight for any temporal link
 
                         links.push(GraphLink {
@@ -244,7 +242,9 @@ impl DefaultGraphBuilder {
 
             let request = CompletionRequest {
                 model: String::new(),
-                system: Some("You are a causal relationship detector. Answer only 'yes' or 'no'.".into()),
+                system: Some(
+                    "You are a causal relationship detector. Answer only 'yes' or 'no'.".into(),
+                ),
                 messages: vec![Message::text("user", prompt)],
                 temperature: Some(0.0),
                 max_tokens: Some(10),
@@ -268,7 +268,12 @@ impl DefaultGraphBuilder {
 
 #[async_trait]
 impl GraphBuilder for DefaultGraphBuilder {
-    async fn build_links(&self, new_facts: &[Fact], bank_id: BankId, store: &dyn MemoryStore) -> Result<Vec<GraphLink>> {
+    async fn build_links(
+        &self,
+        new_facts: &[Fact],
+        bank_id: BankId,
+        store: &dyn MemoryStore,
+    ) -> Result<Vec<GraphLink>> {
         if new_facts.is_empty() {
             return Ok(Vec::new());
         }

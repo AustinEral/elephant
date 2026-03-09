@@ -2,35 +2,69 @@
 
 JSON format for benchmark output files in `bench/locomo/results/`.
 
-## Top-level structure
+## Top-level schema
 
 ```json
 {
   "benchmark": "locomo",
-  "timestamp": "2026-03-08T02:37:45Z",
-  "tag": "temporal-consolidation",
-  "commit": "f58610f",
+  "timestamp": "2026-03-09T21:15:02Z",
+  "commit": "abc123def456",
+  "tag": "baseline",
 
   "judge_model": "anthropic/claude-sonnet-4-6",
-  "server_info": {
-    "llm_model": "anthropic/claude-sonnet-4-6",
-    "embedding_model": "local/bge-small-en-v1.5",
-    "reranker_model": "local/ms-marco-MiniLM-L-6-v2"
+  "retain_model": "anthropic/claude-sonnet-4-6",
+  "reflect_model": "anthropic/claude-sonnet-4-6",
+  "embedding_model": "local/bge-small-en-v1.5",
+  "reranker_model": "local/ms-marco-MiniLM-L-6-v2",
+  "consolidation_strategy": "end",
+
+  "total_questions": 1540,
+  "accuracy": 0.9312,
+  "mean_f1": 0.4123,
+  "mean_evidence_recall": 0.6641,
+
+  "manifest": {
+    "protocol_version": "2026-03-10-config-v1",
+    "profile": "full",
+    "mode": "qa",
+    "dataset_path": "data/locomo10.json",
+    "dataset_fingerprint": "9f7f4c0a5fbb2df2",
+    "selected_conversations": [],
+    "session_limit": null,
+    "question_limit": null,
+    "ingestion_granularity": "turn"
+  },
+
+  "stage_metrics": {
+    "retain_extract": {
+      "prompt_tokens": 123,
+      "completion_tokens": 45,
+      "calls": 10,
+      "errors": 0,
+      "latency_ms": 2110
+    }
+  },
+
+  "total_stage_usage": {
+    "prompt_tokens": 12345,
+    "completion_tokens": 678,
+    "calls": 300,
+    "errors": 1,
+    "latency_ms": 543210
   },
 
   "bank_ids": {
     "conv-26": "01KK623GTJJB2WW3RKHSDSCDT6"
   },
 
-  "token_usage": {
-    "retain": { "prompt_tokens": 0, "completion_tokens": 0, "calls": 0 },
-    "consolidation": { "prompt_tokens": 0, "completion_tokens": 0, "calls": 0 },
-    "reflect": { "prompt_tokens": 0, "completion_tokens": 0, "calls": 0 },
-    "judge": { "prompt_tokens": 0, "completion_tokens": 0, "calls": 0 },
-    "total": { "prompt_tokens": 0, "completion_tokens": 0, "calls": 0 }
+  "turn_refs": {
+    "01KKA...": "D1:3"
   },
 
-  "results": [ ... ]
+  "per_category": {},
+  "per_conversation": {},
+  "results": [ ... ],
+  "total_time_s": 1234.5
 }
 ```
 
@@ -49,71 +83,69 @@ JSON format for benchmark output files in `bench/locomo/results/`.
   "judge_reasoning": "The generated answer correctly identifies 2022.",
   "confidence": 0.85,
   "elapsed_s": 25.4,
+  "status": "ok",
+  "evidence_refs": ["D1:3"],
+  "retrieved_turn_refs": ["D1:3"],
+  "evidence_hit": true,
+  "evidence_recall": 1.0,
   "retrieved_context": [
     {
       "id": "01KK54YT6PV3KG9GRYNV65TV0K",
       "content": "Melanie painted a lake sunrise in 2022...",
       "score": 0.9998,
-      "network": "observation"
+      "network": "observation",
+      "source_turn_id": "01KKA...",
+      "source_turn_ref": "D1:3"
     }
   ]
 }
 ```
 
-## Field definitions
+## What matters most
 
-### Top-level
+### Manifest
 
-| Field | Type | Description |
-|---|---|---|
-| `benchmark` | string | Always `"locomo"` |
-| `timestamp` | ISO 8601 | When the run started |
-| `tag` | string | Human-readable run identifier |
-| `commit` | string | Git commit SHA (planned, not yet implemented) |
-| `judge_model` | string | Model used for binary correctness judging |
-| `server_info` | object | Models used by the Elephant server |
-| `bank_ids` | object | Map of conversation ID → bank ULID |
-| `token_usage` | object | Per-stage token counts (planned, not yet implemented) |
-| `results` | array | Per-question results |
+This is the reproducibility contract. It records:
 
-### Per-question
+- profile / config selection
+- subcommand mode (`run`, `ingest`, or `qa`)
+- dataset fingerprint
+- command line
+- category filter
+- explicit conversation selection
+- ingestion granularity
+- image handling mode
+- concurrency
+- consolidation mode
+- dirty-worktree status
 
-| Field | Type | Description |
-|---|---|---|
-| `question_id` | string | Truncated hash of the question |
-| `sample_id` | string | Conversation identifier (e.g., `conv-26`) |
-| `question` | string | The question text |
-| `ground_truth` | string | Gold answer from LoCoMo dataset |
-| `hypothesis` | string | Elephant's generated answer |
-| `category_name` | string | LoCoMo category: `single-hop`, `multi-hop`, `temporal`, `open-domain` |
-| `f1` | float | Token-level F1 score (0.0 - 1.0) |
-| `judge_correct` | bool | Whether the LLM judge scored this correct |
-| `judge_reasoning` | string | Judge's explanation |
-| `confidence` | float | Judge confidence score |
-| `elapsed_s` | float | Reflect wall-clock time in seconds |
-| `retrieved_context` | array | Facts retrieved during reflect, ordered by score |
+For `qa`, the manifest still records the original ingest and consolidation settings from the source artifact because those settings define the banks being evaluated.
 
-### Retrieved context entry
+### Stage metrics
 
-| Field | Type | Description |
-|---|---|---|
-| `id` | string | Fact ULID |
-| `content` | string | Fact text |
-| `score` | float | Reranker score |
-| `network` | string | Memory network: `observation`, `world`, `experience`, `opinion` |
+These are summed across the run and keyed by benchmark stage:
 
-### Token usage (per stage)
+- `retain_extract`
+- `retain_resolve`
+- `retain_graph`
+- `retain_opinion`
+- `reflect`
+- `consolidate`
+- `opinion_merge`
+- `judge`
 
-| Field | Type | Description |
-|---|---|---|
-| `prompt_tokens` | int | Total prompt/input tokens |
-| `completion_tokens` | int | Total completion/output tokens |
-| `calls` | int | Number of LLM API calls |
+### Evidence fields
 
-## Notes
+LoCoMo includes supporting `evidence` refs for nearly every question. Elephant now records:
 
-- `token_usage` and `commit` fields are planned but not yet implemented in the bench harness
-- `retrieved_context` was added in the `reflect-synthesis` run; older result files may not have it
-- The view tool uses `#[serde(default)]` to gracefully read results with missing fields
-- `category_name` values map to LoCoMo Categories 1-4; Category 5 (adversarial) is not used
-- Local answer subtypes (e.g., `unanswerable`) are tracked in `category_name` but are not LoCoMo categories
+- `evidence_refs`: dataset gold evidence
+- `retrieved_turn_refs`: evidence refs recovered by retrieval provenance
+- `evidence_hit`: whether any gold evidence was retrieved
+- `evidence_recall`: fraction of gold evidence refs retrieved
+
+## Compatibility notes
+
+- New runs serialize banks as `bank_ids`. Older Elephant results used `banks`; the harness reads both.
+- `turn_refs` only exists for runs that preserve turn provenance, which is the new default turn-level ingestion path.
+- Older result files may include `category_name: "unanswerable"` from the legacy Cat.5 leakage bug. Those are legacy artifacts.
+- The `view` tool now surfaces evidence recall and stage metrics for new-style result files while remaining backward-compatible with older artifacts.

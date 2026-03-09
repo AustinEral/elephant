@@ -3,8 +3,8 @@
 ## Benchmarking
 
 - **[benchmark-protocol.md](benchmark-protocol.md)** — evaluation methodology, stack, scoring, and comparison policy
-- **[bench-result-card.md](bench-result-card.md)** — current published result with full metadata
-- **[bench-competitors.md](bench-competitors.md)** — competitive landscape and LoCoMo leaderboard
+- **[bench-result-card.md](bench-result-card.md)** — current benchmark status, metadata, and caveats
+- **[bench-competitors.md](bench-competitors.md)** — competitive landscape and benchmark methodology references
 - **[results-format.md](results-format.md)** — JSON format for benchmark output files
 
 ## Architecture
