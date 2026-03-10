@@ -2449,10 +2449,14 @@ async fn run_conversation(
             .max_sessions
             .map(|m| m.min(total_sessions))
             .unwrap_or(total_sessions);
+        let selected_turns = (1..=ingest_sessions)
+            .map(|idx| get_session_turns(conv, idx).len())
+            .sum::<usize>();
         println!(
-            "[{tag}] Bank: {} | Ingesting {ingest_sessions} session{} ({total_sessions} available)...",
+            "[{tag}] Bank: {} | Ingesting {ingest_sessions} session{} / {selected_turns} turn{} ({total_sessions} sessions available)...",
             bank.id,
-            if ingest_sessions == 1 { "" } else { "s" }
+            if ingest_sessions == 1 { "" } else { "s" },
+            if selected_turns == 1 { "" } else { "s" }
         );
 
         let ingest_start = Instant::now();
@@ -2460,10 +2464,15 @@ async fn run_conversation(
 
         for idx in 1..=ingest_sessions {
             let turns = get_session_turns(conv, idx);
+            let session_turns = turns.len();
             let date_str = get_session_date(conv, idx);
             let timestamp = parse_session_date(&date_str);
+            let session_start = Instant::now();
+            let mut session_facts = 0usize;
+            let mut session_failures = 0usize;
+            let mut session_failed = false;
             bank_stats.sessions_ingested += 1;
-            bank_stats.turns_ingested += turns.len();
+            bank_stats.turns_ingested += session_turns;
 
             if options.ingest_mode.ingest_per_session() {
                 let content = if options.ingest_mode.raw_json() {
@@ -2487,20 +2496,17 @@ async fn run_conversation(
                 {
                     Ok(resp) => {
                         stored_facts += resp.facts_stored;
+                        session_facts += resp.facts_stored;
                         bank_stats.facts_stored += resp.facts_stored;
                         bank_stats.entities_resolved += resp.entities_resolved;
                         bank_stats.links_created += resp.links_created;
                         bank_stats.opinions_reinforced += resp.opinions_reinforced;
                         bank_stats.opinions_weakened += resp.opinions_weakened;
-                        println!(
-                            "[{tag}] ingest [{idx}/{ingest_sessions}] {} facts | elapsed: {}",
-                            resp.facts_stored,
-                            fmt_elapsed(ingest_start.elapsed().as_secs_f64()),
-                        );
                     }
                     Err(e) => {
                         eprintln!("[{tag}] ingest [{idx}/{ingest_sessions}] FAILED: {e}");
-                        continue;
+                        session_failures += 1;
+                        session_failed = true;
                     }
                 }
             } else {
@@ -2534,6 +2540,7 @@ async fn run_conversation(
                     match resp {
                         Ok(retain_resp) => {
                             stored_facts += retain_resp.facts_stored;
+                            session_facts += retain_resp.facts_stored;
                             bank_stats.facts_stored += retain_resp.facts_stored;
                             bank_stats.entities_resolved += retain_resp.entities_resolved;
                             bank_stats.links_created += retain_resp.links_created;
@@ -2548,13 +2555,36 @@ async fn run_conversation(
                                 ingest_sessions,
                                 turn_idx + 1
                             );
+                            session_failures += 1;
                         }
                     }
                 }
-                println!(
-                    "[{tag}] ingest [{idx}/{ingest_sessions}] turn-level complete | elapsed: {}",
-                    fmt_elapsed(ingest_start.elapsed().as_secs_f64()),
-                );
+            }
+            let session_elapsed = session_start.elapsed().as_secs_f64();
+            let ingest_elapsed = ingest_start.elapsed().as_secs_f64();
+            let mode_label = if options.ingest_mode.ingest_per_session() {
+                if options.ingest_mode.raw_json() {
+                    "raw-json"
+                } else {
+                    "session"
+                }
+            } else {
+                "turn"
+            };
+            let failure_suffix = if session_failures == 0 {
+                String::new()
+            } else {
+                format!(" | {} failure{}", session_failures, if session_failures == 1 { "" } else { "s" })
+            };
+            println!(
+                "[{tag}] ingest [{idx}/{ingest_sessions}] {mode_label}-level complete | {session_turns} turns | {session_facts} facts | session: {} | total: {}{}",
+                fmt_elapsed(session_elapsed),
+                fmt_elapsed(ingest_elapsed),
+                failure_suffix,
+            );
+
+            if session_failed {
+                continue;
             }
 
             if options.consolidation.per_session() {
