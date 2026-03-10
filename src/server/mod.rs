@@ -158,6 +158,7 @@ mod tests {
                 confidence: 0.5,
                 retrieved_context: Default::default(),
                 trace: Default::default(),
+                final_done: None,
             })
         }
     }

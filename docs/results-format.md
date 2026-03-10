@@ -60,7 +60,7 @@ The summary file is the canonical run manifest and aggregate metric record. Per-
       "recall_rrf_k": 60.0,
       "rerank_top_n": 50,
       "reflect_max_iterations": 8,
-      "reflect_max_tokens": 1024,
+      "reflect_max_tokens": null,
       "reflect_budget_tokens": 4096,
       "judge_temperature": 0.0,
       "judge_max_tokens": 200,
@@ -207,6 +207,18 @@ If merged source runs differed only in provenance-style fields, the merged manif
   "question_id": "f8cc48",
   "sample_id": "conv-26",
   "question": "When did Melanie paint a sunrise?",
+  "final_done": {
+    "iteration": 2,
+    "assistant_content": "",
+    "raw_arguments": {
+      "response": "Melanie painted a lake sunrise in 2022 [01KK54YT6PV3KG9GRYNV65TV0K].",
+      "source_ids": ["01KK54YT6PV3KG9GRYNV65TV0K"]
+    },
+    "used_fallback": false,
+    "stop_reason": "tool_use",
+    "response": "Melanie painted a lake sunrise in 2022 [01KK54YT6PV3KG9GRYNV65TV0K].",
+    "source_ids": ["01KK54YT6PV3KG9GRYNV65TV0K"]
+  },
   "reflect_trace": [
     {
       "iteration": 1,
@@ -235,6 +247,8 @@ If merged source runs differed only in provenance-style fields, the merged manif
   ]
 }
 ```
+
+`final_done` is the raw final `done()` tool payload captured from the reflect loop. It exists to explain blank or malformed answers: you can see the original tool arguments, whether fallback parsing was used, the provider `stop_reason`, and the normalized response/source ids that actually fed the benchmark result.
 
 ## What matters most
 

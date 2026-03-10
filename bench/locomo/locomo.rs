@@ -30,8 +30,8 @@ use elephant::runtime::{
     RuntimeTuning as ElephantRuntimeTuning, build_runtime_from_env,
 };
 use elephant::types::{
-    BankId, CompletionRequest, Disposition, MemoryBank, Message, NetworkType, ReflectQuery,
-    RetainInput, RetrievalSource, TurnId,
+    BankId, CompletionRequest, Disposition, MemoryBank, Message, NetworkType, ReflectDoneTrace,
+    ReflectQuery, RetainInput, RetrievalSource, TurnId,
 };
 
 // --- LoCoMo dataset types ---
@@ -327,6 +327,8 @@ struct QuestionDebugRecord {
     question: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     reflect_trace: Vec<ReflectTraceEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    final_done: Option<ReflectDoneTrace>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     retrieved_context: Vec<RetrievedFactEntry>,
 }
@@ -2736,6 +2738,7 @@ async fn run_conversation(
                 retrieved_context,
                 final_source_ids,
                 reflect_trace,
+                final_done,
                 status,
                 error,
                 _reflect_elapsed,
@@ -2828,6 +2831,7 @@ async fn run_conversation(
                                 retrieved_context,
                                 final_source_ids,
                                 reflect_trace,
+                                resp.final_done,
                                 "ok".to_string(),
                                 None,
                                 elapsed,
@@ -2839,6 +2843,7 @@ async fn run_conversation(
                             Vec::new(),
                             Vec::new(),
                             Vec::new(),
+                            None,
                             "reflect_error".to_string(),
                             Some(e.to_string()),
                             elapsed,
@@ -2922,6 +2927,7 @@ async fn run_conversation(
                 sample_id: result.sample_id.clone(),
                 question: result.question.clone(),
                 reflect_trace,
+                final_done,
                 retrieved_context,
             };
 
@@ -3590,6 +3596,7 @@ mod tests {
             sample_id: question.sample_id.clone(),
             question: question.question.clone(),
             reflect_trace: Vec::new(),
+            final_done: None,
             retrieved_context: Vec::new(),
         };
         write_jsonl_records(&questions_path, std::slice::from_ref(&question))

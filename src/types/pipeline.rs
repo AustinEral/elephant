@@ -240,6 +240,32 @@ pub struct ReflectTraceStep {
     pub latency_ms: u64,
 }
 
+/// Final `done()` tool call captured from the reflect loop for debugging.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReflectDoneTrace {
+    /// Iteration where `done()` was called.
+    pub iteration: usize,
+    /// Assistant text content returned alongside the tool call, if any.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub assistant_content: String,
+    /// Raw JSON arguments supplied to the `done()` tool call.
+    pub raw_arguments: serde_json::Value,
+    /// Whether fallback parsing was used instead of normal `DoneArgs` decoding.
+    pub used_fallback: bool,
+    /// Parse error from the primary decoder, when fallback was used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parse_error: Option<String>,
+    /// Provider-specific stop reason for the final reflect completion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<String>,
+    /// Normalized final response extracted from the tool call.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub response: String,
+    /// Normalized source ids extracted from the tool call.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_ids: Vec<String>,
+}
+
 /// Result of a reflect operation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ReflectResult {
@@ -257,6 +283,9 @@ pub struct ReflectResult {
     /// Tool/query trace for the reflect agent loop.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trace: Vec<ReflectTraceStep>,
+    /// Final `done()` tool call payload captured for debugging.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_done: Option<ReflectDoneTrace>,
 }
 
 // --- Reflect pipeline types ---

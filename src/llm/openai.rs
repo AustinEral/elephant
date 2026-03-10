@@ -122,6 +122,7 @@ struct OpenAiResponse {
 #[derive(Deserialize)]
 struct OpenAiChoice {
     message: OpenAiMessageResp,
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -265,6 +266,7 @@ impl LlmClient for OpenAiClient {
             .as_ref()
             .and_then(|c| c.message.content.clone())
             .unwrap_or_default();
+        let stop_reason = choice.as_ref().and_then(|c| c.finish_reason.clone());
 
         let tool_calls: Vec<ToolCall> = choice
             .map(|c| {
@@ -293,6 +295,7 @@ impl LlmClient for OpenAiClient {
             content,
             input_tokens,
             output_tokens,
+            stop_reason,
             tool_calls,
         })
     }

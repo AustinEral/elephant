@@ -118,6 +118,9 @@ pub struct CompletionResponse {
     pub input_tokens: usize,
     /// Number of output tokens generated.
     pub output_tokens: usize,
+    /// Provider-specific finish or stop reason, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<String>,
     /// Tool calls requested by the LLM.
     #[serde(default)]
     pub tool_calls: Vec<ToolCall>,
@@ -148,6 +151,7 @@ mod tests {
             content: "Hello! How can I help?".into(),
             input_tokens: 10,
             output_tokens: 6,
+            stop_reason: None,
             tool_calls: vec![],
         };
         let json = serde_json::to_string(&resp).unwrap();

@@ -389,8 +389,7 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
         .unwrap_or(8);
     let reflect_max_tokens = env::var("REFLECT_MAX_TOKENS")
         .ok()
-        .and_then(|s| s.parse().ok())
-        .or(Some(crate::reflect::DEFAULT_REFLECT_MAX_TOKENS));
+        .and_then(|s| s.parse().ok());
     let reflect = Arc::new(DefaultReflectPipeline::new_with_limits(
         recall.clone(),
         stage_llm(&reflect_config, LlmStage::Reflect, options.metrics.as_ref())?,

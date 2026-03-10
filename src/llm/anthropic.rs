@@ -131,6 +131,7 @@ enum ContentBlock {
 struct AnthropicResponse {
     content: Vec<ContentBlock>,
     usage: AnthropicUsage,
+    stop_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -266,6 +267,7 @@ impl LlmClient for AnthropicClient {
             content,
             input_tokens: parsed.usage.input_tokens,
             output_tokens: parsed.usage.output_tokens,
+            stop_reason: parsed.stop_reason,
             tool_calls,
         })
     }
