@@ -1,5 +1,5 @@
 {
-  "ingest": "turn",
+  "ingest": "session",
   "consolidation": "end",
   "conversation_jobs": 1,
   "question_jobs": 1

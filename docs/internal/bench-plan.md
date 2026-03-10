@@ -71,7 +71,7 @@ Tracked per stage:
 - Shared runtime builder in `src/runtime.rs`
 - Stage-aware metering wrapper in `src/metrics.rs`
 - In-process LoCoMo runner in `bench/locomo/locomo.rs`
-- Turn-level ingest as the default benchmark path
+- Session-level ingest as the default benchmark path
 - Turn provenance exported through `retrieved_context.source_turn_id`
 - Evidence-aware scoring using LoCoMo `evidence`
 

@@ -1188,7 +1188,7 @@ impl Default for RunConfig {
             conversations: Vec::new(),
             session_limit: None,
             question_limit: None,
-            ingest: IngestMode::Turn,
+            ingest: IngestMode::Session,
             consolidation: ConsolidationMode::End,
             conversation_jobs: 1,
             question_jobs: 1,
@@ -3677,7 +3677,7 @@ mod tests {
                 category_filter: vec![1, 2, 3, 4],
                 selected_conversations: vec![sample_id.into()],
                 image_policy: "blip_caption_inline".into(),
-                ingestion_granularity: "turn".into(),
+                ingestion_granularity: "session".into(),
                 question_concurrency: 1,
                 conversation_concurrency: 1,
                 consolidation_strategy: "end".into(),
@@ -3843,7 +3843,7 @@ mod tests {
         assert_eq!(invocation.command, BenchCommand::Run);
         let config = invocation.config;
         assert_eq!(config.profile, RunProfile::Smoke);
-        assert_eq!(config.ingest, IngestMode::Turn);
+        assert_eq!(config.ingest, IngestMode::Session);
         assert_eq!(config.consolidation, ConsolidationMode::End);
         assert_eq!(config.conversations, vec!["conv-26".to_string()]);
         assert_eq!(config.session_limit, Some(1));
@@ -3957,7 +3957,7 @@ mod tests {
                 "category_filter": [1, 2, 3, 4],
                 "selected_conversations": ["conv-26"],
                 "image_policy": "blip_caption_inline",
-                "ingestion_granularity": "turn",
+                "ingestion_granularity": "session",
                 "question_concurrency": 1,
                 "conversation_concurrency": 1,
                 "consolidation_strategy": "end",
@@ -4042,7 +4042,7 @@ mod tests {
                 "category_filter": [1, 2, 3, 4],
                 "selected_conversations": [],
                 "image_policy": "blip_caption_inline",
-                "ingestion_granularity": "turn",
+                "ingestion_granularity": "session",
                 "question_concurrency": 1,
                 "conversation_concurrency": 1,
                 "consolidation_strategy": "end",

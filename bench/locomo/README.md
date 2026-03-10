@@ -10,13 +10,13 @@ That change was deliberate:
 
 - stage-token accounting is now precise
 - retain/reflect/consolidate are benchmarked through the real runtime wiring
-- turn provenance can be compared to LoCoMo `evidence`
+- turn provenance is still available when `--ingest turn` is used
 
 ## Scope
 
 - Categories scored: **1-4 only**
 - Category 5: excluded in code
-- Default ingestion granularity: **turn-level**
+- Default ingestion granularity: **session-level**
 - Image handling: BLIP captions inline by default
 
 ## Setup
@@ -116,8 +116,8 @@ cargo run --release --bin locomo-bench -- ingest --profile full --tag ingest
 # QA only from existing banks
 cargo run --release --bin locomo-bench -- \
   qa \
-  bench/locomo/results/ingest.json \
-  --out bench/locomo/results/ingest-qa.json
+  bench/locomo/results/local/ingest.json \
+  --out bench/locomo/results/local/ingest-qa.json
 
 # Single conversation with 5 question workers
 cargo run --release --bin locomo-bench -- \
@@ -163,7 +163,7 @@ Use `--out bench/locomo/results/canonical/<name>.json` when you intentionally wa
 | `--config <path>` | Apply JSON overrides on top of the selected profile |
 | `--tag <name>` | Name the output stem in `results/local/` by default |
 | `--conversation <id>` | Run a specific conversation; repeat to run an explicit set |
-| `--ingest <turn|session|raw-json>` | Choose turn-level ingest, legacy session ingest, or unfair raw-json reproduction |
+| `--ingest <turn|session|raw-json>` | Choose explicit turn ingest, the default session ingest, or unfair raw-json reproduction |
 | `--consolidation <end|per-session|off>` | Control when consolidation runs |
 | `--conversation-jobs <n>` | Parallel conversations |
 | `--question-jobs <n>` | Parallel questions per conversation |
@@ -213,7 +213,7 @@ A serious run now records:
 - per-conversation bank construction stats
 - per-question judge outcome in `*.questions.jsonl`
 - retrieved facts and reflect traces in `*.debug.jsonl`
-- retrieved turn refs
+- retrieved turn refs when turn provenance is preserved
 - evidence hit / evidence recall
 - merge provenance when a full benchmark is assembled from disjoint subset runs
 

@@ -47,7 +47,7 @@ The summary file is the canonical run manifest and aggregate metric record. Per-
     "selected_conversations": [],
     "session_limit": null,
     "question_limit": null,
-    "ingestion_granularity": "turn",
+    "ingestion_granularity": "session",
     "prompt_hashes": {
       "judge": "60c6fd2d7e6f8f4b",
       "retain_extract": "d3f7f98d1dfd1dc4",
@@ -68,7 +68,7 @@ The summary file is the canonical run manifest and aggregate metric record. Per-
       "qa_updates_memory": false
     },
     "source_artifact": {
-      "path": "bench/locomo/results/ingest.json",
+      "path": "bench/locomo/results/local/ingest.json",
       "fingerprint": "c31f96709a4cf9de",
       "mode": "ingest",
       "tag": "ingest",
@@ -324,6 +324,6 @@ The debug sidecar carries the heavy provenance payload:
 ## Compatibility notes
 
 - New runs serialize banks as `bank_ids`. Older Elephant results used `banks`; the harness reads both.
-- `turn_refs` only exists for runs that preserve turn provenance, which is the new default turn-level ingestion path.
+- `turn_refs` only exists for runs that preserve turn provenance, typically `--ingest turn`.
 - Older result files may include `category_name: "unanswerable"` from the legacy Cat.5 leakage bug. Those are legacy artifacts.
 - The `view` tool now reads question sidecars automatically for new-style result files while remaining backward-compatible with older artifacts.
