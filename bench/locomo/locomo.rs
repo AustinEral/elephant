@@ -2965,6 +2965,26 @@ fn git_commit_sha() -> Option<String> {
     }
 }
 
+fn normalize_status_path(path: &str) -> &str {
+    path.trim().trim_matches('"')
+}
+
+fn is_generated_bench_artifact_path(path: &str) -> bool {
+    normalize_status_path(path).starts_with("bench/locomo/results/")
+}
+
+fn status_line_is_ignored(line: &str) -> bool {
+    if line.len() < 4 {
+        return false;
+    }
+    let payload = &line[3..];
+    if let Some((from, to)) = payload.split_once(" -> ") {
+        is_generated_bench_artifact_path(from) && is_generated_bench_artifact_path(to)
+    } else {
+        is_generated_bench_artifact_path(payload)
+    }
+}
+
 fn git_dirty_worktree() -> Option<bool> {
     let output = Command::new("git")
         .args(["status", "--porcelain"])
@@ -2973,7 +2993,12 @@ fn git_dirty_worktree() -> Option<bool> {
     if !output.status.success() {
         return None;
     }
-    Some(!output.stdout.is_empty())
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    Some(
+        stdout
+            .lines()
+            .any(|line| !line.trim().is_empty() && !status_line_is_ignored(line)),
+    )
 }
 
 // --- Main ---
@@ -3586,6 +3611,21 @@ mod tests {
         let (hit, recall) = evidence_recall(&expected, &retrieved);
         assert!(hit);
         assert!((recall - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn ignores_generated_benchmark_result_paths_in_dirty_check() {
+        assert!(status_line_is_ignored(
+            "?? bench/locomo/results/series1-conv-26.json"
+        ));
+        assert!(status_line_is_ignored(" M bench/locomo/results/quick.json"));
+        assert!(status_line_is_ignored(
+            "R  bench/locomo/results/old.json -> bench/locomo/results/new.json"
+        ));
+        assert!(!status_line_is_ignored(" M src/runtime.rs"));
+        assert!(!status_line_is_ignored(
+            "R  bench/locomo/results/old.json -> src/runtime.rs"
+        ));
     }
 
     #[test]
