@@ -89,8 +89,10 @@ Before publishing a headline benchmark number, the run must include:
 
 - Exact benchmark scope: conversation count, question count, and explicit Cat.1-4 filtering
 - Exact stack disclosure: answer model(s), judge model, judge prompt, judge temperature, embeddings, reranker, consolidation mode
-- Raw artifacts: per-question JSON plus per-conversation breakdown
+- Prompt/version disclosure: prompt hashes plus runtime tuning knobs that affect retrieval, reflection, and consolidation
+- Raw artifacts: summary JSON plus per-question and debug JSONL sidecars
 - Cost disclosure: per-stage token counts and total runtime
+- Bank construction disclosure: per-conversation ingest/consolidation counters and final bank state counts
 - Provenance: git commit, run timestamp, and reproducible command line
 - Stability evidence: at least one rerun or judge-variance check before external comparison
 
@@ -115,8 +117,43 @@ cargo run --release --bin locomo-bench -- \
   bench/locomo/results/ingest.json \
   --out bench/locomo/results/ingest-qa.json
 
+# Merge compatible subset runs into one canonical artifact
+cargo run --release --bin locomo-bench -- \
+  merge \
+  bench/locomo/results/batch-a.json \
+  bench/locomo/results/batch-b.json \
+  --out bench/locomo/results/full.json
+
 # View results
 cargo run --release --bin view -- bench/locomo/results/full.json
 ```
 
-All results saved as JSON in `bench/locomo/results/`. Schema defined in [results-format.md](results-format.md).
+All results are saved in `bench/locomo/results/` as a summary JSON plus `*.questions.jsonl` and `*.debug.jsonl` sidecars. Schema defined in [results-format.md](results-format.md). If a benchmark is assembled from batch runs, the final merged artifact should be the one treated as canonical.
+
+## Merge constraints
+
+`merge` is intentionally strict. It only combines artifacts that represent the same benchmark protocol run over different conversation subsets.
+
+The input artifacts must match on:
+
+- dataset fingerprint
+- protocol version
+- mode
+- ingest mode and consolidation mode
+- category scope and any slice limits
+- judge model, Elephant runtime stack, prompt hashes, and runtime tuning knobs
+
+The input artifacts must also be disjoint:
+
+- no overlapping conversation ids
+- no duplicate `question_id` values
+- sidecars present for question and debug records
+
+These fields are preserved as provenance but do not block merge:
+
+- profile label
+- commit
+- dirty-worktree state
+- question and conversation concurrency
+
+If any of those differ, the merge is rejected instead of silently producing a misleading aggregate.

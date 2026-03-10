@@ -44,6 +44,16 @@ pub struct LayeredEntityResolver {
     similarity_threshold: f32,
 }
 
+/// Entity resolver system instruction.
+pub const ENTITY_RESOLUTION_SYSTEM_PROMPT: &str =
+    "You are an entity resolution assistant. Answer only 'yes' or 'no'.";
+/// Entity resolver user prompt template.
+pub const ENTITY_RESOLUTION_USER_PROMPT_TEMPLATE: &str = "Is the mention \"{mention}\" referring to the same entity as \"{canonical_name}\" (aliases: {aliases})?\nAnswer with just \"yes\" or \"no\".";
+/// Entity resolver temperature.
+pub const ENTITY_RESOLUTION_TEMPERATURE: f32 = 0.0;
+/// Entity resolver output cap.
+pub const ENTITY_RESOLUTION_MAX_TOKENS: usize = 10;
+
 impl LayeredEntityResolver {
     /// Create a new resolver.
     pub fn new(embeddings: Box<dyn EmbeddingClient>, llm: Arc<dyn LlmClient>) -> Self {
@@ -117,20 +127,17 @@ impl LayeredEntityResolver {
 
     /// Use LLM to confirm whether a mention matches a candidate entity.
     async fn llm_confirm(&self, mention: &str, candidate: &Entity) -> Result<bool> {
-        let prompt = format!(
-            "Is the mention \"{}\" referring to the same entity as \"{}\" (aliases: {:?})?\n\
-             Answer with just \"yes\" or \"no\".",
-            mention, candidate.canonical_name, candidate.aliases
-        );
+        let prompt = ENTITY_RESOLUTION_USER_PROMPT_TEMPLATE
+            .replace("{mention}", mention)
+            .replace("{canonical_name}", &candidate.canonical_name)
+            .replace("{aliases}", &format!("{:?}", candidate.aliases));
 
         let request = CompletionRequest {
             model: String::new(),
-            system: Some(
-                "You are an entity resolution assistant. Answer only 'yes' or 'no'.".into(),
-            ),
+            system: Some(ENTITY_RESOLUTION_SYSTEM_PROMPT.into()),
             messages: vec![Message::text("user", prompt)],
-            temperature: Some(0.0),
-            max_tokens: Some(10),
+            temperature: Some(ENTITY_RESOLUTION_TEMPERATURE),
+            max_tokens: Some(ENTITY_RESOLUTION_MAX_TOKENS),
             ..Default::default()
         };
 

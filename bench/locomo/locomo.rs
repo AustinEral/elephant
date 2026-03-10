@@ -15,16 +15,23 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use chrono::{DateTime, NaiveDateTime, Utc};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, Semaphore};
 
+use elephant::MemoryStore;
 use elephant::llm::retry::{RetryPolicy, RetryingLlmClient};
 use elephant::llm::{self, LlmClient, Provider, ProviderConfig};
-use elephant::metrics::{LlmStage, MeteredLlmClient, MetricsCollector, StageUsage};
-use elephant::runtime::{BuildRuntimeOptions, ElephantRuntime, build_runtime_from_env};
+use elephant::metrics::{
+    LlmStage, MeteredLlmClient, MetricsCollector, StageUsage, with_scoped_collector,
+};
+use elephant::runtime::{
+    BuildRuntimeOptions, ElephantRuntime, RuntimePromptHashes as ElephantPromptHashes,
+    RuntimeTuning as ElephantRuntimeTuning, build_runtime_from_env,
+};
 use elephant::types::{
     BankId, CompletionRequest, Disposition, MemoryBank, Message, NetworkType, ReflectQuery,
-    RetainInput, TurnId,
+    RetainInput, RetrievalSource, TurnId,
 };
 
 // --- LoCoMo dataset types ---
@@ -48,6 +55,8 @@ struct Conversation {
 struct Turn {
     speaker: String,
     text: String,
+    #[serde(default)]
+    dia_id: Option<String>,
     blip_caption: Option<String>,
 }
 
@@ -94,6 +103,14 @@ struct BenchmarkManifest {
     question_limit: Option<usize>,
     raw_json: bool,
     dirty_worktree: Option<bool>,
+    #[serde(default)]
+    prompt_hashes: BenchmarkPromptHashes,
+    #[serde(default)]
+    runtime_config: BenchmarkRuntimeConfig,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    source_artifact: Option<SourceArtifact>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    source_artifacts: Vec<SourceArtifact>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -103,6 +120,26 @@ struct ConversationSummary {
     mean_f1: f64,
     mean_evidence_recall: f64,
     count: usize,
+    #[serde(default)]
+    ingest_time_s: f64,
+    #[serde(default)]
+    consolidation_time_s: f64,
+    #[serde(default)]
+    qa_time_s: f64,
+    #[serde(default)]
+    total_time_s: f64,
+    #[serde(default)]
+    stage_metrics: BTreeMap<LlmStage, StageUsage>,
+    #[serde(default)]
+    bank_stats: ConversationBankStats,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct BenchmarkArtifacts {
+    #[serde(default)]
+    questions_path: String,
+    #[serde(default)]
+    debug_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,9 +172,12 @@ struct BenchmarkOutput {
     #[serde(default)]
     manifest: BenchmarkManifest,
     #[serde(default)]
+    artifacts: BenchmarkArtifacts,
+    #[serde(default)]
     stage_metrics: BTreeMap<LlmStage, StageUsage>,
     #[serde(default)]
     total_stage_usage: StageUsage,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     results: Vec<QuestionResult>,
     total_time_s: f64,
 }
@@ -150,6 +190,74 @@ struct CategoryResult {
     count: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct BenchmarkPromptHashes {
+    #[serde(default)]
+    judge: String,
+    #[serde(flatten)]
+    elephant: ElephantPromptHashes,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct BenchmarkRuntimeConfig {
+    #[serde(flatten)]
+    elephant: ElephantRuntimeTuning,
+    #[serde(default)]
+    reflect_budget_tokens: usize,
+    #[serde(default)]
+    judge_temperature: f32,
+    #[serde(default)]
+    judge_max_tokens: usize,
+    #[serde(default)]
+    judge_max_attempts: usize,
+    #[serde(default)]
+    qa_updates_memory: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct SourceArtifact {
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    fingerprint: String,
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    tag: Option<String>,
+    #[serde(default)]
+    commit: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct ConversationBankStats {
+    #[serde(default)]
+    sessions_ingested: usize,
+    #[serde(default)]
+    turns_ingested: usize,
+    #[serde(default)]
+    facts_stored: usize,
+    #[serde(default)]
+    entities_resolved: usize,
+    #[serde(default)]
+    links_created: usize,
+    #[serde(default)]
+    opinions_reinforced: usize,
+    #[serde(default)]
+    opinions_weakened: usize,
+    #[serde(default)]
+    observations_created: usize,
+    #[serde(default)]
+    observations_updated: usize,
+    #[serde(default)]
+    final_fact_count: usize,
+    #[serde(default)]
+    final_observation_count: usize,
+    #[serde(default)]
+    final_opinion_count: usize,
+    #[serde(default)]
+    final_entity_count: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RetrievedFactEntry {
     id: String,
@@ -160,6 +268,28 @@ struct RetrievedFactEntry {
     source_turn_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     source_turn_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    evidence_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    retrieval_sources: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    support_turn_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    support_turn_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ReflectTraceEntry {
+    iteration: usize,
+    tool_name: String,
+    query: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    returned_fact_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    new_fact_ids: Vec<String>,
+    facts_returned: usize,
+    total_tokens: usize,
+    latency_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,20 +304,39 @@ struct QuestionResult {
     f1: f64,
     judge_correct: bool,
     judge_reasoning: String,
-    confidence: f32,
     elapsed_s: f64,
     status: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     error: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    final_source_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     evidence_refs: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     retrieved_turn_refs: Vec<String>,
     evidence_hit: bool,
     evidence_recall: f64,
-    /// All facts retrieved during reflect, in ranked order with scores.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    qa_stage_metrics: BTreeMap<LlmStage, StageUsage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct QuestionDebugRecord {
+    question_id: String,
+    sample_id: String,
+    question: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    reflect_trace: Vec<ReflectTraceEntry>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     retrieved_context: Vec<RetrievedFactEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct ConversationPhaseTimings {
+    ingest_time_s: f64,
+    consolidation_time_s: f64,
+    qa_time_s: f64,
+    total_time_s: f64,
 }
 
 // --- Category names ---
@@ -213,6 +362,34 @@ fn network_name(network: NetworkType) -> &'static str {
         NetworkType::Experience => "experience",
         NetworkType::Observation => "observation",
         NetworkType::Opinion => "opinion",
+    }
+}
+
+fn retrieval_source_name(source: RetrievalSource) -> &'static str {
+    match source {
+        RetrievalSource::Semantic => "semantic",
+        RetrievalSource::Keyword => "keyword",
+        RetrievalSource::Graph => "graph",
+        RetrievalSource::Temporal => "temporal",
+    }
+}
+
+fn preserve_stage_for_qa(stage: LlmStage) -> bool {
+    !matches!(stage, LlmStage::Reflect | LlmStage::Judge)
+}
+
+fn seeded_stage_metrics(
+    command: BenchCommand,
+    snapshot: &BTreeMap<LlmStage, StageUsage>,
+) -> BTreeMap<LlmStage, StageUsage> {
+    if matches!(command, BenchCommand::Qa) {
+        snapshot
+            .iter()
+            .filter(|(stage, _)| preserve_stage_for_qa(**stage))
+            .map(|(stage, usage)| (*stage, usage.clone()))
+            .collect()
+    } else {
+        snapshot.clone()
     }
 }
 
@@ -301,6 +478,12 @@ fn session_count(conv: &Conversation) -> usize {
 }
 
 fn get_session_turns(conv: &Conversation, idx: usize) -> Vec<Turn> {
+    let plain_key = format!("session_{idx}");
+    if let Some(v) = conv.sessions.get(&plain_key)
+        && let Ok(turns) = serde_json::from_value::<Vec<Turn>>(v.clone())
+    {
+        return turns;
+    }
     for suffix in ["dialogue", "dialog"] {
         let key = format!("session_{idx}_{suffix}");
         if let Some(v) = conv.sessions.get(&key) {
@@ -339,6 +522,7 @@ fn format_session(turns: &[Turn], date_str: &str) -> String {
 }
 
 fn format_session_raw(conv: &Conversation, idx: usize) -> String {
+    let plain_key = format!("session_{idx}");
     let dialogue_key = format!("session_{idx}_dialogue");
     let dialog_key = format!("session_{idx}_dialog");
     let date_key = format!("session_{idx}_date_time");
@@ -348,6 +532,7 @@ fn format_session_raw(conv: &Conversation, idx: usize) -> String {
         "dialogue": conv.sessions.get(&dialogue_key)
             .cloned()
             .or_else(|| conv.sessions.get(&dialog_key).cloned())
+            .or_else(|| conv.sessions.get(&plain_key).cloned())
             .unwrap_or(serde_json::Value::Null),
     });
     serde_json::to_string_pretty(&obj).unwrap_or_default()
@@ -374,6 +559,22 @@ fn evidence_recall(expected: &[String], retrieved: &[String]) -> (bool, f64) {
     (hits > 0, hits as f64 / expected_set.len() as f64)
 }
 
+fn evidence_precision(expected: &[String], retrieved: &[String]) -> Option<f64> {
+    let expected_set: BTreeSet<&str> = expected.iter().map(String::as_str).collect();
+    let retrieved_set: BTreeSet<&str> = retrieved.iter().map(String::as_str).collect();
+    if expected_set.is_empty() && retrieved_set.is_empty() {
+        return None;
+    }
+    if retrieved_set.is_empty() {
+        return Some(0.0);
+    }
+    let hits = retrieved_set
+        .iter()
+        .filter(|turn_ref| expected_set.contains(**turn_ref))
+        .count();
+    Some(hits as f64 / retrieved_set.len() as f64)
+}
+
 fn fnv1a64(data: &[u8]) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
     for byte in data {
@@ -383,15 +584,67 @@ fn fnv1a64(data: &[u8]) -> u64 {
     hash
 }
 
+fn fnv1a64_hex(data: &str) -> String {
+    format!("{:016x}", fnv1a64(data.as_bytes()))
+}
+
 fn fmt_elapsed(seconds: f64) -> String {
     let m = (seconds as u64) / 60;
     let s = (seconds as u64) % 60;
     format!("{m}:{s:02}")
 }
 
+fn benchmark_prompt_hashes(runtime: &ElephantRuntime) -> BenchmarkPromptHashes {
+    BenchmarkPromptHashes {
+        judge: fnv1a64_hex(JUDGE_PROMPT),
+        elephant: runtime.info.prompt_hashes.clone(),
+    }
+}
+
+fn benchmark_runtime_config(runtime: &ElephantRuntime) -> BenchmarkRuntimeConfig {
+    BenchmarkRuntimeConfig {
+        elephant: runtime.info.tuning.clone(),
+        reflect_budget_tokens: REFLECT_BUDGET_TOKENS,
+        judge_temperature: JUDGE_TEMPERATURE,
+        judge_max_tokens: JUDGE_MAX_TOKENS,
+        judge_max_attempts: JUDGE_MAX_ATTEMPTS,
+        qa_updates_memory: false,
+    }
+}
+
+async fn finalize_bank_stats(
+    store: &Arc<dyn MemoryStore>,
+    bank_id: BankId,
+    stats: &mut ConversationBankStats,
+) -> Result<(), String> {
+    let all_facts = store
+        .get_facts_by_bank(bank_id, Default::default())
+        .await
+        .map_err(|e| format!("failed to read final bank facts: {e}"))?;
+    stats.final_fact_count = all_facts.len();
+    stats.final_observation_count = all_facts
+        .iter()
+        .filter(|fact| fact.network == NetworkType::Observation)
+        .count();
+    stats.final_opinion_count = all_facts
+        .iter()
+        .filter(|fact| fact.network == NetworkType::Opinion)
+        .count();
+    stats.final_entity_count = store
+        .list_entities(bank_id)
+        .await
+        .map_err(|e| format!("failed to read final bank entities: {e}"))?
+        .len();
+    Ok(())
+}
+
 // --- LLM Judge ---
 
 const JUDGE_PROMPT: &str = include_str!("judge_answer.txt");
+const JUDGE_TEMPERATURE: f32 = 0.0;
+const JUDGE_MAX_TOKENS: usize = 200;
+const JUDGE_MAX_ATTEMPTS: usize = 3;
+const REFLECT_BUDGET_TOKENS: usize = 4096;
 
 async fn llm_judge(
     judge: &dyn LlmClient,
@@ -407,13 +660,13 @@ async fn llm_judge(
     let request = CompletionRequest {
         model: String::new(),
         messages: vec![Message::text("user", prompt)],
-        max_tokens: Some(200),
-        temperature: Some(0.0),
+        max_tokens: Some(JUDGE_MAX_TOKENS),
+        temperature: Some(JUDGE_TEMPERATURE),
         system: None,
         ..Default::default()
     };
 
-    for attempt in 0..3 {
+    for attempt in 0..JUDGE_MAX_ATTEMPTS {
         let result = judge.complete(request.clone()).await;
         match result {
             Ok(resp) => {
@@ -427,7 +680,7 @@ async fn llm_judge(
                     let correct = parsed.label.eq_ignore_ascii_case("CORRECT");
                     return Ok((correct, parsed.reasoning));
                 }
-                if attempt == 2 {
+                if attempt + 1 == JUDGE_MAX_ATTEMPTS {
                     return Err(format!(
                         "could not parse judge response: {}",
                         &resp.content[..resp.content.len().min(120)]
@@ -489,12 +742,51 @@ fn judge_label(override_model: &Option<String>) -> String {
 
 // --- Result flushing ---
 
+fn sidecar_path(output_path: &Path, suffix: &str) -> PathBuf {
+    let parent = output_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    let stem = output_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("results");
+    parent.join(format!("{stem}.{suffix}.jsonl"))
+}
+
+fn relative_artifact_path(base: &Path, target: &Path) -> String {
+    target
+        .strip_prefix(
+            base.parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_default()
+                .as_path(),
+        )
+        .unwrap_or(target)
+        .display()
+        .to_string()
+}
+
+fn append_jsonl<T: Serialize>(path: &Path, value: &T) {
+    if let Ok(line) = serde_json::to_string(value)
+        && let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path)
+    {
+        use std::io::Write;
+        let _ = writeln!(file, "{line}");
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn flush_results(
     results: &[QuestionResult],
     banks: &HashMap<String, String>,
+    conversation_stage_metrics: &HashMap<String, BTreeMap<LlmStage, StageUsage>>,
+    conversation_timings: &HashMap<String, ConversationPhaseTimings>,
+    conversation_bank_stats: &HashMap<String, ConversationBankStats>,
     turn_refs: &HashMap<String, String>,
     output_path: &Path,
+    questions_path: &Path,
+    debug_path: &Path,
     judge_label: &str,
     tag: &Option<String>,
     retain_model: &str,
@@ -506,9 +798,8 @@ fn flush_results(
     metrics: &MetricsCollector,
     run_timestamp: &str,
     commit: Option<&str>,
-    bench_start: Instant,
+    bench_elapsed: f64,
 ) {
-    let bench_elapsed = bench_start.elapsed().as_secs_f64();
     let mut sorted_results = results.to_vec();
     sorted_results.sort_by(|a, b| {
         a.sample_id
@@ -568,18 +859,66 @@ fn flush_results(
         );
     }
 
+    let conversation_ids = conversation_results
+        .keys()
+        .cloned()
+        .chain(conversation_stage_metrics.keys().cloned())
+        .chain(banks.keys().cloned())
+        .chain(conversation_timings.keys().cloned())
+        .chain(conversation_bank_stats.keys().cloned())
+        .collect::<BTreeSet<_>>();
+
     let mut per_conversation = HashMap::new();
-    for (sample_id, rows) in &conversation_results {
+    for sample_id in conversation_ids {
+        let rows = conversation_results
+            .get(&sample_id)
+            .cloned()
+            .unwrap_or_default();
         let n = rows.len();
         per_conversation.insert(
             sample_id.clone(),
             ConversationSummary {
-                bank_id: banks.get(sample_id).cloned().unwrap_or_default(),
-                accuracy: rows.iter().filter(|r| r.judge_correct).count() as f64 / n as f64,
-                mean_f1: rows.iter().map(|r| r.f1).sum::<f64>() / n as f64,
-                mean_evidence_recall: rows.iter().map(|r| r.evidence_recall).sum::<f64>()
-                    / n as f64,
+                bank_id: banks.get(&sample_id).cloned().unwrap_or_default(),
+                accuracy: if n > 0 {
+                    rows.iter().filter(|r| r.judge_correct).count() as f64 / n as f64
+                } else {
+                    0.0
+                },
+                mean_f1: if n > 0 {
+                    rows.iter().map(|r| r.f1).sum::<f64>() / n as f64
+                } else {
+                    0.0
+                },
+                mean_evidence_recall: if n > 0 {
+                    rows.iter().map(|r| r.evidence_recall).sum::<f64>() / n as f64
+                } else {
+                    0.0
+                },
                 count: n,
+                ingest_time_s: conversation_timings
+                    .get(&sample_id)
+                    .map(|timings| timings.ingest_time_s)
+                    .unwrap_or_default(),
+                consolidation_time_s: conversation_timings
+                    .get(&sample_id)
+                    .map(|timings| timings.consolidation_time_s)
+                    .unwrap_or_default(),
+                qa_time_s: conversation_timings
+                    .get(&sample_id)
+                    .map(|timings| timings.qa_time_s)
+                    .unwrap_or_default(),
+                total_time_s: conversation_timings
+                    .get(&sample_id)
+                    .map(|timings| timings.total_time_s)
+                    .unwrap_or_default(),
+                stage_metrics: conversation_stage_metrics
+                    .get(&sample_id)
+                    .cloned()
+                    .unwrap_or_default(),
+                bank_stats: conversation_bank_stats
+                    .get(&sample_id)
+                    .cloned()
+                    .unwrap_or_default(),
             },
         );
     }
@@ -607,9 +946,13 @@ fn flush_results(
         banks: banks.clone(),
         turn_refs: turn_refs.clone(),
         manifest: manifest.clone(),
+        artifacts: BenchmarkArtifacts {
+            questions_path: relative_artifact_path(output_path, questions_path),
+            debug_path: relative_artifact_path(output_path, debug_path),
+        },
         stage_metrics,
         total_stage_usage,
-        results: sorted_results,
+        results: Vec::new(),
         total_time_s: bench_elapsed,
     };
 
@@ -668,6 +1011,7 @@ enum BenchCommand {
     Run,
     Ingest,
     Qa,
+    Merge,
 }
 
 impl BenchCommand {
@@ -676,6 +1020,7 @@ impl BenchCommand {
             Self::Run => "run",
             Self::Ingest => "ingest",
             Self::Qa => "qa",
+            Self::Merge => "merge",
         }
     }
 }
@@ -911,6 +1256,7 @@ struct CliOverrides {
 struct BenchInvocation {
     command: BenchCommand,
     artifact_path: Option<PathBuf>,
+    merge_artifacts: Vec<PathBuf>,
     config: RunConfig,
 }
 
@@ -959,6 +1305,7 @@ impl CliOverrides {
 struct ParsedCli {
     command: BenchCommand,
     artifact_path: Option<PathBuf>,
+    merge_artifacts: Vec<PathBuf>,
     overrides: CliOverrides,
 }
 
@@ -983,6 +1330,7 @@ fn parse_args_from(raw: &[String]) -> Result<Option<BenchInvocation>, String> {
     let ParsedCli {
         command,
         artifact_path,
+        merge_artifacts,
         overrides,
     } = parse_cli_overrides(raw)?;
     if overrides.help {
@@ -997,11 +1345,13 @@ fn parse_args_from(raw: &[String]) -> Result<Option<BenchInvocation>, String> {
                 .ok_or_else(|| "`qa` requires an artifact path".to_string())?,
             overrides,
         )?,
+        BenchCommand::Merge => resolve_merge_config(overrides)?,
     };
     validate_run_config(command, &config)?;
     Ok(Some(BenchInvocation {
         command,
         artifact_path,
+        merge_artifacts,
         config,
     }))
 }
@@ -1020,6 +1370,18 @@ fn resolve_fresh_config(overrides: CliOverrides) -> Result<RunConfig, String> {
     }
 
     overrides.apply(&mut config);
+    Ok(config)
+}
+
+fn resolve_merge_config(overrides: CliOverrides) -> Result<RunConfig, String> {
+    validate_merge_overrides(&overrides)?;
+    let mut config = RunConfig::default();
+    if let Some(output) = overrides.output {
+        config.output = Some(output);
+    }
+    if let Some(tag) = overrides.tag {
+        config.tag = Some(tag);
+    }
     Ok(config)
 }
 
@@ -1084,29 +1446,78 @@ fn validate_qa_overrides(overrides: &CliOverrides) -> Result<(), String> {
     }
 }
 
+fn validate_merge_overrides(overrides: &CliOverrides) -> Result<(), String> {
+    let mut unsupported = Vec::new();
+    if overrides.profile.is_some() {
+        unsupported.push("--profile");
+    }
+    if overrides.config_path.is_some() {
+        unsupported.push("--config");
+    }
+    if overrides.dataset.is_some() {
+        unsupported.push("--dataset");
+    }
+    if !overrides.conversations.is_empty() {
+        unsupported.push("--conversation");
+    }
+    if overrides.session_limit.is_some() {
+        unsupported.push("--session-limit");
+    }
+    if overrides.question_limit.is_some() {
+        unsupported.push("--question-limit");
+    }
+    if overrides.ingest.is_some() {
+        unsupported.push("--ingest");
+    }
+    if overrides.consolidation.is_some() {
+        unsupported.push("--consolidation");
+    }
+    if overrides.conversation_jobs.is_some() {
+        unsupported.push("--conversation-jobs");
+    }
+    if overrides.question_jobs.is_some() {
+        unsupported.push("--question-jobs");
+    }
+    if overrides.judge_model.is_some() {
+        unsupported.push("--judge-model");
+    }
+
+    if unsupported.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "`merge` does not accept {}; it only supports input artifacts plus --out/--tag",
+            unsupported.join(", ")
+        ))
+    }
+}
+
 fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
     let mut overrides = CliOverrides::default();
     let command = match raw.get(1).map(String::as_str) {
-        None => return Err("expected subcommand: run, ingest, or qa".into()),
+        None => return Err("expected subcommand: run, ingest, qa, or merge".into()),
         Some("--help") | Some("-h") => {
             overrides.help = true;
             return Ok(ParsedCli {
                 command: BenchCommand::Run,
                 artifact_path: None,
+                merge_artifacts: Vec::new(),
                 overrides,
             });
         }
         Some("run") => BenchCommand::Run,
         Some("ingest") => BenchCommand::Ingest,
         Some("qa") => BenchCommand::Qa,
+        Some("merge") => BenchCommand::Merge,
         Some(other) => {
             return Err(format!(
-                "unknown subcommand: {other} (expected one of: run, ingest, qa)"
+                "unknown subcommand: {other} (expected one of: run, ingest, qa, merge)"
             ));
         }
     };
 
     let mut artifact_path = None;
+    let mut merge_artifacts = Vec::new();
     let mut i = 2;
     if matches!(command, BenchCommand::Qa) {
         match raw.get(2).map(String::as_str) {
@@ -1116,6 +1527,7 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
                 return Ok(ParsedCli {
                     command,
                     artifact_path: None,
+                    merge_artifacts,
                     overrides,
                 });
             }
@@ -1220,13 +1632,21 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
                         .clone(),
                 );
             }
+            value if matches!(command, BenchCommand::Merge) && !value.starts_with('-') => {
+                merge_artifacts.push(PathBuf::from(value));
+            }
             other => return Err(format!("Unknown argument: {other}")),
         }
         i += 1;
     }
+
+    if matches!(command, BenchCommand::Merge) && merge_artifacts.len() < 2 {
+        return Err("`merge` requires at least two input artifacts".into());
+    }
     Ok(ParsedCli {
         command,
         artifact_path,
+        merge_artifacts,
         overrides,
     })
 }
@@ -1249,6 +1669,96 @@ fn load_benchmark_output(path: &Path) -> Result<BenchmarkOutput, String> {
     serde_json::from_str(&raw).map_err(|e| format!("failed to parse {}: {e}", path.display()))
 }
 
+#[derive(Debug)]
+struct LoadedArtifactBundle {
+    path: PathBuf,
+    fingerprint: String,
+    output: BenchmarkOutput,
+    questions: Vec<QuestionResult>,
+    debug_records: Vec<QuestionDebugRecord>,
+}
+
+fn read_jsonl_records<T: DeserializeOwned>(path: &Path) -> Result<Vec<T>, String> {
+    let raw =
+        fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    raw.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            serde_json::from_str::<T>(line)
+                .map_err(|e| format!("failed to parse record in {}: {e}", path.display()))
+        })
+        .collect()
+}
+
+fn artifact_relative_path(summary_path: &Path, rel: &str) -> PathBuf {
+    summary_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(rel)
+}
+
+fn load_artifact_bundle(path: &Path) -> Result<LoadedArtifactBundle, String> {
+    let artifact_bytes =
+        fs::read(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    let output: BenchmarkOutput = serde_json::from_slice(&artifact_bytes)
+        .map_err(|e| format!("failed to parse {}: {e}", path.display()))?;
+
+    let questions = if output.results.is_empty() {
+        if output.artifacts.questions_path.is_empty() {
+            return Err(format!(
+                "artifact {} is missing question sidecars; merge requires new-style artifacts",
+                path.display()
+            ));
+        }
+        read_jsonl_records::<QuestionResult>(&artifact_relative_path(
+            path,
+            &output.artifacts.questions_path,
+        ))?
+    } else {
+        output.results.clone()
+    };
+
+    if output.total_questions > 0 && output.total_questions != questions.len() {
+        return Err(format!(
+            "artifact {} summary says {} questions but loaded {} question records",
+            path.display(),
+            output.total_questions,
+            questions.len()
+        ));
+    }
+
+    let debug_records = if output.artifacts.debug_path.is_empty() {
+        Vec::new()
+    } else {
+        let debug_path = artifact_relative_path(path, &output.artifacts.debug_path);
+        if !debug_path.exists() {
+            return Err(format!(
+                "artifact {} is missing debug sidecar {}",
+                path.display(),
+                debug_path.display()
+            ));
+        }
+        read_jsonl_records::<QuestionDebugRecord>(&debug_path)?
+    };
+
+    if !debug_records.is_empty() && debug_records.len() != questions.len() {
+        return Err(format!(
+            "artifact {} has {} question records but {} debug records",
+            path.display(),
+            questions.len(),
+            debug_records.len()
+        ));
+    }
+
+    Ok(LoadedArtifactBundle {
+        path: path.to_path_buf(),
+        fingerprint: format!("{:016x}", fnv1a64(&artifact_bytes)),
+        output,
+        questions,
+        debug_records,
+    })
+}
+
 fn ingest_mode_from_manifest(manifest: &BenchmarkManifest) -> Result<IngestMode, String> {
     if manifest.raw_json {
         return Ok(IngestMode::RawJson);
@@ -1265,7 +1775,7 @@ fn ingest_mode_from_manifest(manifest: &BenchmarkManifest) -> Result<IngestMode,
 
 fn run_config_from_artifact(artifact: &BenchmarkOutput) -> Result<RunConfig, String> {
     let manifest = &artifact.manifest;
-    let profile = if manifest.profile.is_empty() {
+    let profile = if manifest.profile.is_empty() || manifest.profile == "mixed" {
         RunProfile::Full
     } else {
         manifest.profile.parse()?
@@ -1299,6 +1809,399 @@ fn run_config_from_artifact(artifact: &BenchmarkOutput) -> Result<RunConfig, Str
     })
 }
 
+fn merge_source_artifact(bundle: &LoadedArtifactBundle) -> SourceArtifact {
+    SourceArtifact {
+        path: bundle.path.display().to_string(),
+        fingerprint: bundle.fingerprint.clone(),
+        mode: bundle.output.manifest.mode.clone(),
+        tag: bundle.output.tag.clone(),
+        commit: bundle.output.commit.clone(),
+    }
+}
+
+fn artifact_scope_ids(bundle: &LoadedArtifactBundle) -> BTreeSet<String> {
+    bundle
+        .output
+        .per_conversation
+        .keys()
+        .cloned()
+        .chain(bundle.output.banks.keys().cloned())
+        .chain(
+            bundle
+                .questions
+                .iter()
+                .map(|result| result.sample_id.clone()),
+        )
+        .collect()
+}
+
+fn ensure_merge_compatible(
+    base: &LoadedArtifactBundle,
+    other: &LoadedArtifactBundle,
+) -> Result<(), String> {
+    let base_manifest = &base.output.manifest;
+    let other_manifest = &other.output.manifest;
+
+    macro_rules! ensure_same {
+        ($left:expr, $right:expr, $label:literal) => {
+            if $left != $right {
+                return Err(format!(
+                    "cannot merge {} and {}: mismatched {}",
+                    base.path.display(),
+                    other.path.display(),
+                    $label
+                ));
+            }
+        };
+    }
+
+    ensure_same!(base.output.benchmark, other.output.benchmark, "benchmark");
+    ensure_same!(
+        base.output.judge_model,
+        other.output.judge_model,
+        "judge model"
+    );
+    ensure_same!(
+        base.output.retain_model,
+        other.output.retain_model,
+        "retain model"
+    );
+    ensure_same!(
+        base.output.reflect_model,
+        other.output.reflect_model,
+        "reflect model"
+    );
+    ensure_same!(
+        base.output.embedding_model,
+        other.output.embedding_model,
+        "embedding model"
+    );
+    ensure_same!(
+        base.output.reranker_model,
+        other.output.reranker_model,
+        "reranker model"
+    );
+    ensure_same!(
+        base.output.consolidation_strategy,
+        other.output.consolidation_strategy,
+        "consolidation strategy"
+    );
+    ensure_same!(
+        base_manifest.protocol_version,
+        other_manifest.protocol_version,
+        "protocol version"
+    );
+    ensure_same!(base_manifest.mode, other_manifest.mode, "mode");
+    ensure_same!(
+        base_manifest.dataset_fingerprint,
+        other_manifest.dataset_fingerprint,
+        "dataset fingerprint"
+    );
+    ensure_same!(
+        base_manifest.category_filter,
+        other_manifest.category_filter,
+        "category filter"
+    );
+    ensure_same!(
+        base_manifest.image_policy,
+        other_manifest.image_policy,
+        "image policy"
+    );
+    ensure_same!(
+        base_manifest.ingestion_granularity,
+        other_manifest.ingestion_granularity,
+        "ingestion granularity"
+    );
+    ensure_same!(
+        base_manifest.consolidation_strategy,
+        other_manifest.consolidation_strategy,
+        "manifest consolidation strategy"
+    );
+    ensure_same!(
+        base_manifest.session_limit,
+        other_manifest.session_limit,
+        "session limit"
+    );
+    ensure_same!(
+        base_manifest.question_limit,
+        other_manifest.question_limit,
+        "question limit"
+    );
+    ensure_same!(
+        base_manifest.raw_json,
+        other_manifest.raw_json,
+        "raw-json mode"
+    );
+    if serde_json::to_string(&base_manifest.prompt_hashes).ok()
+        != serde_json::to_string(&other_manifest.prompt_hashes).ok()
+    {
+        return Err(format!(
+            "cannot merge {} and {}: mismatched prompt hashes",
+            base.path.display(),
+            other.path.display()
+        ));
+    }
+    if serde_json::to_string(&base_manifest.runtime_config).ok()
+        != serde_json::to_string(&other_manifest.runtime_config).ok()
+    {
+        return Err(format!(
+            "cannot merge {} and {}: mismatched runtime config",
+            base.path.display(),
+            other.path.display()
+        ));
+    }
+
+    Ok(())
+}
+
+fn write_jsonl_records<T: Serialize>(path: &Path, values: &[T]) -> Result<(), String> {
+    fs::write(path, "").map_err(|e| format!("failed to initialize {}: {e}", path.display()))?;
+    for value in values {
+        append_jsonl(path, value);
+    }
+    Ok(())
+}
+
+fn merge_profile_value(bundles: &[LoadedArtifactBundle]) -> String {
+    let profiles = bundles
+        .iter()
+        .map(|bundle| bundle.output.manifest.profile.clone())
+        .collect::<BTreeSet<_>>();
+    if profiles.len() == 1 {
+        profiles.into_iter().next().unwrap_or_default()
+    } else {
+        "mixed".into()
+    }
+}
+
+fn merge_concurrency_value<F>(bundles: &[LoadedArtifactBundle], select: F) -> usize
+where
+    F: Fn(&LoadedArtifactBundle) -> usize,
+{
+    let values = bundles.iter().map(select).collect::<BTreeSet<_>>();
+    if values.len() == 1 {
+        values.into_iter().next().unwrap_or_default()
+    } else {
+        0
+    }
+}
+
+fn warn_if_mixed<F>(bundles: &[LoadedArtifactBundle], label: &str, select: F)
+where
+    F: Fn(&LoadedArtifactBundle) -> String,
+{
+    let values = bundles.iter().map(select).collect::<BTreeSet<_>>();
+    if values.len() > 1 {
+        eprintln!(
+            "merge note: mixed {label}: {}",
+            values.into_iter().collect::<Vec<_>>().join(", ")
+        );
+    }
+}
+
+fn merge_artifacts(
+    input_paths: &[PathBuf],
+    output_path: &Path,
+    tag: Option<String>,
+) -> Result<(), String> {
+    let bundles = input_paths
+        .iter()
+        .map(|path| load_artifact_bundle(path))
+        .collect::<Result<Vec<_>, _>>()?;
+    let base = bundles
+        .first()
+        .ok_or_else(|| "`merge` requires at least two input artifacts".to_string())?;
+
+    for bundle in bundles.iter().skip(1) {
+        ensure_merge_compatible(base, bundle)?;
+    }
+
+    warn_if_mixed(&bundles, "profiles", |bundle| {
+        bundle.output.manifest.profile.clone()
+    });
+    warn_if_mixed(&bundles, "question concurrency", |bundle| {
+        bundle.output.manifest.question_concurrency.to_string()
+    });
+    warn_if_mixed(&bundles, "conversation concurrency", |bundle| {
+        bundle.output.manifest.conversation_concurrency.to_string()
+    });
+    warn_if_mixed(&bundles, "source commits", |bundle| {
+        bundle
+            .output
+            .commit
+            .clone()
+            .unwrap_or_else(|| "<none>".into())
+    });
+    warn_if_mixed(&bundles, "source dirty-tree state", |bundle| {
+        bundle
+            .output
+            .manifest
+            .dirty_worktree
+            .map(|dirty| dirty.to_string())
+            .unwrap_or_else(|| "<unknown>".into())
+    });
+
+    let mut merged_results = Vec::new();
+    let mut merged_debug = Vec::new();
+    let mut banks = HashMap::new();
+    let mut turn_refs = HashMap::new();
+    let mut conversation_stage_metrics = HashMap::new();
+    let mut conversation_timings = HashMap::new();
+    let mut conversation_bank_stats = HashMap::new();
+    let metrics = MetricsCollector::new();
+    let mut total_time_s = 0.0;
+    let mut seen_conversations = BTreeSet::new();
+    let mut seen_question_ids = BTreeSet::new();
+    let mut seen_debug_ids = BTreeSet::new();
+
+    for bundle in &bundles {
+        let scope_ids = artifact_scope_ids(bundle);
+        let overlaps = scope_ids
+            .iter()
+            .filter(|sample_id| seen_conversations.contains(*sample_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !overlaps.is_empty() {
+            return Err(format!(
+                "cannot merge {}: overlapping conversations: {}",
+                bundle.path.display(),
+                overlaps.join(", ")
+            ));
+        }
+        seen_conversations.extend(scope_ids);
+
+        metrics.extend_snapshot(&bundle.output.stage_metrics);
+        total_time_s += bundle.output.total_time_s;
+
+        for (sample_id, bank_id) in &bundle.output.banks {
+            if banks.insert(sample_id.clone(), bank_id.clone()).is_some() {
+                return Err(format!(
+                    "cannot merge {}: duplicate bank for conversation {}",
+                    bundle.path.display(),
+                    sample_id
+                ));
+            }
+        }
+        for (turn_id, turn_ref) in &bundle.output.turn_refs {
+            if let Some(existing) = turn_refs.insert(turn_id.clone(), turn_ref.clone())
+                && existing != *turn_ref
+            {
+                return Err(format!(
+                    "cannot merge {}: conflicting turn ref for {}",
+                    bundle.path.display(),
+                    turn_id
+                ));
+            }
+        }
+        for (sample_id, summary) in &bundle.output.per_conversation {
+            conversation_stage_metrics.insert(sample_id.clone(), summary.stage_metrics.clone());
+            conversation_timings.insert(
+                sample_id.clone(),
+                ConversationPhaseTimings {
+                    ingest_time_s: summary.ingest_time_s,
+                    consolidation_time_s: summary.consolidation_time_s,
+                    qa_time_s: summary.qa_time_s,
+                    total_time_s: summary.total_time_s,
+                },
+            );
+            conversation_bank_stats.insert(sample_id.clone(), summary.bank_stats.clone());
+        }
+        for result in &bundle.questions {
+            if !seen_question_ids.insert(result.question_id.clone()) {
+                return Err(format!(
+                    "cannot merge {}: duplicate question id {}",
+                    bundle.path.display(),
+                    result.question_id
+                ));
+            }
+            merged_results.push(result.clone());
+        }
+        for record in &bundle.debug_records {
+            if !seen_debug_ids.insert(record.question_id.clone()) {
+                return Err(format!(
+                    "cannot merge {}: duplicate debug record for question {}",
+                    bundle.path.display(),
+                    record.question_id
+                ));
+            }
+            merged_debug.push(record.clone());
+        }
+    }
+
+    merged_results.sort_by(|a, b| {
+        a.sample_id
+            .cmp(&b.sample_id)
+            .then(a.category_name.cmp(&b.category_name))
+            .then(a.question_id.cmp(&b.question_id))
+            .then(a.question.cmp(&b.question))
+    });
+    merged_debug.sort_by(|a, b| {
+        a.sample_id
+            .cmp(&b.sample_id)
+            .then(a.question_id.cmp(&b.question_id))
+            .then(a.question.cmp(&b.question))
+    });
+
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
+    }
+    let questions_path = sidecar_path(output_path, "questions");
+    let debug_path = sidecar_path(output_path, "debug");
+    write_jsonl_records(&questions_path, &merged_results)?;
+    write_jsonl_records(&debug_path, &merged_debug)?;
+
+    let mut manifest = base.output.manifest.clone();
+    manifest.mode = BenchCommand::Merge.as_str().into();
+    manifest.profile = merge_profile_value(&bundles);
+    manifest.command = env::args().collect::<Vec<_>>().join(" ");
+    manifest.selected_conversations = seen_conversations.into_iter().collect();
+    manifest.question_concurrency = merge_concurrency_value(&bundles, |bundle| {
+        bundle.output.manifest.question_concurrency
+    });
+    manifest.conversation_concurrency = merge_concurrency_value(&bundles, |bundle| {
+        bundle.output.manifest.conversation_concurrency
+    });
+    manifest.dirty_worktree = git_dirty_worktree();
+    manifest.source_artifact = None;
+    manifest.source_artifacts = bundles.iter().map(merge_source_artifact).collect();
+
+    let run_timestamp = Utc::now().to_rfc3339();
+    let commit = git_commit_sha();
+    flush_results(
+        &merged_results,
+        &banks,
+        &conversation_stage_metrics,
+        &conversation_timings,
+        &conversation_bank_stats,
+        &turn_refs,
+        output_path,
+        &questions_path,
+        &debug_path,
+        &base.output.judge_model,
+        &tag,
+        &base.output.retain_model,
+        &base.output.reflect_model,
+        &base.output.embedding_model,
+        &base.output.reranker_model,
+        &base.output.consolidation_strategy,
+        &manifest,
+        &metrics,
+        &run_timestamp,
+        commit.as_deref(),
+        total_time_s,
+    );
+
+    println!(
+        "Merged {} artifacts into {}",
+        bundles.len(),
+        output_path.display()
+    );
+    println!("Questions saved to {}", questions_path.display());
+    println!("Debug saved to {}", debug_path.display());
+    Ok(())
+}
+
 fn validate_run_config(command: BenchCommand, config: &RunConfig) -> Result<(), String> {
     if config.conversation_jobs == 0 {
         return Err("--conversation-jobs must be >= 1".into());
@@ -1317,12 +2220,16 @@ fn print_help() {
     eprintln!("  locomo-bench run [OPTIONS]");
     eprintln!("  locomo-bench ingest [OPTIONS]");
     eprintln!("  locomo-bench qa <RESULTS.json> [OPTIONS]");
+    eprintln!("  locomo-bench merge <RESULTS.json> <RESULTS.json>... [--out PATH|--tag NAME]");
     eprintln!();
     eprintln!("Subcommands:");
     eprintln!("  run                              Fresh ingest, consolidate, then score QA");
     eprintln!("  ingest                           Ingest and consolidate only; do not run QA");
     eprintln!(
         "  qa <RESULTS.json>                Score QA against existing banks; skip ingest and consolidation"
+    );
+    eprintln!(
+        "  merge <RESULTS.json>...          Combine compatible subset artifacts into one canonical result"
     );
     eprintln!();
     eprintln!("Options:");
@@ -1355,8 +2262,13 @@ fn print_help() {
 struct SharedResults {
     results: Vec<QuestionResult>,
     banks: HashMap<String, String>,
+    conversation_stage_metrics: HashMap<String, BTreeMap<LlmStage, StageUsage>>,
+    conversation_timings: HashMap<String, ConversationPhaseTimings>,
+    conversation_bank_stats: HashMap<String, ConversationBankStats>,
     turn_refs: HashMap<String, String>,
     output_path: PathBuf,
+    questions_path: PathBuf,
+    debug_path: PathBuf,
     judge_label: String,
     tag: Option<String>,
     retain_model: String,
@@ -1372,13 +2284,47 @@ struct SharedResults {
 }
 
 impl SharedResults {
-    fn push_and_flush(&mut self, result: QuestionResult) {
+    fn push_and_flush(
+        &mut self,
+        result: QuestionResult,
+        debug: QuestionDebugRecord,
+        sample_id: String,
+        stage_metrics: BTreeMap<LlmStage, StageUsage>,
+    ) {
+        append_jsonl(&self.questions_path, &result);
+        append_jsonl(&self.debug_path, &debug);
         self.results.push(result);
+        self.conversation_stage_metrics
+            .insert(sample_id, stage_metrics);
         self.flush();
     }
 
     fn record_bank(&mut self, sample_id: String, bank_id: String) {
         self.banks.insert(sample_id, bank_id);
+        self.flush();
+    }
+
+    fn record_conversation_metrics(
+        &mut self,
+        sample_id: String,
+        stage_metrics: BTreeMap<LlmStage, StageUsage>,
+    ) {
+        self.conversation_stage_metrics
+            .insert(sample_id, stage_metrics);
+        self.flush();
+    }
+
+    fn record_conversation_timings(
+        &mut self,
+        sample_id: String,
+        timings: ConversationPhaseTimings,
+    ) {
+        self.conversation_timings.insert(sample_id, timings);
+        self.flush();
+    }
+
+    fn record_conversation_bank_stats(&mut self, sample_id: String, stats: ConversationBankStats) {
+        self.conversation_bank_stats.insert(sample_id, stats);
         self.flush();
     }
 
@@ -1390,8 +2336,13 @@ impl SharedResults {
         flush_results(
             &self.results,
             &self.banks,
+            &self.conversation_stage_metrics,
+            &self.conversation_timings,
+            &self.conversation_bank_stats,
             &self.turn_refs,
             &self.output_path,
+            &self.questions_path,
+            &self.debug_path,
             &self.judge_label,
             &self.tag,
             &self.retain_model,
@@ -1403,7 +2354,7 @@ impl SharedResults {
             &self.metrics,
             &self.run_timestamp,
             self.commit.as_deref(),
-            self.bench_start,
+            self.bench_start.elapsed().as_secs_f64(),
         );
     }
 }
@@ -1417,6 +2368,9 @@ struct ConversationRunOptions {
     question_concurrency: usize,
     ingest_mode: IngestMode,
     consolidation: ConsolidationMode,
+    seed_stage_metrics: BTreeMap<LlmStage, StageUsage>,
+    seed_timings: ConversationPhaseTimings,
+    seed_bank_stats: ConversationBankStats,
     existing_bank: Option<String>,
     require_existing_bank: bool,
     ingest_only: bool,
@@ -1438,11 +2392,17 @@ async fn run_conversation(
     shared: Arc<Mutex<SharedResults>>,
 ) -> Result<(), String> {
     let conv = &entry.conversation;
+    let sample_id = entry.sample_id.clone();
     let total_sessions = session_count(conv);
+    let conversation_metrics = Arc::new(MetricsCollector::new());
+    conversation_metrics.extend_snapshot(&options.seed_stage_metrics);
+    let mut ingest_time_s = options.seed_timings.ingest_time_s;
+    let mut consolidation_time_s = options.seed_timings.consolidation_time_s;
+    let mut bank_stats = options.seed_bank_stats.clone();
 
     println!(
         "[{tag}] {} & {} ({})",
-        conv.speaker_a, conv.speaker_b, entry.sample_id
+        conv.speaker_a, conv.speaker_b, sample_id
     );
 
     let reused_bank = options.existing_bank.clone();
@@ -1453,13 +2413,13 @@ async fn run_conversation(
         if options.require_existing_bank {
             return Err(format!(
                 "[{tag}] missing bank for {} in the source artifact",
-                entry.sample_id
+                sample_id
             ));
         }
 
         let bank = MemoryBank {
             id: BankId::new(),
-            name: format!("locomo-{}", entry.sample_id),
+            name: format!("locomo-{sample_id}"),
             mission: "Long-term conversational memory benchmark".into(),
             directives: vec![],
             disposition: Disposition::default(),
@@ -1477,8 +2437,9 @@ async fn run_conversation(
             .map(|m| m.min(total_sessions))
             .unwrap_or(total_sessions);
         println!(
-            "[{tag}] Bank: {} | Ingesting {ingest_sessions}/{total_sessions} sessions...",
-            bank.id
+            "[{tag}] Bank: {} | Ingesting {ingest_sessions} session{} ({total_sessions} available)...",
+            bank.id,
+            if ingest_sessions == 1 { "" } else { "s" }
         );
 
         let ingest_start = Instant::now();
@@ -1488,6 +2449,8 @@ async fn run_conversation(
             let turns = get_session_turns(conv, idx);
             let date_str = get_session_date(conv, idx);
             let timestamp = parse_session_date(&date_str);
+            bank_stats.sessions_ingested += 1;
+            bank_stats.turns_ingested += turns.len();
 
             if options.ingest_mode.ingest_per_session() {
                 let content = if options.ingest_mode.raw_json() {
@@ -1495,9 +2458,9 @@ async fn run_conversation(
                 } else {
                     format_session(&turns, &date_str)
                 };
-                match runtime
-                    .retain
-                    .retain(&RetainInput {
+                match with_scoped_collector(
+                    conversation_metrics.clone(),
+                    runtime.retain.retain(&RetainInput {
                         bank_id: bank.id,
                         content,
                         timestamp,
@@ -1505,11 +2468,17 @@ async fn run_conversation(
                         context: None,
                         custom_instructions: None,
                         speaker: None,
-                    })
-                    .await
+                    }),
+                )
+                .await
                 {
                     Ok(resp) => {
                         stored_facts += resp.facts_stored;
+                        bank_stats.facts_stored += resp.facts_stored;
+                        bank_stats.entities_resolved += resp.entities_resolved;
+                        bank_stats.links_created += resp.links_created;
+                        bank_stats.opinions_reinforced += resp.opinions_reinforced;
+                        bank_stats.opinions_weakened += resp.opinions_weakened;
                         println!(
                             "[{tag}] ingest [{idx}/{ingest_sessions}] {} facts | elapsed: {}",
                             resp.facts_stored,
@@ -1526,11 +2495,14 @@ async fn run_conversation(
                 for (turn_idx, turn) in turns.iter().enumerate() {
                     let turn_text = format_turn(turn);
                     let turn_id = TurnId::new();
-                    let turn_ref = format!("D{idx}:{}", turn_idx + 1);
+                    let turn_ref = turn
+                        .dia_id
+                        .clone()
+                        .unwrap_or_else(|| format!("D{idx}:{}", turn_idx + 1));
 
-                    let resp = runtime
-                        .retain
-                        .retain(&RetainInput {
+                    let resp = with_scoped_collector(
+                        conversation_metrics.clone(),
+                        runtime.retain.retain(&RetainInput {
                             bank_id: bank.id,
                             content: turn_text.clone(),
                             timestamp,
@@ -1542,12 +2514,18 @@ async fn run_conversation(
                             },
                             custom_instructions: None,
                             speaker: Some(turn.speaker.clone()),
-                        })
-                        .await;
+                        }),
+                    )
+                    .await;
 
                     match resp {
                         Ok(retain_resp) => {
                             stored_facts += retain_resp.facts_stored;
+                            bank_stats.facts_stored += retain_resp.facts_stored;
+                            bank_stats.entities_resolved += retain_resp.entities_resolved;
+                            bank_stats.links_created += retain_resp.links_created;
+                            bank_stats.opinions_reinforced += retain_resp.opinions_reinforced;
+                            bank_stats.opinions_weakened += retain_resp.opinions_weakened;
                             shared.lock().await.record_turn_ref(turn_id, turn_ref);
                             prior_turns.push(turn_text);
                         }
@@ -1567,8 +2545,16 @@ async fn run_conversation(
             }
 
             if options.consolidation.per_session() {
-                match runtime.consolidator.consolidate(bank.id).await {
+                let t0 = Instant::now();
+                match with_scoped_collector(
+                    conversation_metrics.clone(),
+                    runtime.consolidator.consolidate(bank.id),
+                )
+                .await
+                {
                     Ok(cr) => {
+                        bank_stats.observations_created += cr.observations_created;
+                        bank_stats.observations_updated += cr.observations_updated;
                         println!(
                             "[{tag}]   consolidate: {} created, {} updated",
                             cr.observations_created, cr.observations_updated,
@@ -1578,6 +2564,7 @@ async fn run_conversation(
                         eprintln!("[{tag}]   consolidate failed: {e}");
                     }
                 }
+                consolidation_time_s += t0.elapsed().as_secs_f64();
             }
         }
 
@@ -1585,6 +2572,7 @@ async fn run_conversation(
             "[{tag}] Ingestion complete: {stored_facts} facts in {}",
             fmt_elapsed(ingest_start.elapsed().as_secs_f64())
         );
+        ingest_time_s = ingest_start.elapsed().as_secs_f64();
 
         bank.id
     };
@@ -1592,7 +2580,7 @@ async fn run_conversation(
     shared
         .lock()
         .await
-        .record_bank(entry.sample_id.clone(), bank_id.to_string());
+        .record_bank(sample_id.clone(), bank_id.to_string());
 
     if options.consolidation.enabled()
         && !options.consolidation.per_session()
@@ -1600,9 +2588,16 @@ async fn run_conversation(
     {
         println!("[{tag}] Consolidating...");
         let t0 = Instant::now();
-        match runtime.consolidator.consolidate(bank_id).await {
+        match with_scoped_collector(
+            conversation_metrics.clone(),
+            runtime.consolidator.consolidate(bank_id),
+        )
+        .await
+        {
             Ok(resp) => {
                 let elapsed = t0.elapsed().as_secs_f64();
+                bank_stats.observations_created += resp.observations_created;
+                bank_stats.observations_updated += resp.observations_updated;
                 println!(
                     "[{tag}] Consolidation done in {}: {} observations created, {} updated",
                     fmt_elapsed(elapsed),
@@ -1614,9 +2609,29 @@ async fn run_conversation(
                 eprintln!("[{tag}] consolidate FAILED: {e}");
             }
         }
+        consolidation_time_s += t0.elapsed().as_secs_f64();
     }
 
+    shared
+        .lock()
+        .await
+        .record_conversation_metrics(sample_id.clone(), conversation_metrics.snapshot());
+    finalize_bank_stats(&runtime.store, bank_id, &mut bank_stats).await?;
+    shared
+        .lock()
+        .await
+        .record_conversation_bank_stats(sample_id.clone(), bank_stats.clone());
+
     if options.ingest_only {
+        shared.lock().await.record_conversation_timings(
+            sample_id,
+            ConversationPhaseTimings {
+                ingest_time_s,
+                consolidation_time_s,
+                qa_time_s: 0.0,
+                total_time_s: ingest_time_s + consolidation_time_s,
+            },
+        );
         return Ok(());
     }
 
@@ -1649,7 +2664,7 @@ async fn run_conversation(
         let judge = judge.clone();
         let shared = shared.clone();
         let tag = tag.clone();
-        let sample_id = entry.sample_id.clone();
+        let sample_id = sample_id.clone();
         let question = qa.question.clone();
         let gold = answer_to_string(
             qa.answer
@@ -1664,61 +2679,148 @@ async fn run_conversation(
         let evidence_refs = qa.evidence.clone();
         let turn_refs = turn_refs.clone();
         let bank_id = bank_id;
+        let conversation_metrics = conversation_metrics.clone();
+        let question_metrics = Arc::new(MetricsCollector::new());
 
         qa_handles.push(tokio::spawn(async move {
             let _permit = sem.acquire().await.expect("semaphore closed");
             let cat_name = category_name(category);
+            let question_started = Instant::now();
 
-            let t0 = Instant::now();
-            let reflect_result = runtime
-                .reflect
-                .reflect(&ReflectQuery {
-                    bank_id,
-                    question: question.clone(),
-                    budget_tokens: 4096,
-                })
-                .await;
-            let elapsed = t0.elapsed().as_secs_f64();
-
-            let (hypothesis, confidence, retrieved_context, status, error) = match reflect_result {
-                Ok(resp) => {
-                    let retrieved_context = resp
-                        .retrieved_context
-                        .into_iter()
-                        .map(|fact| RetrievedFactEntry {
-                            id: fact.id.to_string(),
-                            content: fact.content,
-                            score: fact.score,
-                            network: network_name(fact.network).to_string(),
-                            source_turn_id: fact.source_turn_id.map(|id| id.to_string()),
-                            source_turn_ref: fact
-                                .source_turn_id
-                                .and_then(|id| turn_refs.get(&id.to_string()).cloned()),
+            let question_metrics_for_scope = question_metrics.clone();
+            let conversation_metrics_for_scope = conversation_metrics.clone();
+            let (
+                hypothesis,
+                _reflect_confidence,
+                retrieved_context,
+                final_source_ids,
+                reflect_trace,
+                status,
+                error,
+                _reflect_elapsed,
+            ) = with_scoped_collector(
+                conversation_metrics_for_scope,
+                with_scoped_collector(question_metrics_for_scope, async {
+                    let t0 = Instant::now();
+                    let reflect_result = runtime
+                        .reflect
+                        .reflect(&ReflectQuery {
+                            bank_id,
+                            question: question.clone(),
+                            budget_tokens: REFLECT_BUDGET_TOKENS,
                         })
-                        .collect::<Vec<_>>();
-                    (
-                        resp.response,
-                        resp.confidence,
-                        retrieved_context,
-                        "ok".to_string(),
-                        None,
-                    )
-                }
-                Err(e) => (
-                    String::new(),
-                    0.0,
-                    Vec::new(),
-                    "reflect_error".to_string(),
-                    Some(e.to_string()),
-                ),
-            };
+                        .await;
+                    let elapsed = t0.elapsed().as_secs_f64();
+
+                    match reflect_result {
+                        Ok(resp) => {
+                            let retrieved_context = resp
+                                .retrieved_context
+                                .into_iter()
+                                .map(|fact| {
+                                    let source_turn_id =
+                                        fact.source_turn_id.map(|id| id.to_string());
+                                    let source_turn_ref = source_turn_id
+                                        .as_ref()
+                                        .and_then(|id| turn_refs.get(id).cloned());
+                                    let support_turn_ids = fact
+                                        .support_turn_ids
+                                        .iter()
+                                        .map(ToString::to_string)
+                                        .collect::<Vec<_>>();
+                                    let support_turn_refs = support_turn_ids
+                                        .iter()
+                                        .filter_map(|id| turn_refs.get(id).cloned())
+                                        .collect::<Vec<_>>();
+                                    RetrievedFactEntry {
+                                        id: fact.id.to_string(),
+                                        content: fact.content,
+                                        score: fact.score,
+                                        network: network_name(fact.network).to_string(),
+                                        source_turn_id,
+                                        source_turn_ref,
+                                        evidence_ids: fact
+                                            .evidence_ids
+                                            .into_iter()
+                                            .map(|id| id.to_string())
+                                            .collect(),
+                                        retrieval_sources: fact
+                                            .retrieval_sources
+                                            .into_iter()
+                                            .map(|source| retrieval_source_name(source).to_string())
+                                            .collect(),
+                                        support_turn_ids,
+                                        support_turn_refs,
+                                    }
+                                })
+                                .collect::<Vec<_>>();
+                            let final_source_ids = resp
+                                .sources
+                                .into_iter()
+                                .map(|id| id.to_string())
+                                .collect::<Vec<_>>();
+                            let reflect_trace = resp
+                                .trace
+                                .into_iter()
+                                .map(|step| ReflectTraceEntry {
+                                    iteration: step.iteration,
+                                    tool_name: step.tool_name,
+                                    query: step.query,
+                                    returned_fact_ids: step
+                                        .returned_fact_ids
+                                        .into_iter()
+                                        .map(|id| id.to_string())
+                                        .collect(),
+                                    new_fact_ids: step
+                                        .new_fact_ids
+                                        .into_iter()
+                                        .map(|id| id.to_string())
+                                        .collect(),
+                                    facts_returned: step.facts_returned,
+                                    total_tokens: step.total_tokens,
+                                    latency_ms: step.latency_ms,
+                                })
+                                .collect::<Vec<_>>();
+                            (
+                                resp.response,
+                                resp.confidence,
+                                retrieved_context,
+                                final_source_ids,
+                                reflect_trace,
+                                "ok".to_string(),
+                                None,
+                                elapsed,
+                            )
+                        }
+                        Err(e) => (
+                            String::new(),
+                            0.0,
+                            Vec::new(),
+                            Vec::new(),
+                            Vec::new(),
+                            "reflect_error".to_string(),
+                            Some(e.to_string()),
+                            elapsed,
+                        ),
+                    }
+                }),
+            )
+            .await;
 
             let f1 = token_f1(&hypothesis, &gold);
             let retrieved_turn_refs = retrieved_context
                 .iter()
-                .filter_map(|fact| fact.source_turn_ref.clone())
+                .flat_map(|fact| {
+                    fact.source_turn_ref
+                        .iter()
+                        .cloned()
+                        .chain(fact.support_turn_refs.iter().cloned())
+                })
+                .collect::<BTreeSet<_>>()
+                .into_iter()
                 .collect::<Vec<_>>();
-            let (evidence_hit, evidence_recall) = evidence_recall(&evidence_refs, &retrieved_turn_refs);
+            let (evidence_hit, evidence_recall) =
+                evidence_recall(&evidence_refs, &retrieved_turn_refs);
 
             let (judge_correct, judge_reasoning, status, error) = if hypothesis.is_empty() {
                 (
@@ -1728,7 +2830,15 @@ async fn run_conversation(
                     error,
                 )
             } else {
-                match llm_judge(judge.as_ref(), &question, &gold, &hypothesis).await {
+                match with_scoped_collector(
+                    conversation_metrics.clone(),
+                    with_scoped_collector(
+                        question_metrics.clone(),
+                        llm_judge(judge.as_ref(), &question, &gold, &hypothesis),
+                    ),
+                )
+                .await
+                {
                     Ok((correct, reasoning)) => (correct, reasoning, status, error),
                     Err(judge_error) => (
                         false,
@@ -1738,6 +2848,7 @@ async fn run_conversation(
                     ),
                 }
             };
+            let elapsed = question_started.elapsed().as_secs_f64();
 
             local_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if judge_correct {
@@ -1747,7 +2858,7 @@ async fn run_conversation(
 
             let result = QuestionResult {
                 question_id: question_id_for(&sample_id, &question),
-                sample_id,
+                sample_id: sample_id.clone(),
                 question,
                 ground_truth: gold,
                 hypothesis,
@@ -1755,18 +2866,30 @@ async fn run_conversation(
                 f1,
                 judge_correct,
                 judge_reasoning,
-                confidence,
                 elapsed_s: elapsed,
                 status,
                 error,
+                final_source_ids,
                 evidence_refs,
                 retrieved_turn_refs,
                 evidence_hit,
                 evidence_recall,
+                qa_stage_metrics: question_metrics.snapshot(),
+            };
+            let debug = QuestionDebugRecord {
+                question_id: result.question_id.clone(),
+                sample_id: result.sample_id.clone(),
+                question: result.question.clone(),
+                reflect_trace,
                 retrieved_context,
             };
 
-            shared.lock().await.push_and_flush(result);
+            shared.lock().await.push_and_flush(
+                result,
+                debug,
+                sample_id.clone(),
+                conversation_metrics.snapshot(),
+            );
 
             let total = local_total.load(std::sync::atomic::Ordering::Relaxed);
             let correct = local_correct.load(std::sync::atomic::Ordering::Relaxed);
@@ -1801,6 +2924,26 @@ async fn run_conversation(
             eprintln!("[{tag}] question task failed: {e}");
         }
     }
+
+    let qa_time_s = qa_start.elapsed().as_secs_f64();
+
+    shared
+        .lock()
+        .await
+        .record_conversation_metrics(sample_id.clone(), conversation_metrics.snapshot());
+    shared
+        .lock()
+        .await
+        .record_conversation_bank_stats(sample_id.clone(), bank_stats);
+    shared.lock().await.record_conversation_timings(
+        sample_id,
+        ConversationPhaseTimings {
+            ingest_time_s,
+            consolidation_time_s,
+            qa_time_s,
+            total_time_s: ingest_time_s + consolidation_time_s + qa_time_s,
+        },
+    );
 
     Ok(())
 }
@@ -1842,11 +2985,14 @@ async fn main() {
     let invocation = parse_args();
     let command = invocation.command;
     let artifact_path = invocation.artifact_path.clone();
+    let merge_inputs = invocation.merge_artifacts.clone();
     let config = invocation.config;
     let output_path = if let Some(ref p) = config.output {
         p.clone()
     } else if let Some(ref tag) = config.tag {
         PathBuf::from(format!("bench/locomo/results/{tag}.json"))
+    } else if matches!(command, BenchCommand::Merge) {
+        PathBuf::from("bench/locomo/results/merged.json")
     } else if let Some(ref artifact) = artifact_path {
         artifact.clone()
     } else {
@@ -1857,7 +3003,19 @@ async fn main() {
         ))
     };
 
+    if matches!(command, BenchCommand::Merge) {
+        if let Err(err) = merge_artifacts(&merge_inputs, &output_path, config.tag.clone()) {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     let artifact_state = artifact_path.as_ref().map(|path| {
+        let artifact_bytes = fs::read(path).unwrap_or_else(|e| {
+            eprintln!("failed to read {}: {e}", path.display());
+            std::process::exit(1);
+        });
         let prev = load_benchmark_output(path).unwrap_or_else(|e| {
             eprintln!("{e}");
             std::process::exit(1);
@@ -1868,12 +3026,67 @@ async fn main() {
             prev.banks.len(),
             prev.turn_refs.len()
         );
-        prev
+        let source_artifact = SourceArtifact {
+            path: path.display().to_string(),
+            fingerprint: format!("{:016x}", fnv1a64(&artifact_bytes)),
+            mode: prev.manifest.mode.clone(),
+            tag: prev.tag.clone(),
+            commit: prev.commit.clone(),
+        };
+        (prev, source_artifact)
     });
-    let (existing_banks, existing_turn_refs) = if let Some(prev) = artifact_state.as_ref() {
-        (prev.banks.clone(), prev.turn_refs.clone())
+    let (
+        existing_banks,
+        existing_turn_refs,
+        existing_stage_metrics,
+        existing_conversation_metrics,
+        existing_conversation_timings,
+        existing_conversation_bank_stats,
+        source_artifact,
+    ) = if let Some((prev, source_artifact)) = artifact_state.as_ref() {
+        (
+            prev.banks.clone(),
+            prev.turn_refs.clone(),
+            seeded_stage_metrics(command, &prev.stage_metrics),
+            prev.per_conversation
+                .iter()
+                .map(|(sample_id, summary)| {
+                    (
+                        sample_id.clone(),
+                        seeded_stage_metrics(command, &summary.stage_metrics),
+                    )
+                })
+                .collect(),
+            prev.per_conversation
+                .iter()
+                .map(|(sample_id, summary)| {
+                    (
+                        sample_id.clone(),
+                        ConversationPhaseTimings {
+                            ingest_time_s: summary.ingest_time_s,
+                            consolidation_time_s: summary.consolidation_time_s,
+                            qa_time_s: 0.0,
+                            total_time_s: summary.ingest_time_s + summary.consolidation_time_s,
+                        },
+                    )
+                })
+                .collect(),
+            prev.per_conversation
+                .iter()
+                .map(|(sample_id, summary)| (sample_id.clone(), summary.bank_stats.clone()))
+                .collect(),
+            Some(source_artifact.clone()),
+        )
     } else {
-        (HashMap::new(), HashMap::new())
+        (
+            HashMap::new(),
+            HashMap::new(),
+            BTreeMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+        )
     };
 
     if !config.dataset.exists() {
@@ -1922,6 +3135,7 @@ async fn main() {
     }
 
     let metrics = Arc::new(MetricsCollector::new());
+    metrics.extend_snapshot(&existing_stage_metrics);
     let runtime = Arc::new(
         build_runtime_from_env(BuildRuntimeOptions {
             metrics: Some(metrics.clone()),
@@ -1953,6 +3167,10 @@ async fn main() {
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent).ok();
     }
+    let questions_path = sidecar_path(&output_path, "questions");
+    let debug_path = sidecar_path(&output_path, "debug");
+    let _ = fs::write(&questions_path, "");
+    let _ = fs::write(&debug_path, "");
 
     let consolidation_strategy = config.consolidation.as_str();
 
@@ -1979,13 +3197,22 @@ async fn main() {
         question_limit: config.question_limit,
         raw_json: config.ingest.raw_json(),
         dirty_worktree: git_dirty_worktree(),
+        prompt_hashes: benchmark_prompt_hashes(&runtime),
+        runtime_config: benchmark_runtime_config(&runtime),
+        source_artifact,
+        source_artifacts: Vec::new(),
     };
 
     let shared = Arc::new(Mutex::new(SharedResults {
         results: Vec::new(),
         banks: existing_banks.clone(),
+        conversation_stage_metrics: existing_conversation_metrics.clone(),
+        conversation_timings: existing_conversation_timings.clone(),
+        conversation_bank_stats: existing_conversation_bank_stats.clone(),
         turn_refs: existing_turn_refs,
         output_path: output_path.clone(),
+        questions_path: questions_path.clone(),
+        debug_path: debug_path.clone(),
         judge_label: judge_label.clone(),
         tag: config.tag.clone(),
         retain_model: runtime.info.retain_model.clone(),
@@ -2013,6 +3240,18 @@ async fn main() {
             question_concurrency: config.question_jobs,
             ingest_mode: config.ingest,
             consolidation: config.consolidation,
+            seed_stage_metrics: existing_conversation_metrics
+                .get(&entry.sample_id)
+                .cloned()
+                .unwrap_or_default(),
+            seed_timings: existing_conversation_timings
+                .get(&entry.sample_id)
+                .cloned()
+                .unwrap_or_default(),
+            seed_bank_stats: existing_conversation_bank_stats
+                .get(&entry.sample_id)
+                .cloned()
+                .unwrap_or_default(),
             existing_bank: existing_banks.get(&entry.sample_id).cloned(),
             require_existing_bank: matches!(command, BenchCommand::Qa),
             ingest_only: matches!(command, BenchCommand::Ingest),
@@ -2064,7 +3303,32 @@ async fn main() {
     } else {
         0.0
     };
+    let evidence_precision_values = shared_snapshot
+        .results
+        .iter()
+        .filter_map(|result| evidence_precision(&result.evidence_refs, &result.retrieved_turn_refs))
+        .collect::<Vec<_>>();
+    let mean_evidence_precision = if evidence_precision_values.is_empty() {
+        0.0
+    } else {
+        evidence_precision_values.iter().sum::<f64>() / evidence_precision_values.len() as f64
+    };
     let total_stage_usage = metrics.total_usage();
+    let total_ingest_time_s = shared_snapshot
+        .conversation_timings
+        .values()
+        .map(|timings| timings.ingest_time_s)
+        .sum::<f64>();
+    let total_consolidation_time_s = shared_snapshot
+        .conversation_timings
+        .values()
+        .map(|timings| timings.consolidation_time_s)
+        .sum::<f64>();
+    let total_qa_time_s = shared_snapshot
+        .conversation_timings
+        .values()
+        .map(|timings| timings.qa_time_s)
+        .sum::<f64>();
 
     println!();
     println!("{}", "=".repeat(60));
@@ -2085,6 +3349,15 @@ async fn main() {
     );
     println!("Token F1 (reference): {mean_f1:.4}");
     println!("Evidence recall: {mean_evidence_recall:.4}");
+    if !evidence_precision_values.is_empty() {
+        println!("Evidence precision: {mean_evidence_precision:.4}");
+    }
+    println!(
+        "Phase times: ingest {} | consolidate {} | qa {}",
+        fmt_elapsed(total_ingest_time_s),
+        fmt_elapsed(total_consolidation_time_s),
+        fmt_elapsed(total_qa_time_s),
+    );
     println!(
         "Stage usage: {} prompt + {} completion = {} total tokens across {} calls",
         total_stage_usage.prompt_tokens,
@@ -2092,16 +3365,197 @@ async fn main() {
         total_stage_usage.total_tokens(),
         total_stage_usage.calls,
     );
+    if total_correct > 0 {
+        println!(
+            "Tokens per correct: {:.1}",
+            total_stage_usage.total_tokens() as f64 / total_correct as f64
+        );
+    }
 
     shared_snapshot.flush();
     println!();
-    println!("Results saved to {}", output_path.display());
+    println!("Summary saved to {}", output_path.display());
+    println!("Questions saved to {}", questions_path.display());
+    println!("Debug saved to {}", debug_path.display());
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn test_question_result(
+        sample_id: &str,
+        question_id: &str,
+        category_name: &str,
+        judge_correct: bool,
+    ) -> QuestionResult {
+        QuestionResult {
+            question_id: question_id.into(),
+            sample_id: sample_id.into(),
+            question: format!("Question for {sample_id}"),
+            ground_truth: "gold".into(),
+            hypothesis: "hypothesis".into(),
+            category_name: category_name.into(),
+            f1: if judge_correct { 1.0 } else { 0.0 },
+            judge_correct,
+            judge_reasoning: "reason".into(),
+            elapsed_s: 1.5,
+            status: "ok".into(),
+            error: None,
+            final_source_ids: vec!["fact-1".into()],
+            evidence_refs: vec!["D1:1".into()],
+            retrieved_turn_refs: if judge_correct {
+                vec!["D1:1".into()]
+            } else {
+                vec!["D9:9".into()]
+            },
+            evidence_hit: judge_correct,
+            evidence_recall: if judge_correct { 1.0 } else { 0.0 },
+            qa_stage_metrics: BTreeMap::from([(
+                LlmStage::Reflect,
+                StageUsage {
+                    prompt_tokens: 10,
+                    completion_tokens: 5,
+                    calls: 1,
+                    errors: 0,
+                    latency_ms: 100,
+                },
+            )]),
+        }
+    }
+
+    fn write_test_artifact(
+        dir: &Path,
+        stem: &str,
+        sample_id: &str,
+        question_id: &str,
+        judge_correct: bool,
+    ) -> PathBuf {
+        let output_path = dir.join(format!("{stem}.json"));
+        let questions_path = sidecar_path(&output_path, "questions");
+        let debug_path = sidecar_path(&output_path, "debug");
+        let question = test_question_result(sample_id, question_id, "single-hop", judge_correct);
+        let debug = QuestionDebugRecord {
+            question_id: question.question_id.clone(),
+            sample_id: question.sample_id.clone(),
+            question: question.question.clone(),
+            reflect_trace: Vec::new(),
+            retrieved_context: Vec::new(),
+        };
+        write_jsonl_records(&questions_path, std::slice::from_ref(&question))
+            .expect("write question sidecar");
+        write_jsonl_records(&debug_path, std::slice::from_ref(&debug))
+            .expect("write debug sidecar");
+
+        let mut per_category = HashMap::new();
+        per_category.insert(
+            "single-hop".into(),
+            CategoryResult {
+                accuracy: if judge_correct { 1.0 } else { 0.0 },
+                mean_f1: if judge_correct { 1.0 } else { 0.0 },
+                mean_evidence_recall: if judge_correct { 1.0 } else { 0.0 },
+                count: 1,
+            },
+        );
+
+        let stage_usage = StageUsage {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            calls: 1,
+            errors: 0,
+            latency_ms: 100,
+        };
+
+        let output = BenchmarkOutput {
+            benchmark: "locomo".into(),
+            timestamp: "2026-03-10T00:00:00Z".into(),
+            commit: Some("deadbeefcafe".into()),
+            tag: Some(stem.into()),
+            judge_model: "anthropic/test-judge".into(),
+            retain_model: "anthropic/test-main".into(),
+            reflect_model: "anthropic/test-main".into(),
+            embedding_model: "local/test-embedding".into(),
+            reranker_model: "local/test-reranker".into(),
+            consolidation_strategy: "end".into(),
+            total_questions: 1,
+            accuracy: if judge_correct { 1.0 } else { 0.0 },
+            mean_f1: if judge_correct { 1.0 } else { 0.0 },
+            mean_evidence_recall: if judge_correct { 1.0 } else { 0.0 },
+            per_category,
+            per_conversation: HashMap::from([(
+                sample_id.into(),
+                ConversationSummary {
+                    bank_id: format!("bank-{sample_id}"),
+                    accuracy: if judge_correct { 1.0 } else { 0.0 },
+                    mean_f1: if judge_correct { 1.0 } else { 0.0 },
+                    mean_evidence_recall: if judge_correct { 1.0 } else { 0.0 },
+                    count: 1,
+                    ingest_time_s: 2.0,
+                    consolidation_time_s: 1.0,
+                    qa_time_s: 3.0,
+                    total_time_s: 6.0,
+                    stage_metrics: BTreeMap::from([(LlmStage::Reflect, stage_usage.clone())]),
+                    bank_stats: ConversationBankStats {
+                        sessions_ingested: 1,
+                        turns_ingested: 2,
+                        facts_stored: 3,
+                        entities_resolved: 1,
+                        links_created: 0,
+                        opinions_reinforced: 0,
+                        opinions_weakened: 0,
+                        observations_created: 1,
+                        observations_updated: 0,
+                        final_fact_count: 4,
+                        final_observation_count: 1,
+                        final_opinion_count: 0,
+                        final_entity_count: 1,
+                    },
+                },
+            )]),
+            banks: HashMap::from([(sample_id.into(), format!("bank-{sample_id}"))]),
+            turn_refs: HashMap::from([(format!("{sample_id}-turn-1"), "D1:1".into())]),
+            manifest: BenchmarkManifest {
+                protocol_version: "2026-03-10-config-v1".into(),
+                profile: "full".into(),
+                mode: "run".into(),
+                config_path: None,
+                dataset_path: "data/locomo10.json".into(),
+                dataset_fingerprint: "dataset123".into(),
+                command: format!("locomo-bench run --conversation {sample_id}"),
+                category_filter: vec![1, 2, 3, 4],
+                selected_conversations: vec![sample_id.into()],
+                image_policy: "blip_caption_inline".into(),
+                ingestion_granularity: "turn".into(),
+                question_concurrency: 1,
+                conversation_concurrency: 1,
+                consolidation_strategy: "end".into(),
+                session_limit: None,
+                question_limit: None,
+                raw_json: false,
+                dirty_worktree: Some(false),
+                prompt_hashes: BenchmarkPromptHashes::default(),
+                runtime_config: BenchmarkRuntimeConfig::default(),
+                source_artifact: None,
+                source_artifacts: Vec::new(),
+            },
+            artifacts: BenchmarkArtifacts {
+                questions_path: relative_artifact_path(&output_path, &questions_path),
+                debug_path: relative_artifact_path(&output_path, &debug_path),
+            },
+            stage_metrics: BTreeMap::from([(LlmStage::Reflect, stage_usage.clone())]),
+            total_stage_usage: stage_usage,
+            results: Vec::new(),
+            total_time_s: 6.0,
+        };
+
+        fs::write(
+            &output_path,
+            serde_json::to_string_pretty(&output).expect("serialize output"),
+        )
+        .expect("write summary");
+        output_path
+    }
 
     #[test]
     fn excludes_category_five_even_when_answer_is_present() {
@@ -2135,6 +3589,34 @@ mod tests {
     }
 
     #[test]
+    fn reads_plain_session_keys_from_locomo_variant() {
+        let conversation = Conversation {
+            speaker_a: "Caroline".into(),
+            speaker_b: "Melanie".into(),
+            sessions: HashMap::from([(
+                "session_1".into(),
+                json!([
+                    {
+                        "speaker": "Caroline",
+                        "dia_id": "D1:1",
+                        "text": "Hey Mel!"
+                    },
+                    {
+                        "speaker": "Melanie",
+                        "dia_id": "D1:2",
+                        "text": "Hey Caroline!"
+                    }
+                ]),
+            )]),
+        };
+
+        let turns = get_session_turns(&conversation, 1);
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].dia_id.as_deref(), Some("D1:1"));
+        assert_eq!(turns[1].dia_id.as_deref(), Some("D1:2"));
+    }
+
+    #[test]
     fn smoke_profile_loads_expected_defaults() {
         let raw = vec![
             "locomo-bench".to_string(),
@@ -2158,6 +3640,25 @@ mod tests {
         let raw = vec!["locomo-bench".to_string(), "resume".to_string()];
         let err = parse_args_from(&raw).unwrap_err();
         assert!(err.contains("unknown subcommand"));
+    }
+
+    #[test]
+    fn merge_loads_input_artifacts_and_output_override() {
+        let raw = vec![
+            "locomo-bench".to_string(),
+            "merge".to_string(),
+            "a.json".to_string(),
+            "b.json".to_string(),
+            "--out".to_string(),
+            "merged.json".to_string(),
+        ];
+        let invocation = parse_args_from(&raw).unwrap().unwrap();
+        assert_eq!(invocation.command, BenchCommand::Merge);
+        assert_eq!(
+            invocation.merge_artifacts,
+            vec![PathBuf::from("a.json"), PathBuf::from("b.json")]
+        );
+        assert_eq!(invocation.config.output, Some(PathBuf::from("merged.json")));
     }
 
     #[test]
@@ -2328,5 +3829,76 @@ mod tests {
         ];
         let err = parse_args_from(&raw).unwrap_err();
         assert!(err.contains("Unknown argument"));
+    }
+
+    #[test]
+    fn merge_combines_disjoint_subset_artifacts() {
+        let test_dir = env::temp_dir().join(format!("locomo-merge-test-{}", std::process::id()));
+        fs::create_dir_all(&test_dir).expect("create merge test dir");
+
+        let left = write_test_artifact(&test_dir, "left", "conv-01", "q-left", true);
+        let right = write_test_artifact(&test_dir, "right", "conv-02", "q-right", false);
+        let merged = test_dir.join("merged.json");
+
+        merge_artifacts(
+            &[left.clone(), right.clone()],
+            &merged,
+            Some("merged".into()),
+        )
+        .expect("merge succeeds");
+
+        let merged_bundle = load_artifact_bundle(&merged).expect("load merged artifact");
+        assert_eq!(merged_bundle.output.manifest.mode, "merge");
+        assert_eq!(merged_bundle.output.tag.as_deref(), Some("merged"));
+        assert_eq!(merged_bundle.output.total_questions, 2);
+        assert_eq!(merged_bundle.questions.len(), 2);
+        assert_eq!(merged_bundle.debug_records.len(), 2);
+        assert_eq!(merged_bundle.output.per_conversation.len(), 2);
+        assert_eq!(merged_bundle.output.banks.len(), 2);
+        assert_eq!(merged_bundle.output.manifest.source_artifacts.len(), 2);
+        assert!((merged_bundle.output.accuracy - 0.5).abs() < f64::EPSILON);
+        assert_eq!(merged_bundle.output.total_stage_usage.total_tokens(), 30);
+
+        fs::remove_dir_all(&test_dir).ok();
+    }
+
+    #[test]
+    fn merge_allows_provenance_field_differences() {
+        let test_dir = env::temp_dir().join(format!(
+            "locomo-merge-provenance-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&test_dir).expect("create merge provenance test dir");
+
+        let left = write_test_artifact(&test_dir, "left-prov", "conv-01", "q-left", true);
+        let right = write_test_artifact(&test_dir, "right-prov", "conv-02", "q-right", true);
+
+        let mut right_output = load_benchmark_output(&right).expect("load right artifact");
+        right_output.commit = Some("feedfacebeef".into());
+        right_output.manifest.profile = "smoke".into();
+        right_output.manifest.question_concurrency = 4;
+        right_output.manifest.conversation_concurrency = 2;
+        right_output.manifest.dirty_worktree = Some(true);
+        fs::write(
+            &right,
+            serde_json::to_string_pretty(&right_output).expect("serialize right artifact"),
+        )
+        .expect("rewrite right artifact");
+
+        let merged = test_dir.join("merged-prov.json");
+        merge_artifacts(
+            &[left.clone(), right.clone()],
+            &merged,
+            Some("merged-prov".into()),
+        )
+        .expect("merge succeeds with provenance differences");
+
+        let merged_output = load_benchmark_output(&merged).expect("load merged artifact");
+        assert_eq!(merged_output.manifest.profile, "mixed");
+        assert_eq!(merged_output.manifest.question_concurrency, 0);
+        assert_eq!(merged_output.manifest.conversation_concurrency, 0);
+        assert_eq!(merged_output.total_questions, 2);
+
+        fs::remove_dir_all(&test_dir).ok();
     }
 }

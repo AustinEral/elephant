@@ -46,9 +46,9 @@ The benchmark now runs Elephant in process against the shared runtime builder. T
 
 ## Still missing
 
-- Prompt/version hashes in the run manifest
 - Human-audited judge calibration sample
 - Cost normalization helpers for external reporting
+- Public-facing rendering of prompt hashes/runtime tuning/bank stats in the result card/viewer
 
 ## Recommendation
 

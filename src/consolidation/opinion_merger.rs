@@ -52,7 +52,12 @@ struct MergeResponse {
     superseded_index: Option<usize>,
 }
 
-const MERGE_PROMPT: &str = include_str!("../../prompts/merge_opinions.txt");
+/// Opinion merge prompt template.
+pub const MERGE_PROMPT: &str = include_str!("../../prompts/merge_opinions.txt");
+/// Opinion merge temperature.
+pub const MERGE_TEMPERATURE: f32 = 0.3;
+/// Opinion merge output cap.
+pub const MERGE_MAX_TOKENS: usize = 1024;
 
 #[async_trait]
 impl OpinionMerger for DefaultOpinionMerger {
@@ -125,8 +130,8 @@ impl OpinionMerger for DefaultOpinionMerger {
             let request = CompletionRequest {
                 model: String::new(),
                 messages: vec![Message::text("user", prompt)],
-                max_tokens: Some(1024),
-                temperature: Some(0.3),
+                max_tokens: Some(MERGE_MAX_TOKENS),
+                temperature: Some(MERGE_TEMPERATURE),
                 system: None,
                 ..Default::default()
             };

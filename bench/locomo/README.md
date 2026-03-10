@@ -69,6 +69,13 @@ cargo run --release --bin locomo-bench -- \
   bench/locomo/results/ingest.json \
   --out bench/locomo/results/ingest-qa.json
 
+# Merge disjoint subset artifacts into one canonical result
+cargo run --release --bin locomo-bench -- \
+  merge \
+  bench/locomo/results/batch-a.json \
+  bench/locomo/results/batch-b.json \
+  --out bench/locomo/results/full.json
+
 # Inspect a run
 cargo run --release --bin view -- bench/locomo/results/baseline.json
 
@@ -85,6 +92,7 @@ cargo run --release --bin view -- \
 | `run` | Fresh ingest, consolidate, then score QA |
 | `ingest` | Ingest and consolidate only; do not run QA |
 | `qa <artifact>` | Score QA against bank ids from an existing artifact; skips ingest and consolidation |
+| `merge <artifact>...` | Combine compatible subset artifacts into one canonical summary + sidecars |
 | `--profile <name>` | Load a versioned benchmark profile (`full`, `smoke`, `legacy-raw`) |
 | `--config <path>` | Apply JSON overrides on top of the selected profile |
 | `--tag <name>` | Save results to `bench/locomo/results/<name>.json` |
@@ -96,16 +104,49 @@ cargo run --release --bin view -- \
 | `--session-limit <n>` | Debug-only session slice |
 | `--question-limit <n>` | Debug-only question slice |
 
+## Merge constraints
+
+`merge` is strict. It is meant to assemble one canonical artifact from disjoint subset runs of the same benchmark contract, not to average or reconcile different protocols.
+
+The input artifacts must match on:
+
+- dataset fingerprint
+- protocol version
+- mode
+- ingest mode and consolidation mode
+- category filter and slice limits
+- judge model and Elephant runtime stack
+- prompt hashes and runtime tuning knobs
+
+They must also have:
+
+- disjoint conversation scope
+- no duplicate `question_id` values
+- new-style sidecars present: `*.questions.jsonl` and `*.debug.jsonl`
+
+These fields are treated as provenance notes, not blockers:
+
+- profile label
+- commit
+- dirty-tree state
+- question and conversation concurrency
+
+If a full benchmark is assembled from batches, the merged artifact is the one to treat as canonical.
+
 ## Artifact quality
 
 A serious run now records:
 
 - manifest and run provenance
+- prompt hashes and runtime tuning knobs
+- run-level and per-conversation timing
 - per-stage token/call/latency metrics
-- per-question judge outcome
-- retrieved facts
+- per-conversation bank construction stats
+- per-question judge outcome in `*.questions.jsonl`
+- retrieved facts and reflect traces in `*.debug.jsonl`
 - retrieved turn refs
 - evidence hit / evidence recall
+- merge provenance when a full benchmark is assembled from disjoint subset runs
 
 Schema: [results-format.md](/docs/results-format.md)
 

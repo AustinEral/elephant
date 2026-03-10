@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::entity::EntityType;
-use super::fact::{Fact, FactType, ScoredFact};
+use super::fact::{Fact, FactType, RetrievalSource, ScoredFact};
 use super::id::{BankId, EntityId, FactId, TurnId};
 use super::network::NetworkType;
 use super::temporal::TemporalRange;
@@ -206,6 +206,38 @@ pub struct RetrievedFact {
     pub network: NetworkType,
     /// Provenance turn id when known.
     pub source_turn_id: Option<TurnId>,
+    /// Supporting fact ids when this fact is derived from other facts.
+    #[serde(default)]
+    pub evidence_ids: Vec<FactId>,
+    /// Retrieval strategies that surfaced this fact.
+    #[serde(default)]
+    pub retrieval_sources: Vec<RetrievalSource>,
+    /// All direct or transitive support turn ids reachable from this fact.
+    #[serde(default)]
+    pub support_turn_ids: Vec<TurnId>,
+}
+
+/// One reflect tool invocation recorded during the agent loop.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReflectTraceStep {
+    /// Iteration index in the reflect loop.
+    pub iteration: usize,
+    /// Tool that was called.
+    pub tool_name: String,
+    /// Search query issued to the tool.
+    pub query: String,
+    /// Fact ids returned by the tool in ranked order.
+    #[serde(default)]
+    pub returned_fact_ids: Vec<FactId>,
+    /// Newly added fact ids after deduplication.
+    #[serde(default)]
+    pub new_fact_ids: Vec<FactId>,
+    /// Number of facts returned before deduplication.
+    pub facts_returned: usize,
+    /// Total token estimate of the returned facts.
+    pub total_tokens: usize,
+    /// Tool wall-clock latency.
+    pub latency_ms: u64,
 }
 
 /// Result of a reflect operation.
@@ -222,6 +254,9 @@ pub struct ReflectResult {
     /// All facts retrieved during the reflect agent loop, in ranked order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub retrieved_context: Vec<RetrievedFact>,
+    /// Tool/query trace for the reflect agent loop.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trace: Vec<ReflectTraceStep>,
 }
 
 // --- Reflect pipeline types ---

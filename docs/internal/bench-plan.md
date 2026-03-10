@@ -58,7 +58,6 @@ Tracked per stage:
 - Evidence refs from LoCoMo
 - Hypothesis
 - Judge label and reasoning
-- Reflect confidence
 - Wall-clock latency
 - Retrieved facts
 - Retrieved turn refs
@@ -86,8 +85,8 @@ The new design evaluates Elephant directly in process against the same runtime w
 
 ### Phase 1: Artifact polish
 
-- Add prompt/version hashes to the run manifest
-- Add explicit model/provider labels for the judge artifact path
+- Add final bank construction stats to the public result card/viewer
+- Surface prompt hashes and runtime tuning in the viewer/result card
 - Add a machine-readable artifact index for multi-run comparisons
 
 ### Phase 2: Validation

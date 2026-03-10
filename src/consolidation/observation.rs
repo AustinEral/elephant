@@ -69,23 +69,29 @@ struct ConsolidateAction {
     observation_id: Option<String>,
 }
 
-const CONSOLIDATE_PROMPT: &str = include_str!("../../prompts/consolidate_topics.txt");
+/// Observation consolidation prompt template.
+pub const CONSOLIDATE_PROMPT: &str = include_str!("../../prompts/consolidate_topics.txt");
+/// Consolidation temperature.
+pub const CONSOLIDATE_TEMPERATURE: f32 = 0.3;
 
-fn batch_size() -> usize {
+/// Consolidation batch size.
+pub fn batch_size() -> usize {
     std::env::var("CONSOLIDATION_BATCH_SIZE")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(8)
 }
 
-fn max_tokens() -> usize {
+/// Consolidation completion cap.
+pub fn max_tokens() -> usize {
     std::env::var("CONSOLIDATION_MAX_TOKENS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(4096)
 }
 
-fn recall_budget() -> usize {
+/// Recall token budget used while consolidating observations.
+pub fn recall_budget() -> usize {
     std::env::var("CONSOLIDATION_RECALL_BUDGET")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -248,7 +254,7 @@ impl DefaultConsolidator {
                 model: String::new(),
                 messages: vec![Message::text("user", prompt)],
                 max_tokens: Some(max_tokens()),
-                temperature: Some(0.3),
+                temperature: Some(CONSOLIDATE_TEMPERATURE),
                 system: None,
                 ..Default::default()
             };

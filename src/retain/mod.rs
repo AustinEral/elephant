@@ -32,6 +32,16 @@ use self::extractor::FactExtractor;
 use self::graph_builder::GraphBuilder;
 use self::resolver::EntityResolver;
 
+/// Opinion reinforcement prompt template.
+pub const OPINION_REINFORCEMENT_PROMPT_TEMPLATE: &str =
+    include_str!("../../prompts/reinforce_opinion.txt");
+/// Opinion reinforcement system instruction.
+pub const OPINION_REINFORCEMENT_SYSTEM_PROMPT: &str = "You are an opinion reinforcement engine. Answer with one word: 'supports', 'contradicts', or 'unrelated'.";
+/// Opinion reinforcement temperature.
+pub const OPINION_REINFORCEMENT_TEMPERATURE: f32 = 0.0;
+/// Opinion reinforcement output cap.
+pub const OPINION_REINFORCEMENT_MAX_TOKENS: usize = 10;
+
 /// The top-level retain pipeline trait (2E).
 #[async_trait]
 pub trait RetainPipeline: Send + Sync {
@@ -142,16 +152,16 @@ impl DefaultRetainPipeline {
                 }
 
                 // High similarity — ask LLM if this supports or contradicts
-                let prompt = include_str!("../../prompts/reinforce_opinion.txt")
+                let prompt = OPINION_REINFORCEMENT_PROMPT_TEMPLATE
                     .replace("{opinion}", &opinion.content)
                     .replace("{new_fact}", &new_facts[i].content);
 
                 let request = CompletionRequest {
                     model: String::new(),
-                    system: Some("You are an opinion reinforcement engine. Answer with one word: 'supports', 'contradicts', or 'unrelated'.".into()),
+                    system: Some(OPINION_REINFORCEMENT_SYSTEM_PROMPT.into()),
                     messages: vec![Message::text("user", prompt)],
-                    temperature: Some(0.0),
-                    max_tokens: Some(10),
+                    temperature: Some(OPINION_REINFORCEMENT_TEMPERATURE),
+                    max_tokens: Some(OPINION_REINFORCEMENT_MAX_TOKENS),
                     ..Default::default()
                 };
 

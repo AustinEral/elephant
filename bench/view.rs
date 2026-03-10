@@ -41,6 +41,127 @@ struct BenchmarkManifest {
     raw_json: bool,
     #[serde(default)]
     dirty_worktree: Option<bool>,
+    #[serde(default)]
+    prompt_hashes: BenchmarkPromptHashes,
+    #[serde(default)]
+    runtime_config: BenchmarkRuntimeConfig,
+    #[serde(default)]
+    source_artifact: Option<SourceArtifact>,
+    #[serde(default)]
+    source_artifacts: Vec<SourceArtifact>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct BenchmarkArtifacts {
+    #[serde(default)]
+    questions_path: String,
+    #[serde(default)]
+    debug_path: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ConversationSummary {
+    #[serde(default)]
+    bank_id: String,
+    #[serde(default)]
+    ingest_time_s: f64,
+    #[serde(default)]
+    consolidation_time_s: f64,
+    #[serde(default)]
+    qa_time_s: f64,
+    #[serde(default)]
+    total_time_s: f64,
+    #[serde(default)]
+    bank_stats: ConversationBankStats,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct BenchmarkPromptHashes {
+    #[serde(default)]
+    judge: String,
+    #[serde(default)]
+    retain_extract: String,
+    #[serde(default)]
+    reflect_agent: String,
+    #[serde(default)]
+    consolidate: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[allow(dead_code)]
+struct BenchmarkRuntimeConfig {
+    #[serde(default)]
+    dedup_threshold: Option<f32>,
+    #[serde(default)]
+    retriever_limit: usize,
+    #[serde(default)]
+    rerank_top_n: usize,
+    #[serde(default)]
+    reflect_max_iterations: usize,
+    #[serde(default)]
+    reflect_max_tokens: Option<usize>,
+    #[serde(default)]
+    reflect_budget_tokens: usize,
+    #[serde(default)]
+    judge_temperature: f32,
+    #[serde(default)]
+    judge_max_tokens: usize,
+    #[serde(default)]
+    judge_max_attempts: usize,
+    #[serde(default)]
+    consolidation_batch_size: usize,
+    #[serde(default)]
+    consolidation_max_tokens: usize,
+    #[serde(default)]
+    consolidation_recall_budget: usize,
+    #[serde(default)]
+    qa_updates_memory: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[allow(dead_code)]
+struct SourceArtifact {
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    fingerprint: String,
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    tag: Option<String>,
+    #[serde(default)]
+    commit: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[allow(dead_code)]
+struct ConversationBankStats {
+    #[serde(default)]
+    sessions_ingested: usize,
+    #[serde(default)]
+    turns_ingested: usize,
+    #[serde(default)]
+    facts_stored: usize,
+    #[serde(default)]
+    entities_resolved: usize,
+    #[serde(default)]
+    links_created: usize,
+    #[serde(default)]
+    opinions_reinforced: usize,
+    #[serde(default)]
+    opinions_weakened: usize,
+    #[serde(default)]
+    observations_created: usize,
+    #[serde(default)]
+    observations_updated: usize,
+    #[serde(default)]
+    final_fact_count: usize,
+    #[serde(default)]
+    final_observation_count: usize,
+    #[serde(default)]
+    final_opinion_count: usize,
+    #[serde(default)]
+    final_entity_count: usize,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -91,6 +212,10 @@ struct BenchmarkOutput {
     #[serde(default)]
     manifest: BenchmarkManifest,
     #[serde(default)]
+    artifacts: BenchmarkArtifacts,
+    #[serde(default)]
+    per_conversation: HashMap<String, ConversationSummary>,
+    #[serde(default)]
     stage_metrics: BTreeMap<String, StageUsage>,
     #[serde(default)]
     total_stage_usage: StageUsage,
@@ -119,8 +244,6 @@ struct QuestionResult {
     hypothesis: String,
     #[serde(default)]
     f1: f64,
-    #[serde(default)]
-    confidence: f32,
     #[serde(default)]
     elapsed_s: f64,
     #[serde(default = "default_status")]
@@ -172,6 +295,53 @@ fn fmt_ms(ms: u64) -> String {
 
 fn fmt_pct(v: f64) -> String {
     format!("{:.1}%", v * 100.0)
+}
+
+fn short_hash(value: &str) -> String {
+    if value.is_empty() {
+        "-".into()
+    } else {
+        value.chars().take(8).collect()
+    }
+}
+
+fn fmt_optional_usize(value: Option<usize>) -> String {
+    value.map(|v| v.to_string()).unwrap_or_else(|| "-".into())
+}
+
+fn source_artifact_label(source: &Option<SourceArtifact>) -> String {
+    match source {
+        Some(source) if !source.path.is_empty() => {
+            let tag = source.tag.clone().unwrap_or_else(|| "-".into());
+            format!("{} ({tag}, {})", source.mode, source.path)
+        }
+        _ => "-".into(),
+    }
+}
+
+fn source_artifacts_label(sources: &[SourceArtifact]) -> String {
+    if sources.is_empty() {
+        return "-".into();
+    }
+    let rendered = sources
+        .iter()
+        .map(|source| {
+            let tag = source.tag.clone().unwrap_or_else(|| "-".into());
+            format!("{tag}:{}", source.path)
+        })
+        .collect::<Vec<_>>();
+    format!("{} [{}]", sources.len(), rendered.join(", "))
+}
+
+fn has_bank_stats(output: &BenchmarkOutput) -> bool {
+    output.per_conversation.values().any(|summary| {
+        let stats = &summary.bank_stats;
+        stats.sessions_ingested > 0
+            || stats.turns_ingested > 0
+            || stats.facts_stored > 0
+            || stats.final_fact_count > 0
+            || stats.final_entity_count > 0
+    })
 }
 
 fn fmt_stage_value(usage: &StageUsage) -> String {
@@ -235,6 +405,58 @@ fn has_evidence(output: &BenchmarkOutput) -> bool {
             .any(|r| !r.evidence_refs.is_empty() || !r.retrieved_turn_refs.is_empty())
 }
 
+fn evidence_precision(result: &QuestionResult) -> Option<f64> {
+    let expected = result
+        .evidence_refs
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let retrieved = result
+        .retrieved_turn_refs
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    if expected.is_empty() && retrieved.is_empty() {
+        return None;
+    }
+    if retrieved.is_empty() {
+        return Some(0.0);
+    }
+    let hits = retrieved
+        .iter()
+        .filter(|turn_ref| expected.contains(**turn_ref))
+        .count();
+    Some(hits as f64 / retrieved.len() as f64)
+}
+
+fn avg_option<I>(values: I) -> Option<f64>
+where
+    I: IntoIterator<Item = Option<f64>>,
+{
+    let mut sum = 0.0;
+    let mut count = 0usize;
+    for value in values.into_iter().flatten() {
+        sum += value;
+        count += 1;
+    }
+    if count == 0 {
+        None
+    } else {
+        Some(sum / count as f64)
+    }
+}
+
+fn fmt_metric(value: Option<f64>, precision: usize) -> String {
+    match value {
+        Some(value) => format!("{value:.precision$}"),
+        None => "-".into(),
+    }
+}
+
+fn correct_count(results: &[QuestionResult]) -> usize {
+    results.iter().filter(|r| r.judge_correct).count()
+}
+
 fn manifest_scope(manifest: &BenchmarkManifest) -> Option<String> {
     if !manifest.selected_conversations.is_empty() {
         return Some(manifest.selected_conversations.join(","));
@@ -244,6 +466,25 @@ fn manifest_scope(manifest: &BenchmarkManifest) -> Option<String> {
 
 fn failed_count(results: &[QuestionResult]) -> usize {
     results.iter().filter(|r| r.status != "ok").count()
+}
+
+fn summed_phase_times(output: &BenchmarkOutput) -> Option<(f64, f64, f64, f64)> {
+    if output.per_conversation.is_empty() {
+        return None;
+    }
+    Some(
+        output
+            .per_conversation
+            .values()
+            .fold((0.0, 0.0, 0.0, 0.0), |acc, summary| {
+                (
+                    acc.0 + summary.ingest_time_s,
+                    acc.1 + summary.consolidation_time_s,
+                    acc.2 + summary.qa_time_s,
+                    acc.3 + summary.total_time_s,
+                )
+            }),
+    )
 }
 
 fn question_mark(r: &QuestionResult) -> String {
@@ -327,13 +568,28 @@ struct ConversationRow {
     f1: String,
     #[tabled(rename = "ER")]
     evidence_recall: String,
-    #[tabled(rename = "conf")]
-    conf: String,
+    #[tabled(rename = "EP")]
+    evidence_precision: String,
     #[tabled(rename = "avg time")]
     avg_time: String,
     failed: usize,
     #[tabled(rename = "n")]
     n: usize,
+}
+
+#[derive(Tabled)]
+struct BankStatsRow {
+    #[tabled(rename = "conversation")]
+    sample_id: String,
+    bank: String,
+    sessions: usize,
+    turns: usize,
+    stored: usize,
+    #[tabled(rename = "final facts")]
+    final_facts: usize,
+    #[tabled(rename = "obs +upd")]
+    observations: String,
+    entities: usize,
 }
 
 #[derive(Tabled)]
@@ -485,10 +741,158 @@ fn view_single(output: &BenchmarkOutput, path: &str) {
             value: dirty.to_string(),
         });
     }
+    if output.manifest.runtime_config.retriever_limit > 0 {
+        config_rows.push(SingleConfigRow {
+            key: "retriever limit".into(),
+            value: output.manifest.runtime_config.retriever_limit.to_string(),
+        });
+    }
+    if output.manifest.runtime_config.rerank_top_n > 0 {
+        config_rows.push(SingleConfigRow {
+            key: "rerank top-n".into(),
+            value: output.manifest.runtime_config.rerank_top_n.to_string(),
+        });
+    }
+    if output.manifest.runtime_config.reflect_max_iterations > 0 {
+        config_rows.push(SingleConfigRow {
+            key: "reflect iter".into(),
+            value: output
+                .manifest
+                .runtime_config
+                .reflect_max_iterations
+                .to_string(),
+        });
+    }
+    if output.manifest.runtime_config.reflect_budget_tokens > 0 {
+        config_rows.push(SingleConfigRow {
+            key: "reflect budget".into(),
+            value: output
+                .manifest
+                .runtime_config
+                .reflect_budget_tokens
+                .to_string(),
+        });
+    }
+    if output.manifest.runtime_config.reflect_max_tokens.is_some() {
+        config_rows.push(SingleConfigRow {
+            key: "reflect cap".into(),
+            value: fmt_optional_usize(output.manifest.runtime_config.reflect_max_tokens),
+        });
+    }
+    if output.manifest.runtime_config.judge_max_tokens > 0 {
+        config_rows.push(SingleConfigRow {
+            key: "judge max tok".into(),
+            value: output.manifest.runtime_config.judge_max_tokens.to_string(),
+        });
+    }
+    if output.manifest.runtime_config.judge_max_attempts > 0 {
+        config_rows.push(SingleConfigRow {
+            key: "judge retries".into(),
+            value: output
+                .manifest
+                .runtime_config
+                .judge_max_attempts
+                .to_string(),
+        });
+    }
+    if let Some(threshold) = output.manifest.runtime_config.dedup_threshold {
+        config_rows.push(SingleConfigRow {
+            key: "dedup".into(),
+            value: format!("{threshold:.2}"),
+        });
+    }
+    if output.manifest.runtime_config.consolidation_batch_size > 0 {
+        config_rows.push(SingleConfigRow {
+            key: "cons batch".into(),
+            value: output
+                .manifest
+                .runtime_config
+                .consolidation_batch_size
+                .to_string(),
+        });
+    }
+    if output.manifest.runtime_config.consolidation_recall_budget > 0 {
+        config_rows.push(SingleConfigRow {
+            key: "cons recall".into(),
+            value: output
+                .manifest
+                .runtime_config
+                .consolidation_recall_budget
+                .to_string(),
+        });
+    }
+    if !output.manifest.prompt_hashes.judge.is_empty() {
+        config_rows.push(SingleConfigRow {
+            key: "judge hash".into(),
+            value: short_hash(&output.manifest.prompt_hashes.judge),
+        });
+    }
+    if !output.manifest.prompt_hashes.retain_extract.is_empty() {
+        config_rows.push(SingleConfigRow {
+            key: "extract hash".into(),
+            value: short_hash(&output.manifest.prompt_hashes.retain_extract),
+        });
+    }
+    if !output.manifest.prompt_hashes.reflect_agent.is_empty() {
+        config_rows.push(SingleConfigRow {
+            key: "reflect hash".into(),
+            value: short_hash(&output.manifest.prompt_hashes.reflect_agent),
+        });
+    }
+    if !output.manifest.prompt_hashes.consolidate.is_empty() {
+        config_rows.push(SingleConfigRow {
+            key: "cons hash".into(),
+            value: short_hash(&output.manifest.prompt_hashes.consolidate),
+        });
+    }
+    if output.manifest.source_artifact.is_some() {
+        config_rows.push(SingleConfigRow {
+            key: "source artifact".into(),
+            value: source_artifact_label(&output.manifest.source_artifact),
+        });
+    }
+    if !output.manifest.source_artifacts.is_empty() {
+        config_rows.push(SingleConfigRow {
+            key: "source runs".into(),
+            value: source_artifacts_label(&output.manifest.source_artifacts),
+        });
+    }
     if output.total_time_s > 0.0 {
         config_rows.push(SingleConfigRow {
             key: "total time".into(),
             value: fmt_time(output.total_time_s),
+        });
+    }
+    if let Some((ingest_time_s, consolidation_time_s, qa_time_s, conversation_total_s)) =
+        summed_phase_times(output)
+    {
+        config_rows.push(SingleConfigRow {
+            key: "ingest time".into(),
+            value: fmt_time(ingest_time_s),
+        });
+        config_rows.push(SingleConfigRow {
+            key: "consolidate time".into(),
+            value: fmt_time(consolidation_time_s),
+        });
+        config_rows.push(SingleConfigRow {
+            key: "qa time".into(),
+            value: fmt_time(qa_time_s),
+        });
+        config_rows.push(SingleConfigRow {
+            key: "sum conv time".into(),
+            value: fmt_time(conversation_total_s),
+        });
+    }
+    if !output.artifacts.questions_path.is_empty() {
+        config_rows.push(SingleConfigRow {
+            key: "questions file".into(),
+            value: output.artifacts.questions_path.clone(),
+        });
+    }
+    if !output.artifacts.debug_path.is_empty() {
+        config_rows.push(SingleConfigRow {
+            key: "debug file".into(),
+            value: output.artifacts.debug_path.clone(),
         });
     }
 
@@ -543,18 +947,11 @@ fn view_single(output: &BenchmarkOutput, path: &str) {
             key: "evidence recall".into(),
             value: format!("{:.3}", output.mean_evidence_recall),
         });
+        metrics_rows.push(SingleConfigRow {
+            key: "evidence precision".into(),
+            value: fmt_metric(avg_option(output.results.iter().map(evidence_precision)), 3),
+        });
     }
-    metrics_rows.push(SingleConfigRow {
-        key: "confidence".into(),
-        value: format!(
-            "{:.3}",
-            avg(&output
-                .results
-                .iter()
-                .map(|r| r.confidence as f64)
-                .collect::<Vec<_>>())
-        ),
-    });
     metrics_rows.push(SingleConfigRow {
         key: "avg time".into(),
         value: fmt_time(avg(&output
@@ -579,6 +976,18 @@ fn view_single(output: &BenchmarkOutput, path: &str) {
         metrics_rows.push(SingleConfigRow {
             key: "latency".into(),
             value: fmt_ms(output.total_stage_usage.latency_ms),
+        });
+        let correct = correct_count(&output.results);
+        metrics_rows.push(SingleConfigRow {
+            key: "tokens/correct".into(),
+            value: if correct > 0 {
+                format!(
+                    "{:.1}",
+                    output.total_stage_usage.total_tokens() as f64 / correct as f64
+                )
+            } else {
+                "-".into()
+            },
         });
     }
 
@@ -638,13 +1047,14 @@ fn view_single(output: &BenchmarkOutput, path: &str) {
             } else {
                 "-".into()
             },
-            conf: format!(
-                "{:.3}",
-                avg(&questions
-                    .iter()
-                    .map(|r| r.confidence as f64)
-                    .collect::<Vec<_>>())
-            ),
+            evidence_precision: if evidence_available {
+                fmt_metric(
+                    avg_option(questions.iter().map(|r| evidence_precision(r))),
+                    3,
+                )
+            } else {
+                "-".into()
+            },
             avg_time: fmt_time(avg(&questions
                 .iter()
                 .map(|r| r.elapsed_s)
@@ -662,14 +1072,11 @@ fn view_single(output: &BenchmarkOutput, path: &str) {
         } else {
             "-".into()
         },
-        conf: format!(
-            "{:.3}",
-            avg(&output
-                .results
-                .iter()
-                .map(|r| r.confidence as f64)
-                .collect::<Vec<_>>())
-        ),
+        evidence_precision: if evidence_available {
+            fmt_metric(avg_option(output.results.iter().map(evidence_precision)), 3)
+        } else {
+            "-".into()
+        },
         avg_time: fmt_time(avg(&output
             .results
             .iter()
@@ -686,6 +1093,36 @@ fn view_single(output: &BenchmarkOutput, path: &str) {
             .with(Style::rounded())
             .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
     );
+
+    if has_bank_stats(output) {
+        let mut bank_rows = output
+            .per_conversation
+            .iter()
+            .map(|(sample_id, summary)| BankStatsRow {
+                sample_id: sample_id.clone(),
+                bank: summary.bank_id.clone(),
+                sessions: summary.bank_stats.sessions_ingested,
+                turns: summary.bank_stats.turns_ingested,
+                stored: summary.bank_stats.facts_stored,
+                final_facts: summary.bank_stats.final_fact_count,
+                observations: format!(
+                    "{}+{}",
+                    summary.bank_stats.observations_created,
+                    summary.bank_stats.observations_updated
+                ),
+                entities: summary.bank_stats.final_entity_count,
+            })
+            .collect::<Vec<_>>();
+        bank_rows.sort_by(|a, b| a.sample_id.cmp(&b.sample_id));
+
+        println!();
+        println!(
+            "{}",
+            Table::new(&bank_rows)
+                .with(Style::rounded())
+                .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
+        );
+    }
 
     if output.results.is_empty() {
         return;
@@ -742,10 +1179,36 @@ fn load_file(path: &str) -> BenchmarkOutput {
         eprintln!("Failed to read {path}: {e}");
         process::exit(1);
     });
-    serde_json::from_str(&raw).unwrap_or_else(|e| {
+    let mut output: BenchmarkOutput = serde_json::from_str(&raw).unwrap_or_else(|e| {
         eprintln!("Failed to parse {path}: {e}");
         process::exit(1);
-    })
+    });
+    if output.results.is_empty() && !output.artifacts.questions_path.is_empty() {
+        let base = std::path::Path::new(path)
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let questions_path = base.join(&output.artifacts.questions_path);
+        if questions_path.exists() {
+            let raw_questions = fs::read_to_string(&questions_path).unwrap_or_else(|e| {
+                eprintln!("Failed to read {}: {e}", questions_path.display());
+                process::exit(1);
+            });
+            output.results = raw_questions
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| {
+                    serde_json::from_str::<QuestionResult>(line).unwrap_or_else(|e| {
+                        eprintln!(
+                            "Failed to parse question record in {}: {e}",
+                            questions_path.display()
+                        );
+                        process::exit(1);
+                    })
+                })
+                .collect();
+        }
+    }
+    output
 }
 
 fn filter_conv(mut output: BenchmarkOutput, conv: &str) -> BenchmarkOutput {
@@ -910,6 +1373,79 @@ fn main() {
             val_b: b.manifest.mode.clone(),
         });
     }
+    if a.manifest.runtime_config.retriever_limit > 0
+        || b.manifest.runtime_config.retriever_limit > 0
+    {
+        config_rows.push(ConfigRow {
+            key: "retriever limit".into(),
+            val_a: a.manifest.runtime_config.retriever_limit.to_string(),
+            val_b: b.manifest.runtime_config.retriever_limit.to_string(),
+        });
+    }
+    if a.manifest.runtime_config.rerank_top_n > 0 || b.manifest.runtime_config.rerank_top_n > 0 {
+        config_rows.push(ConfigRow {
+            key: "rerank top-n".into(),
+            val_a: a.manifest.runtime_config.rerank_top_n.to_string(),
+            val_b: b.manifest.runtime_config.rerank_top_n.to_string(),
+        });
+    }
+    if a.manifest.runtime_config.reflect_max_iterations > 0
+        || b.manifest.runtime_config.reflect_max_iterations > 0
+    {
+        config_rows.push(ConfigRow {
+            key: "reflect iter".into(),
+            val_a: a.manifest.runtime_config.reflect_max_iterations.to_string(),
+            val_b: b.manifest.runtime_config.reflect_max_iterations.to_string(),
+        });
+    }
+    if a.manifest.runtime_config.reflect_budget_tokens > 0
+        || b.manifest.runtime_config.reflect_budget_tokens > 0
+    {
+        config_rows.push(ConfigRow {
+            key: "reflect budget".into(),
+            val_a: a.manifest.runtime_config.reflect_budget_tokens.to_string(),
+            val_b: b.manifest.runtime_config.reflect_budget_tokens.to_string(),
+        });
+    }
+    if a.manifest.runtime_config.reflect_max_tokens.is_some()
+        || b.manifest.runtime_config.reflect_max_tokens.is_some()
+    {
+        config_rows.push(ConfigRow {
+            key: "reflect cap".into(),
+            val_a: fmt_optional_usize(a.manifest.runtime_config.reflect_max_tokens),
+            val_b: fmt_optional_usize(b.manifest.runtime_config.reflect_max_tokens),
+        });
+    }
+    if !a.manifest.prompt_hashes.judge.is_empty() || !b.manifest.prompt_hashes.judge.is_empty() {
+        config_rows.push(ConfigRow {
+            key: "judge hash".into(),
+            val_a: short_hash(&a.manifest.prompt_hashes.judge),
+            val_b: short_hash(&b.manifest.prompt_hashes.judge),
+        });
+    }
+    if !a.manifest.prompt_hashes.reflect_agent.is_empty()
+        || !b.manifest.prompt_hashes.reflect_agent.is_empty()
+    {
+        config_rows.push(ConfigRow {
+            key: "reflect hash".into(),
+            val_a: short_hash(&a.manifest.prompt_hashes.reflect_agent),
+            val_b: short_hash(&b.manifest.prompt_hashes.reflect_agent),
+        });
+    }
+    if a.manifest.source_artifact.is_some() || b.manifest.source_artifact.is_some() {
+        config_rows.push(ConfigRow {
+            key: "source artifact".into(),
+            val_a: source_artifact_label(&a.manifest.source_artifact),
+            val_b: source_artifact_label(&b.manifest.source_artifact),
+        });
+    }
+    if !a.manifest.source_artifacts.is_empty() || !b.manifest.source_artifacts.is_empty() {
+        config_rows.push(ConfigRow {
+            key: "source runs".into(),
+            val_a: source_artifacts_label(&a.manifest.source_artifacts),
+            val_b: source_artifacts_label(&b.manifest.source_artifacts),
+        });
+    }
     if matched.len() != a.results.len() || matched.len() != b.results.len() {
         config_rows.push(ConfigRow {
             key: "matched".into(),
@@ -1030,22 +1566,18 @@ fn main() {
             val_b: format!("{evidence_b:.3}"),
             delta: fmt_float_delta(evidence_a, evidence_b, 3, true),
         });
+        let precision_a = avg_option(matched.iter().map(|(left, _)| evidence_precision(left)));
+        let precision_b = avg_option(matched.iter().map(|(_, right)| evidence_precision(right)));
+        metrics_rows.push(MetricsRow {
+            metric: "evidence precision".into(),
+            val_a: fmt_metric(precision_a, 3),
+            val_b: fmt_metric(precision_b, 3),
+            delta: match (precision_a, precision_b) {
+                (Some(a), Some(b)) => fmt_float_delta(a, b, 3, true),
+                _ => "-".into(),
+            },
+        });
     }
-
-    let conf_a = avg(&matched
-        .iter()
-        .map(|(left, _)| left.confidence as f64)
-        .collect::<Vec<_>>());
-    let conf_b = avg(&matched
-        .iter()
-        .map(|(_, right)| right.confidence as f64)
-        .collect::<Vec<_>>());
-    metrics_rows.push(MetricsRow {
-        metric: "confidence".into(),
-        val_a: format!("{conf_a:.3}"),
-        val_b: format!("{conf_b:.3}"),
-        delta: fmt_float_delta(conf_a, conf_b, 3, true),
-    });
 
     let time_a = avg(&matched
         .iter()
@@ -1101,6 +1633,37 @@ fn main() {
                 a.total_stage_usage.latency_ms,
                 b.total_stage_usage.latency_ms,
             ),
+        });
+        let correct_a = correct_count(&a.results);
+        let correct_b = correct_count(&b.results);
+        metrics_rows.push(MetricsRow {
+            metric: "tokens/correct".into(),
+            val_a: if correct_a > 0 {
+                format!(
+                    "{:.1}",
+                    a.total_stage_usage.total_tokens() as f64 / correct_a as f64
+                )
+            } else {
+                "-".into()
+            },
+            val_b: if correct_b > 0 {
+                format!(
+                    "{:.1}",
+                    b.total_stage_usage.total_tokens() as f64 / correct_b as f64
+                )
+            } else {
+                "-".into()
+            },
+            delta: if correct_a > 0 && correct_b > 0 {
+                fmt_float_delta(
+                    a.total_stage_usage.total_tokens() as f64 / correct_a as f64,
+                    b.total_stage_usage.total_tokens() as f64 / correct_b as f64,
+                    1,
+                    false,
+                )
+            } else {
+                "-".into()
+            },
         });
     }
 

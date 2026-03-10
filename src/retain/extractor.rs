@@ -20,6 +20,13 @@ pub struct LlmFactExtractor {
     llm: Arc<dyn LlmClient>,
 }
 
+/// Base extraction prompt template.
+pub const EXTRACT_PROMPT_TEMPLATE: &str = include_str!("../../prompts/extract_facts.txt");
+/// Extraction temperature.
+pub const EXTRACT_TEMPERATURE: f32 = 0.1;
+/// Extraction output cap.
+pub const EXTRACT_MAX_TOKENS: usize = 4096;
+
 impl LlmFactExtractor {
     /// Create a new extractor with the given LLM client.
     pub fn new(llm: Arc<dyn LlmClient>) -> Self {
@@ -27,7 +34,7 @@ impl LlmFactExtractor {
     }
 
     fn build_system_prompt(input: &ExtractionInput) -> String {
-        let mut prompt = include_str!("../../prompts/extract_facts.txt").to_string();
+        let mut prompt = EXTRACT_PROMPT_TEMPLATE.to_string();
 
         if let Some(ref custom) = input.custom_instructions {
             prompt.push_str("\n\n## Additional Guidelines\n\n");
@@ -69,8 +76,8 @@ impl FactExtractor for LlmFactExtractor {
             model: String::new(),
             system: Some(system),
             messages: vec![Message::text("user", user_msg)],
-            temperature: Some(0.1),
-            max_tokens: Some(4096),
+            temperature: Some(EXTRACT_TEMPERATURE),
+            max_tokens: Some(EXTRACT_MAX_TOKENS),
             ..Default::default()
         };
 

@@ -4,7 +4,7 @@ pub mod disposition;
 pub mod hierarchy;
 pub mod opinion;
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write;
 use std::sync::Arc;
 use std::time::Instant;
@@ -19,7 +19,10 @@ use crate::llm::LlmClient;
 use crate::recall::RecallPipeline;
 use crate::storage::MemoryStore;
 use crate::types::llm::{CompletionRequest, Message, ToolChoice, ToolDef, ToolResult};
-use crate::types::{FactId, NetworkType, RecallQuery, ReflectQuery, ReflectResult, RetrievedFact};
+use crate::types::{
+    Fact, FactId, NetworkType, RecallQuery, ReflectQuery, ReflectResult, ReflectTraceStep,
+    RetrievedFact, TurnId,
+};
 
 use disposition::verbalize_bank_profile;
 
@@ -36,7 +39,15 @@ pub struct DefaultReflectPipeline {
     llm: Arc<dyn LlmClient>,
     store: Arc<dyn MemoryStore>,
     max_iterations: usize,
+    max_output_tokens: Option<usize>,
 }
+
+/// Reflect agent prompt template.
+pub const REFLECT_AGENT_PROMPT_TEMPLATE: &str = include_str!("../../prompts/reflect_agent.txt");
+/// Reflect agent temperature.
+pub const REFLECT_TEMPERATURE: f32 = 0.3;
+/// Default reflect output cap for runtime-wired deployments.
+pub const DEFAULT_REFLECT_MAX_TOKENS: usize = 1024;
 
 impl DefaultReflectPipeline {
     /// Create a new reflect pipeline.
@@ -46,11 +57,23 @@ impl DefaultReflectPipeline {
         store: Arc<dyn MemoryStore>,
         max_iterations: usize,
     ) -> Self {
+        Self::new_with_limits(recall, llm, store, max_iterations, None)
+    }
+
+    /// Create a new reflect pipeline with explicit completion limits.
+    pub fn new_with_limits(
+        recall: Arc<dyn RecallPipeline>,
+        llm: Arc<dyn LlmClient>,
+        store: Arc<dyn MemoryStore>,
+        max_iterations: usize,
+        max_output_tokens: Option<usize>,
+    ) -> Self {
         Self {
             recall,
             llm,
             store,
             max_iterations,
+            max_output_tokens,
         }
     }
 }
@@ -110,8 +133,7 @@ impl DefaultReflectPipeline {
 
         // Build system prompt
         let mut system_parts = Vec::new();
-        let agent_prompt = include_str!("../../prompts/reflect_agent.txt");
-        system_parts.push(agent_prompt.to_string());
+        system_parts.push(REFLECT_AGENT_PROMPT_TEMPLATE.to_string());
         let profile_prompt = build_profile_prompt(&bank_profile);
         if !profile_prompt.is_empty() {
             system_parts.push(profile_prompt);
@@ -123,6 +145,8 @@ impl DefaultReflectPipeline {
 
         let mut seen_fact_ids: HashSet<FactId> = HashSet::new();
         let mut retrieved_context: Vec<RetrievedFact> = Vec::new();
+        let mut trace: Vec<ReflectTraceStep> = Vec::new();
+        let mut support_cache: HashMap<FactId, Fact> = HashMap::new();
 
         let tools = tool_defs();
 
@@ -159,7 +183,8 @@ impl DefaultReflectPipeline {
 
             let request = CompletionRequest {
                 messages: messages.clone(),
-                temperature: Some(0.3),
+                temperature: Some(REFLECT_TEMPERATURE),
+                max_tokens: self.max_output_tokens,
                 system: Some(system_prompt.clone()),
                 tools: Some(iter_tools.clone()),
                 tool_choice,
@@ -220,6 +245,9 @@ impl DefaultReflectPipeline {
                         // Deduplicate facts across iterations
                         let mut new_facts = String::new();
                         let mut facts_new = 0usize;
+                        let returned_fact_ids =
+                            result.facts.iter().map(|sf| sf.fact.id).collect::<Vec<_>>();
+                        let mut new_fact_ids = Vec::new();
                         for sf in &result.facts {
                             let is_new = seen_fact_ids.insert(sf.fact.id);
                             trace!(
@@ -231,14 +259,21 @@ impl DefaultReflectPipeline {
                             );
                             if is_new {
                                 facts_new += 1;
+                                new_fact_ids.push(sf.fact.id);
                                 writeln!(new_facts, "[FACT {}] {}", sf.fact.id, sf.fact.content)
                                     .unwrap();
+                                let support_turn_ids = self
+                                    .support_turn_ids_for_fact(&sf.fact, &mut support_cache)
+                                    .await?;
                                 retrieved_context.push(RetrievedFact {
                                     id: sf.fact.id,
                                     content: sf.fact.content.clone(),
                                     score: sf.score,
                                     network: sf.fact.network,
                                     source_turn_id: sf.fact.source_turn_id,
+                                    evidence_ids: sf.fact.evidence_ids.clone(),
+                                    retrieval_sources: sf.sources.clone(),
+                                    support_turn_ids,
                                 });
                             }
                         }
@@ -252,6 +287,17 @@ impl DefaultReflectPipeline {
                             total_tokens = result.total_tokens,
                             "tool_call"
                         );
+
+                        trace.push(ReflectTraceStep {
+                            iteration,
+                            tool_name: tc.name.clone(),
+                            query: args.query.clone(),
+                            returned_fact_ids,
+                            new_fact_ids,
+                            facts_returned: result.facts.len(),
+                            total_tokens: result.total_tokens,
+                            latency_ms: recall_ms,
+                        });
 
                         if new_facts.is_empty() {
                             new_facts = "No new memories found for this query.".into();
@@ -285,7 +331,8 @@ impl DefaultReflectPipeline {
                             source_ids = ?args.source_ids,
                             "done"
                         );
-                        let result = self.finalize(args, &seen_fact_ids, retrieved_context.clone());
+                        let result =
+                            self.finalize(args, &seen_fact_ids, retrieved_context.clone(), trace);
                         if let Ok(ref r) = result {
                             tracing::Span::current().record("iterations", iteration + 1);
                             tracing::Span::current().record("source_count", r.sources.len());
@@ -325,12 +372,58 @@ impl DefaultReflectPipeline {
 }
 
 impl DefaultReflectPipeline {
+    async fn support_turn_ids_for_fact(
+        &self,
+        fact: &Fact,
+        cache: &mut HashMap<FactId, Fact>,
+    ) -> Result<Vec<TurnId>> {
+        let mut turn_ids = BTreeSet::new();
+        if let Some(turn_id) = fact.source_turn_id {
+            turn_ids.insert(turn_id);
+        }
+
+        let mut pending = fact.evidence_ids.clone();
+        let mut seen = pending.iter().copied().collect::<HashSet<_>>();
+
+        while !pending.is_empty() {
+            let missing = pending
+                .iter()
+                .copied()
+                .filter(|id| !cache.contains_key(id))
+                .collect::<Vec<_>>();
+            if !missing.is_empty() {
+                let fetched = self.store.get_facts(&missing).await?;
+                for support in fetched {
+                    cache.insert(support.id, support);
+                }
+            }
+
+            let current = std::mem::take(&mut pending);
+            for fact_id in current {
+                let Some(support) = cache.get(&fact_id) else {
+                    continue;
+                };
+                if let Some(turn_id) = support.source_turn_id {
+                    turn_ids.insert(turn_id);
+                }
+                for evidence_id in &support.evidence_ids {
+                    if seen.insert(*evidence_id) {
+                        pending.push(*evidence_id);
+                    }
+                }
+            }
+        }
+
+        Ok(turn_ids.into_iter().collect())
+    }
+
     /// Finalize a reflect result from a `done` tool call.
     fn finalize(
         &self,
         args: DoneArgs,
         seen_fact_ids: &HashSet<FactId>,
         retrieved_context: Vec<RetrievedFact>,
+        trace: Vec<ReflectTraceStep>,
     ) -> Result<ReflectResult> {
         // Validate source_ids against seen_fact_ids (drop hallucinated IDs)
         let sources: Vec<FactId> = args
@@ -346,6 +439,7 @@ impl DefaultReflectPipeline {
             new_opinions: vec![],
             confidence: 0.85,
             retrieved_context,
+            trace,
         })
     }
 }
@@ -526,6 +620,108 @@ mod tests {
 
         assert!(result.response.contains("ownership"));
         assert!(result.sources.contains(&fact_id));
+        assert_eq!(result.trace.len(), 2);
+        assert_eq!(result.trace[0].tool_name, "search_observations");
+        assert_eq!(result.trace[1].tool_name, "recall");
+        assert_eq!(result.trace[1].new_fact_ids, vec![fact_id]);
+    }
+
+    #[tokio::test]
+    async fn observation_support_turn_ids_are_expanded_from_evidence() {
+        let h = TestHarness::new().await;
+        let emb = h.embeddings.embed(&["project timeline"]).await.unwrap();
+        let turn_id = TurnId::new();
+
+        let raw_fact = Fact {
+            id: FactId::new(),
+            bank_id: h.bank_id,
+            content: "Alice finalized the project timeline in March.".into(),
+            fact_type: FactType::World,
+            network: NetworkType::World,
+            entity_ids: vec![],
+            temporal_range: None,
+            embedding: Some(emb[0].clone()),
+            confidence: None,
+            evidence_ids: vec![],
+            source_turn_id: Some(turn_id),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            consolidated_at: None,
+        };
+        let raw_fact_id = raw_fact.id;
+        let observation = Fact {
+            id: FactId::new(),
+            bank_id: h.bank_id,
+            content: "Alice completed the project timeline in March.".into(),
+            fact_type: FactType::World,
+            network: NetworkType::Observation,
+            entity_ids: vec![],
+            temporal_range: None,
+            embedding: Some(emb[0].clone()),
+            confidence: None,
+            evidence_ids: vec![raw_fact_id],
+            source_turn_id: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            consolidated_at: None,
+        };
+        let observation_id = observation.id;
+        h.store
+            .insert_facts(&[raw_fact, observation])
+            .await
+            .unwrap();
+
+        h.llm.push_response_full(CompletionResponse {
+            content: String::new(),
+            input_tokens: 10,
+            output_tokens: 20,
+            tool_calls: vec![crate::types::llm::ToolCall {
+                id: "call_1".into(),
+                name: "search_observations".into(),
+                arguments: serde_json::json!({"query": "project timeline", "reason": "overview"}),
+            }],
+        });
+        h.llm.push_response_full(CompletionResponse {
+            content: String::new(),
+            input_tokens: 10,
+            output_tokens: 20,
+            tool_calls: vec![crate::types::llm::ToolCall {
+                id: "call_2".into(),
+                name: "recall".into(),
+                arguments: serde_json::json!({"query": "project timeline", "reason": "details"}),
+            }],
+        });
+        h.llm.push_response_full(CompletionResponse {
+            content: String::new(),
+            input_tokens: 10,
+            output_tokens: 20,
+            tool_calls: vec![crate::types::llm::ToolCall {
+                id: "call_3".into(),
+                name: "done".into(),
+                arguments: serde_json::json!({
+                    "response": format!("Alice finished the timeline [{}].", observation_id),
+                    "source_ids": [observation_id.to_string()]
+                }),
+            }],
+        });
+
+        let pipeline = h.build_pipeline();
+        let result = pipeline
+            .reflect(&ReflectQuery {
+                bank_id: h.bank_id,
+                question: "When was the project timeline finished?".into(),
+                budget_tokens: 2000,
+            })
+            .await
+            .unwrap();
+
+        let observation_entry = result
+            .retrieved_context
+            .iter()
+            .find(|fact| fact.id == observation_id)
+            .expect("observation should be in retrieved context");
+        assert_eq!(observation_entry.evidence_ids, vec![raw_fact_id]);
+        assert_eq!(observation_entry.support_turn_ids, vec![turn_id]);
     }
 
     #[tokio::test]

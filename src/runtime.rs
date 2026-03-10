@@ -3,6 +3,10 @@
 use std::env;
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
+
+use crate::consolidation::observation;
+use crate::consolidation::opinion_merger;
 use crate::consolidation::{DefaultConsolidator, DefaultOpinionMerger};
 use crate::embedding::{self, EmbeddingClient, EmbeddingConfig, EmbeddingProvider};
 use crate::error::{Error, Result};
@@ -21,10 +25,10 @@ use crate::recall::semantic::SemanticRetriever;
 use crate::recall::temporal::TemporalRetriever;
 use crate::reflect::{DefaultReflectPipeline, ReflectPipeline};
 use crate::retain::chunker::SimpleChunker;
-use crate::retain::extractor::LlmFactExtractor;
-use crate::retain::graph_builder::{DefaultGraphBuilder, GraphConfig};
-use crate::retain::resolver::LayeredEntityResolver;
-use crate::retain::{DefaultRetainPipeline, RetainPipeline};
+use crate::retain::extractor::{self, LlmFactExtractor};
+use crate::retain::graph_builder::{self, DefaultGraphBuilder, GraphConfig};
+use crate::retain::resolver::{self, LayeredEntityResolver};
+use crate::retain::{self, DefaultRetainPipeline, RetainPipeline};
 use crate::storage::MemoryStore;
 use crate::storage::pg::PgMemoryStore;
 use crate::types::ChunkConfig;
@@ -39,8 +43,66 @@ struct LlmConfig {
     base_url: Option<String>,
 }
 
+/// Stable prompt-template hash bundle for publication provenance.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RuntimePromptHashes {
+    /// Fact extraction template hash.
+    pub retain_extract: String,
+    /// Entity resolution system prompt hash.
+    pub retain_resolve_system: String,
+    /// Entity resolution user template hash.
+    pub retain_resolve_user: String,
+    /// Graph causal-link system prompt hash.
+    pub retain_graph_system: String,
+    /// Graph causal-link user template hash.
+    pub retain_graph_user: String,
+    /// Opinion reinforcement template hash.
+    pub retain_opinion: String,
+    /// Reflect agent template hash.
+    pub reflect_agent: String,
+    /// Consolidation template hash.
+    pub consolidate: String,
+    /// Opinion merge template hash.
+    pub opinion_merge: String,
+}
+
+/// Runtime tuning snapshot that affects benchmark behavior.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RuntimeTuning {
+    /// Text chunk size used during retain.
+    pub chunk_max_tokens: usize,
+    /// Chunk overlap used during retain.
+    pub chunk_overlap_tokens: usize,
+    /// Near-duplicate similarity threshold, if enabled.
+    pub dedup_threshold: Option<f32>,
+    /// Retriever candidate limit per retrieval strategy.
+    pub retriever_limit: usize,
+    /// RRF fusion constant.
+    pub recall_rrf_k: f32,
+    /// Top-N passed through reranking.
+    pub rerank_top_n: usize,
+    /// Reflect tool-loop iteration cap.
+    pub reflect_max_iterations: usize,
+    /// Reflect completion cap.
+    pub reflect_max_tokens: Option<usize>,
+    /// Graph semantic-link threshold.
+    pub graph_semantic_threshold: f32,
+    /// Graph temporal-link max distance.
+    pub graph_temporal_max_days: i64,
+    /// Whether causal links are enabled.
+    pub graph_enable_causal: bool,
+    /// Max causal link checks per retain batch.
+    pub graph_max_causal_checks: usize,
+    /// Consolidation batch size.
+    pub consolidation_batch_size: usize,
+    /// Consolidation completion cap.
+    pub consolidation_max_tokens: usize,
+    /// Consolidation retrieval budget.
+    pub consolidation_recall_budget: usize,
+}
+
 /// Human-readable runtime model labels.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeInfo {
     /// Retain/extraction model label.
     pub retain_model: String,
@@ -50,6 +112,10 @@ pub struct RuntimeInfo {
     pub embedding_model: String,
     /// Reranker model label.
     pub reranker_model: String,
+    /// Runtime tuning knobs.
+    pub tuning: RuntimeTuning,
+    /// Prompt template hashes.
+    pub prompt_hashes: RuntimePromptHashes,
 }
 
 /// Fully constructed Elephant runtime.
@@ -149,6 +215,29 @@ fn reranker_label(config: &RerankerConfig) -> String {
     }
 }
 
+fn fnv1a64_hex(data: &str) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in data.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn runtime_prompt_hashes() -> RuntimePromptHashes {
+    RuntimePromptHashes {
+        retain_extract: fnv1a64_hex(extractor::EXTRACT_PROMPT_TEMPLATE),
+        retain_resolve_system: fnv1a64_hex(resolver::ENTITY_RESOLUTION_SYSTEM_PROMPT),
+        retain_resolve_user: fnv1a64_hex(resolver::ENTITY_RESOLUTION_USER_PROMPT_TEMPLATE),
+        retain_graph_system: fnv1a64_hex(graph_builder::CAUSAL_LINK_SYSTEM_PROMPT),
+        retain_graph_user: fnv1a64_hex(graph_builder::CAUSAL_LINK_USER_PROMPT_TEMPLATE),
+        retain_opinion: fnv1a64_hex(retain::OPINION_REINFORCEMENT_PROMPT_TEMPLATE),
+        reflect_agent: fnv1a64_hex(crate::reflect::REFLECT_AGENT_PROMPT_TEMPLATE),
+        consolidate: fnv1a64_hex(observation::CONSOLIDATE_PROMPT),
+        opinion_merge: fnv1a64_hex(opinion_merger::MERGE_PROMPT),
+    }
+}
+
 /// Build the full Elephant runtime from environment variables.
 pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<ElephantRuntime> {
     let database_url = env_required("DATABASE_URL")?;
@@ -203,6 +292,12 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
         })?),
         Err(_) => Some(0.95),
     };
+    let chunk_config = ChunkConfig {
+        max_tokens: 512,
+        overlap_tokens: 64,
+        preserve_turns: true,
+    };
+    let graph_config = GraphConfig::default();
 
     let retain = Arc::new(DefaultRetainPipeline::new(
         Box::new(SimpleChunker),
@@ -225,7 +320,7 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
                 LlmStage::RetainGraph,
                 options.metrics.as_ref(),
             )?,
-            GraphConfig::default(),
+            graph_config.clone(),
         )),
         Box::new(PgMemoryStore::new(pool.clone())),
         embedding::build_client(&emb_config)?,
@@ -234,11 +329,7 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
             LlmStage::RetainOpinion,
             options.metrics.as_ref(),
         )?,
-        ChunkConfig {
-            max_tokens: 512,
-            overlap_tokens: 64,
-            preserve_turns: true,
-        },
+        chunk_config.clone(),
         dedup_threshold,
     ));
 
@@ -268,6 +359,7 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(40);
+    let recall_rrf_k = 60.0;
     let rerank_top_n: usize = env::var("RERANK_TOP_N")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -287,7 +379,7 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
         Box::new(TemporalRetriever::new(store.clone())),
         reranker,
         Box::new(EstimateTokenizer),
-        60.0,
+        recall_rrf_k,
         rerank_top_n,
     ));
 
@@ -295,11 +387,16 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(8);
-    let reflect = Arc::new(DefaultReflectPipeline::new(
+    let reflect_max_tokens = env::var("REFLECT_MAX_TOKENS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .or(Some(crate::reflect::DEFAULT_REFLECT_MAX_TOKENS));
+    let reflect = Arc::new(DefaultReflectPipeline::new_with_limits(
         recall.clone(),
         stage_llm(&reflect_config, LlmStage::Reflect, options.metrics.as_ref())?,
         store.clone(),
         reflect_max_iter,
+        reflect_max_tokens,
     ));
 
     let consolidator = Arc::new(DefaultConsolidator::new(
@@ -328,6 +425,24 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
             reflect_model: format!("{llm_provider}/{reflect_model}"),
             embedding_model: embedding_label(&emb_config),
             reranker_model: reranker_label(&reranker_config),
+            tuning: RuntimeTuning {
+                chunk_max_tokens: chunk_config.max_tokens,
+                chunk_overlap_tokens: chunk_config.overlap_tokens,
+                dedup_threshold,
+                retriever_limit,
+                recall_rrf_k,
+                rerank_top_n,
+                reflect_max_iterations: reflect_max_iter,
+                reflect_max_tokens,
+                graph_semantic_threshold: graph_config.semantic_threshold,
+                graph_temporal_max_days: graph_config.temporal_max_days,
+                graph_enable_causal: graph_config.enable_causal,
+                graph_max_causal_checks: graph_builder::MAX_CAUSAL_CHECKS,
+                consolidation_batch_size: observation::batch_size(),
+                consolidation_max_tokens: observation::max_tokens(),
+                consolidation_recall_budget: observation::recall_budget(),
+            },
+            prompt_hashes: runtime_prompt_hashes(),
         },
         retain,
         recall,

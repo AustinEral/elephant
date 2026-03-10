@@ -157,6 +157,7 @@ mod tests {
                 new_opinions: vec![],
                 confidence: 0.5,
                 retrieved_context: Default::default(),
+                trace: Default::default(),
             })
         }
     }

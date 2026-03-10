@@ -55,6 +55,18 @@ pub struct DefaultGraphBuilder {
     config: GraphConfig,
 }
 
+/// Causal-link system instruction.
+pub const CAUSAL_LINK_SYSTEM_PROMPT: &str =
+    "You are a causal relationship detector. Answer only 'yes' or 'no'.";
+/// Causal-link user prompt template.
+pub const CAUSAL_LINK_USER_PROMPT_TEMPLATE: &str = "Given these two facts, is there a causal relationship between them?\n\nFact A: {fact_a}\nFact B: {fact_b}\n\nAnswer 'yes' if one fact caused or led to the other, otherwise 'no'.";
+/// Causal-link temperature.
+pub const CAUSAL_LINK_TEMPERATURE: f32 = 0.0;
+/// Causal-link output cap.
+pub const CAUSAL_LINK_MAX_TOKENS: usize = 10;
+/// Max causal pairs checked per retain batch.
+pub const MAX_CAUSAL_CHECKS: usize = 10;
+
 impl DefaultGraphBuilder {
     /// Create a new graph builder.
     pub fn new(llm: Arc<dyn LlmClient>, config: GraphConfig) -> Self {
@@ -227,27 +239,20 @@ impl DefaultGraphBuilder {
         candidates.dedup();
 
         // Limit LLM calls
-        let max_checks = 10;
-        for (ni, ei) in candidates.into_iter().take(max_checks) {
+        for (ni, ei) in candidates.into_iter().take(MAX_CAUSAL_CHECKS) {
             let new_fact = &new_facts[ni];
             let existing = &existing_facts[ei];
 
-            let prompt = format!(
-                "Given these two facts, is there a causal relationship between them?\n\n\
-                 Fact A: {}\n\
-                 Fact B: {}\n\n\
-                 Answer 'yes' if one fact caused or led to the other, otherwise 'no'.",
-                new_fact.content, existing.content
-            );
+            let prompt = CAUSAL_LINK_USER_PROMPT_TEMPLATE
+                .replace("{fact_a}", &new_fact.content)
+                .replace("{fact_b}", &existing.content);
 
             let request = CompletionRequest {
                 model: String::new(),
-                system: Some(
-                    "You are a causal relationship detector. Answer only 'yes' or 'no'.".into(),
-                ),
+                system: Some(CAUSAL_LINK_SYSTEM_PROMPT.into()),
                 messages: vec![Message::text("user", prompt)],
-                temperature: Some(0.0),
-                max_tokens: Some(10),
+                temperature: Some(CAUSAL_LINK_TEMPERATURE),
+                max_tokens: Some(CAUSAL_LINK_MAX_TOKENS),
                 ..Default::default()
             };
 
