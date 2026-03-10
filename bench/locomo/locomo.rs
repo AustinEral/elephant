@@ -2249,7 +2249,9 @@ fn print_help() {
     eprintln!(
         "  --dataset <PATH>                Dataset path for `run`/`ingest` [default: data/locomo10.json]"
     );
-    eprintln!("  --tag <NAME>                    Save to bench/locomo/results/<tag>.json");
+    eprintln!(
+        "  --tag <NAME>                    Save to results/local/<tag>.json by default"
+    );
     eprintln!("  --out <PATH>                    Output results path (overrides --tag)");
     eprintln!("  --conversation <ID>             Run one specific conversation (repeatable)");
     eprintln!("  --ingest <MODE>                 turn | session | raw-json (`run`/`ingest` only)");
@@ -3070,6 +3072,34 @@ fn ensure_output_paths_are_safe(
     }
 }
 
+fn default_output_path(
+    command: BenchCommand,
+    config: &RunConfig,
+    artifact_path: Option<&Path>,
+) -> PathBuf {
+    if let Some(ref p) = config.output {
+        return p.clone();
+    }
+
+    match command {
+        BenchCommand::Qa => artifact_path
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("bench/locomo/results/local/qa.json")),
+        BenchCommand::Merge => {
+            let stem = config.tag.as_deref().unwrap_or("merged");
+            PathBuf::from(format!("bench/locomo/results/local/{stem}.json"))
+        }
+        BenchCommand::Run | BenchCommand::Ingest => {
+            let stem = if let Some(ref tag) = config.tag {
+                tag.clone()
+            } else {
+                format!("{}-{}", config.profile.as_str(), command.as_str())
+            };
+            PathBuf::from(format!("bench/locomo/results/local/{stem}.json"))
+        }
+    }
+}
+
 // --- Main ---
 
 #[tokio::main]
@@ -3081,21 +3111,7 @@ async fn main() {
     let artifact_path = invocation.artifact_path.clone();
     let merge_inputs = invocation.merge_artifacts.clone();
     let config = invocation.config;
-    let output_path = if let Some(ref p) = config.output {
-        p.clone()
-    } else if let Some(ref tag) = config.tag {
-        PathBuf::from(format!("bench/locomo/results/{tag}.json"))
-    } else if matches!(command, BenchCommand::Merge) {
-        PathBuf::from("bench/locomo/results/merged.json")
-    } else if let Some(ref artifact) = artifact_path {
-        artifact.clone()
-    } else {
-        PathBuf::from(format!(
-            "bench/locomo/results/{}-{}.json",
-            config.profile.as_str(),
-            command.as_str()
-        ))
-    };
+    let output_path = default_output_path(command, &config, artifact_path.as_deref());
 
     if let Err(err) = ensure_output_paths_are_safe(
         command,
@@ -3828,6 +3844,53 @@ mod tests {
             vec![PathBuf::from("a.json"), PathBuf::from("b.json")]
         );
         assert_eq!(invocation.config.output, Some(PathBuf::from("merged.json")));
+    }
+
+    #[test]
+    fn default_run_output_uses_local_directory() {
+        let config = RunConfig {
+            profile: RunProfile::Full,
+            ..RunConfig::default()
+        };
+        assert_eq!(
+            default_output_path(BenchCommand::Run, &config, None),
+            PathBuf::from("bench/locomo/results/local/full-run.json")
+        );
+    }
+
+    #[test]
+    fn default_tagged_run_output_uses_local_directory() {
+        let config = RunConfig {
+            profile: RunProfile::Full,
+            tag: Some("series1-conv-26".into()),
+            ..RunConfig::default()
+        };
+        assert_eq!(
+            default_output_path(BenchCommand::Run, &config, None),
+            PathBuf::from("bench/locomo/results/local/series1-conv-26.json")
+        );
+    }
+
+    #[test]
+    fn default_merge_output_uses_local_directory() {
+        let config = RunConfig {
+            profile: RunProfile::Full,
+            ..RunConfig::default()
+        };
+        assert_eq!(
+            default_output_path(BenchCommand::Merge, &config, None),
+            PathBuf::from("bench/locomo/results/local/merged.json")
+        );
+    }
+
+    #[test]
+    fn qa_defaults_to_source_artifact_path() {
+        let config = RunConfig::default();
+        let artifact = PathBuf::from("bench/locomo/results/local/ingest.json");
+        assert_eq!(
+            default_output_path(BenchCommand::Qa, &config, Some(&artifact)),
+            artifact
+        );
     }
 
     #[test]

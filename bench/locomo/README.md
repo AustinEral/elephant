@@ -40,6 +40,47 @@ The runner uses the same environment variables as Elephant itself:
 
 Judge env vars remain independently overridable through `JUDGE_*`.
 
+For benchmark hygiene, use an isolated Postgres instance instead of your normal development database. Docker is the easiest option:
+
+```bash
+docker run -d \
+  --name elephant-bench-pg \
+  -e POSTGRES_USER=postgres \
+  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=elephant_bench \
+  -p 5433:5432 \
+  -v elephant-bench-pgdata:/var/lib/postgresql/data \
+  pgvector/pgvector:pg16
+
+export DATABASE_URL=postgres://postgres:postgres@localhost:5433/elephant_bench
+```
+
+Using a named volume makes the benchmark database persistent:
+
+- container crash or restart: data stays
+- `docker stop` / `docker start`: data stays
+- delete and recreate the container: data stays, as long as the volume is kept
+- delete the volume: data is gone
+
+To fully reset the benchmark database:
+
+```bash
+docker rm -f elephant-bench-pg
+docker volume rm elephant-bench-pgdata
+```
+
+Recommended workflow:
+
+- keep one dedicated benchmark Postgres container
+- reset the database between benchmark series
+- do not reuse your normal local dev database for benchmark claims
+
+Results layout is split by purpose:
+
+- transient local outputs stay in `bench/locomo/results/local/`
+- final merged artifacts should be promoted intentionally to `bench/locomo/results/canonical/`
+- deprecated legacy artifacts live in `bench/locomo/results/archive/legacy-v0/`
+
 The serious runner surface is now profile-driven. Versioned profile files live in `bench/locomo/profiles/`, and `--config <path>` can layer additional JSON overrides on top.
 
 Reusable local configs can live alongside the benchmark in `bench/locomo/configs/`.
@@ -89,18 +130,26 @@ cargo run --release --bin locomo-bench -- \
 # Merge disjoint subset artifacts into one canonical result
 cargo run --release --bin locomo-bench -- \
   merge \
-  bench/locomo/results/batch-a.json \
-  bench/locomo/results/batch-b.json \
-  --out bench/locomo/results/full.json
+  bench/locomo/results/local/batch-a.json \
+  bench/locomo/results/local/batch-b.json \
+  --out bench/locomo/results/canonical/full.json
 
-# Inspect a run
-cargo run --release --bin view -- bench/locomo/results/baseline.json
+# Inspect a canonical run
+cargo run --release --bin view -- bench/locomo/results/canonical/full.json
 
 # Compare two runs
 cargo run --release --bin view -- \
-  bench/locomo/results/baseline.json \
-  bench/locomo/results/ablation.json
+  bench/locomo/results/canonical/baseline.json \
+  bench/locomo/results/canonical/ablation.json
 ```
+
+By default:
+
+- `run` and `ingest` write to `bench/locomo/results/local/`
+- `merge` also writes to `bench/locomo/results/local/`
+- `qa <artifact>` writes back to the source artifact unless `--out` is set
+
+Use `--out bench/locomo/results/canonical/<name>.json` when you intentionally want to promote a merged artifact into the canonical record.
 
 ## Important flags
 
@@ -112,7 +161,7 @@ cargo run --release --bin view -- \
 | `merge <artifact>...` | Combine compatible subset artifacts into one canonical summary + sidecars |
 | `--profile <name>` | Load a versioned benchmark profile (`full`, `smoke`, `legacy-raw`) |
 | `--config <path>` | Apply JSON overrides on top of the selected profile |
-| `--tag <name>` | Save results to `bench/locomo/results/<name>.json` |
+| `--tag <name>` | Name the output stem in `results/local/` by default |
 | `--conversation <id>` | Run a specific conversation; repeat to run an explicit set |
 | `--ingest <turn|session|raw-json>` | Choose turn-level ingest, legacy session ingest, or unfair raw-json reproduction |
 | `--consolidation <end|per-session|off>` | Control when consolidation runs |

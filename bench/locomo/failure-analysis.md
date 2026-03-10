@@ -1,6 +1,7 @@
 # Failure Analysis: reflect-hierarchical-logging-2
 
 **Run**: `reflect-hierarchical-logging-2` | **Accuracy**: 83.8% (129/154) | **25 failures**
+**Artifact**: `bench/locomo/results/archive/legacy-v0/reflect-hierarchical-logging-2.json`
 
 ## Root Cause Summary
 

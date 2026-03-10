@@ -80,7 +80,7 @@ cargo run --release --bin locomo-bench -- \
   --tag temporal-consolidation-rerun
 ```
 
-Legacy results JSON: `bench/locomo/results/temporal-consolidation.json`
+Legacy results JSON: `bench/locomo/results/archive/legacy-v0/temporal-consolidation.json`
 Schema: [results-format.md](results-format.md)
 
 ### Caveats

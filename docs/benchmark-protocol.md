@@ -114,21 +114,27 @@ cargo run --release --bin locomo-bench -- ingest --profile full --tag ingest
 # QA only from an ingest artifact
 cargo run --release --bin locomo-bench -- \
   qa \
-  bench/locomo/results/ingest.json \
-  --out bench/locomo/results/ingest-qa.json
+  bench/locomo/results/local/ingest.json \
+  --out bench/locomo/results/local/ingest-qa.json
 
 # Merge compatible subset runs into one canonical artifact
 cargo run --release --bin locomo-bench -- \
   merge \
-  bench/locomo/results/batch-a.json \
-  bench/locomo/results/batch-b.json \
-  --out bench/locomo/results/full.json
+  bench/locomo/results/local/batch-a.json \
+  bench/locomo/results/local/batch-b.json \
+  --out bench/locomo/results/canonical/full.json
 
 # View results
-cargo run --release --bin view -- bench/locomo/results/full.json
+cargo run --release --bin view -- bench/locomo/results/canonical/full.json
 ```
 
 All results are saved in `bench/locomo/results/` as a summary JSON plus `*.questions.jsonl` and `*.debug.jsonl` sidecars. Schema defined in [results-format.md](results-format.md). If a benchmark is assembled from batch runs, the final merged artifact should be the one treated as canonical.
+
+Recommended layout:
+
+- local scratch runs in `bench/locomo/results/local/`
+- canonical merged artifacts in `bench/locomo/results/canonical/` only when promoted explicitly with `--out`
+- deprecated historical artifacts in `bench/locomo/results/archive/legacy-v0/`
 
 ## Merge constraints
 

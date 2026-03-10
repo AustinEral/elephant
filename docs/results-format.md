@@ -1,10 +1,19 @@
 # Benchmark Results Format
 
-Benchmark runs now write three artifacts in `bench/locomo/results/`:
+Benchmark runs now write three artifacts under `bench/locomo/results/`:
 
 - summary JSON: `<tag>.json`
 - question records: `<tag>.questions.jsonl`
 - debug records: `<tag>.debug.jsonl`
+
+Recommended layout:
+
+- `bench/locomo/results/local/` for local `run` and `ingest` outputs
+- `bench/locomo/results/local/` for default `merge` outputs too
+- `bench/locomo/results/canonical/` for promoted merged artifacts
+- `bench/locomo/results/archive/legacy-v0/` for pre-refactor historical JSONs
+
+Historical pre-refactor JSONs are archived under `bench/locomo/results/archive/legacy-v0/`. They are not part of the current artifact contract.
 
 The summary file is the canonical run manifest and aggregate metric record. Per-question payloads live in sidecars so publication-grade runs do not balloon into one giant nested JSON document.
 
