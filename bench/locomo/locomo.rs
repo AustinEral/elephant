@@ -463,14 +463,12 @@ fn session_count(conv: &Conversation) -> usize {
     conv.sessions
         .keys()
         .filter_map(|k| {
-            k.strip_prefix("session_")
-                .and_then(|rest| rest.strip_suffix("_date_time"))
-                .or_else(|| {
-                    k.strip_prefix("session_").and_then(|rest| {
-                        rest.strip_suffix("_dialogue")
-                            .or_else(|| rest.strip_suffix("_dialog"))
-                    })
-                })
+            let rest = k.strip_prefix("session_")?;
+            if let Ok(n) = rest.parse::<usize>() {
+                return Some(n);
+            }
+            rest.strip_suffix("_dialogue")
+                .or_else(|| rest.strip_suffix("_dialog"))
                 .and_then(|n| n.parse::<usize>().ok())
         })
         .max()
@@ -3829,6 +3827,33 @@ mod tests {
         assert_eq!(turns.len(), 2);
         assert_eq!(turns[0].dia_id.as_deref(), Some("D1:1"));
         assert_eq!(turns[1].dia_id.as_deref(), Some("D1:2"));
+    }
+
+    #[test]
+    fn session_count_ignores_summary_and_observation_keys() {
+        let conversation = Conversation {
+            speaker_a: "Caroline".into(),
+            speaker_b: "Melanie".into(),
+            sessions: HashMap::from([
+                (
+                    "session_1".into(),
+                    json!([
+                        {
+                            "speaker": "Caroline",
+                            "dia_id": "D1:1",
+                            "text": "Hey Mel!"
+                        }
+                    ]),
+                ),
+                ("session_1_date_time".into(), json!("1:56 pm on 8 May, 2023")),
+                ("session_1_summary".into(), json!("summary text")),
+                ("session_1_observation".into(), json!({ "facts": [] })),
+                ("session_35_summary".into(), json!("later summary text")),
+                ("session_35_observation".into(), json!({ "facts": [] })),
+            ]),
+        };
+
+        assert_eq!(session_count(&conversation), 1);
     }
 
     #[test]
