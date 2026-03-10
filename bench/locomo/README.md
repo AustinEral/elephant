@@ -42,6 +42,15 @@ Judge env vars remain independently overridable through `JUDGE_*`.
 
 The serious runner surface is now profile-driven. Versioned profile files live in `bench/locomo/profiles/`, and `--config <path>` can layer additional JSON overrides on top.
 
+Reusable local configs can live alongside the benchmark in `bench/locomo/configs/`.
+
+Profiles and configs are intentionally different:
+
+- profiles are canonical benchmark shapes, like `full`, `smoke`, and `legacy-raw`
+- configs are small local overlays that change only a few knobs on top of a profile
+
+In practice, use `--profile full` as the base benchmark contract and use `--config` only for operator convenience, like changing question parallelism.
+
 The CLI is intentionally strict. Old flag aliases were removed so benchmark commands stay unambiguous.
 
 ## Quick start
@@ -68,6 +77,14 @@ cargo run --release --bin locomo-bench -- \
   qa \
   bench/locomo/results/ingest.json \
   --out bench/locomo/results/ingest-qa.json
+
+# Single conversation with 5 question workers
+cargo run --release --bin locomo-bench -- \
+  run \
+  --profile full \
+  --config bench/locomo/configs/question-jobs-5.json \
+  --conversation conv-26 \
+  --tag series1-conv-26
 
 # Merge disjoint subset artifacts into one canonical result
 cargo run --release --bin locomo-bench -- \
