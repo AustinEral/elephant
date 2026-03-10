@@ -6,4 +6,5 @@ hindsight.sh
 docs/HINDSIGHT.md
 docs/agentic-reflect-improvements.md
 data/
-
+bench/locomo/results/local/*
+!bench/locomo/results/local/.gitkeep
