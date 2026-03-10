@@ -17,8 +17,9 @@ use std::time::Instant;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{Mutex, Semaphore, mpsc};
 
+use elephant::consolidation::{ConsolidationProgress, observation};
 use elephant::MemoryStore;
 use elephant::llm::retry::{RetryPolicy, RetryingLlmClient};
 use elephant::llm::{self, LlmClient, Provider, ProviderConfig};
@@ -2396,6 +2397,79 @@ fn question_id_for(sample_id: &str, question: &str) -> String {
     format!("{:06x}", h.finish() & 0xFFFFFF)
 }
 
+async fn count_unconsolidated_facts(
+    runtime: &ElephantRuntime,
+    bank_id: BankId,
+) -> Result<usize, String> {
+    runtime
+        .store
+        .get_facts_by_bank(
+            bank_id,
+            elephant::types::FactFilter {
+                network: Some(vec![NetworkType::World, NetworkType::Experience]),
+                unconsolidated_only: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .map(|facts| facts.len())
+        .map_err(|e| format!("failed to count unconsolidated facts: {e}"))
+}
+
+fn should_log_consolidation_progress(progress: &ConsolidationProgress) -> bool {
+    progress.batch_index == 1
+        || progress.batch_index == progress.total_batches
+        || progress.batch_index % 10 == 0
+}
+
+async fn consolidate_with_bench_progress(
+    tag: &str,
+    runtime: Arc<ElephantRuntime>,
+    bank_id: BankId,
+    conversation_metrics: Arc<MetricsCollector>,
+) -> Result<elephant::types::ConsolidationReport, String> {
+    let total_facts = count_unconsolidated_facts(runtime.as_ref(), bank_id).await?;
+    let total_batches = if total_facts == 0 {
+        0
+    } else {
+        total_facts.div_ceil(observation::batch_size())
+    };
+    println!(
+        "[{tag}] Consolidating {total_facts} fact{} in {total_batches} batch{}...",
+        if total_facts == 1 { "" } else { "s" },
+        if total_batches == 1 { "" } else { "es" },
+    );
+
+    let started = Instant::now();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let consolidator = runtime.consolidator.clone();
+    let task = tokio::spawn(async move {
+        with_scoped_collector(
+            conversation_metrics,
+            consolidator.consolidate_with_progress(bank_id, Some(tx)),
+        )
+        .await
+    });
+
+    while let Some(progress) = rx.recv().await {
+        if should_log_consolidation_progress(&progress) {
+            println!(
+                "[{tag}]   consolidate [{}/{}] | {} facts | {} created | {} updated | elapsed: {}",
+                progress.batch_index,
+                progress.total_batches,
+                progress.batch_facts,
+                progress.observations_created,
+                progress.observations_updated,
+                fmt_elapsed(started.elapsed().as_secs_f64()),
+            );
+        }
+    }
+
+    task.await
+        .map_err(|e| format!("[{tag}] consolidate task failed: {e}"))?
+        .map_err(|e| format!("[{tag}] consolidate failed: {e}"))
+}
+
 async fn run_conversation(
     tag: String,
     runtime: Arc<ElephantRuntime>,
@@ -2589,22 +2663,19 @@ async fn run_conversation(
 
             if options.consolidation.per_session() {
                 let t0 = Instant::now();
-                match with_scoped_collector(
+                match consolidate_with_bench_progress(
+                    &tag,
+                    runtime.clone(),
+                    bank.id,
                     conversation_metrics.clone(),
-                    runtime.consolidator.consolidate(bank.id),
                 )
-                .await
-                {
+                .await {
                     Ok(cr) => {
                         bank_stats.observations_created += cr.observations_created;
                         bank_stats.observations_updated += cr.observations_updated;
-                        println!(
-                            "[{tag}]   consolidate: {} created, {} updated",
-                            cr.observations_created, cr.observations_updated,
-                        );
                     }
                     Err(e) => {
-                        eprintln!("[{tag}]   consolidate failed: {e}");
+                        eprintln!("{e}");
                     }
                 }
                 consolidation_time_s += t0.elapsed().as_secs_f64();
@@ -2629,14 +2700,14 @@ async fn run_conversation(
         && !options.consolidation.per_session()
         && options.existing_bank.is_none()
     {
-        println!("[{tag}] Consolidating...");
         let t0 = Instant::now();
-        match with_scoped_collector(
+        match consolidate_with_bench_progress(
+            &tag,
+            runtime.clone(),
+            bank_id,
             conversation_metrics.clone(),
-            runtime.consolidator.consolidate(bank_id),
         )
-        .await
-        {
+        .await {
             Ok(resp) => {
                 let elapsed = t0.elapsed().as_secs_f64();
                 bank_stats.observations_created += resp.observations_created;
@@ -2649,7 +2720,7 @@ async fn run_conversation(
                 );
             }
             Err(e) => {
-                eprintln!("[{tag}] consolidate FAILED: {e}");
+                eprintln!("{e}");
             }
         }
         consolidation_time_s += t0.elapsed().as_secs_f64();

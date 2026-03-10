@@ -167,7 +167,11 @@ mod tests {
 
     #[async_trait]
     impl Consolidator for MockConsolidator {
-        async fn consolidate(&self, _bank_id: BankId) -> Result<ConsolidationReport> {
+        async fn consolidate_with_progress(
+            &self,
+            _bank_id: BankId,
+            _progress: Option<tokio::sync::mpsc::UnboundedSender<crate::consolidation::ConsolidationProgress>>,
+        ) -> Result<ConsolidationReport> {
             Ok(ConsolidationReport::default())
         }
     }

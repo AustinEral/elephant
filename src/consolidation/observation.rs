@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use futures::future::join_all;
 use serde::Deserialize;
+use tokio::sync::mpsc::UnboundedSender;
 use tracing::{Instrument, debug, info, info_span, warn};
 
 use crate::embedding::EmbeddingClient;
@@ -28,7 +29,33 @@ use crate::types::{
 #[async_trait]
 pub trait Consolidator: Send + Sync {
     /// Process unconsolidated facts and create/update observations.
-    async fn consolidate(&self, bank_id: BankId) -> Result<ConsolidationReport>;
+    async fn consolidate(&self, bank_id: BankId) -> Result<ConsolidationReport> {
+        self.consolidate_with_progress(bank_id, None).await
+    }
+
+    /// Process unconsolidated facts and optionally emit per-batch progress events.
+    async fn consolidate_with_progress(
+        &self,
+        bank_id: BankId,
+        progress: Option<UnboundedSender<ConsolidationProgress>>,
+    ) -> Result<ConsolidationReport>;
+}
+
+/// Progress update emitted after each consolidation batch commits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsolidationProgress {
+    /// Total unconsolidated facts seen at the start of consolidation.
+    pub total_facts: usize,
+    /// Total number of batches in this consolidation run.
+    pub total_batches: usize,
+    /// One-based batch index that just completed.
+    pub batch_index: usize,
+    /// Number of raw facts processed in this batch.
+    pub batch_facts: usize,
+    /// Cumulative observations created so far.
+    pub observations_created: usize,
+    /// Cumulative observations updated so far.
+    pub observations_updated: usize,
 }
 
 /// Default implementation using LLM for topic-scoped synthesis.
@@ -143,21 +170,29 @@ fn merge_temporal(existing: Option<&TemporalRange>, facts: &[&Fact]) -> Option<T
 
 #[async_trait]
 impl Consolidator for DefaultConsolidator {
-    async fn consolidate(&self, bank_id: BankId) -> Result<ConsolidationReport> {
+    async fn consolidate_with_progress(
+        &self,
+        bank_id: BankId,
+        progress: Option<UnboundedSender<ConsolidationProgress>>,
+    ) -> Result<ConsolidationReport> {
         let consolidate_span = info_span!("consolidate",
             bank_id = %bank_id,
             unconsolidated = tracing::field::Empty,
             created = tracing::field::Empty,
             updated = tracing::field::Empty,
         );
-        self.consolidate_inner(bank_id)
+        self.consolidate_inner(bank_id, progress)
             .instrument(consolidate_span)
             .await
     }
 }
 
 impl DefaultConsolidator {
-    async fn consolidate_inner(&self, bank_id: BankId) -> Result<ConsolidationReport> {
+    async fn consolidate_inner(
+        &self,
+        bank_id: BankId,
+        progress: Option<UnboundedSender<ConsolidationProgress>>,
+    ) -> Result<ConsolidationReport> {
         let mut report = ConsolidationReport::default();
 
         // 1. Fetch unconsolidated World/Experience facts
@@ -358,6 +393,16 @@ impl DefaultConsolidator {
                 updated = report.observations_updated,
                 "batch committed"
             );
+            if let Some(progress) = &progress {
+                let _ = progress.send(ConsolidationProgress {
+                    total_facts: unconsolidated.len(),
+                    total_batches,
+                    batch_index: batch_idx + 1,
+                    batch_facts: batch.len(),
+                    observations_created: report.observations_created,
+                    observations_updated: report.observations_updated,
+                });
+            }
         }
 
         info!(
