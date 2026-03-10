@@ -120,6 +120,9 @@ cargo run --release --bin view -- \
 | `--question-jobs <n>` | Parallel questions per conversation |
 | `--session-limit <n>` | Debug-only session slice |
 | `--question-limit <n>` | Debug-only question slice |
+| `--force` | Allow overwriting an existing output path and sidecars |
+
+Fresh `run`, `ingest`, and `merge` outputs now refuse to overwrite existing summary/sidecar files unless you pass `--force`. `qa` still allows in-place updates when it writes back to its source artifact by default.
 
 ## Merge constraints
 

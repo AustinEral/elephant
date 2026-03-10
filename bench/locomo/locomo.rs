@@ -1174,6 +1174,7 @@ struct RunConfig {
     conversation_jobs: usize,
     question_jobs: usize,
     judge_model: Option<String>,
+    allow_overwrite: bool,
 }
 
 impl Default for RunConfig {
@@ -1192,6 +1193,7 @@ impl Default for RunConfig {
             conversation_jobs: 1,
             question_jobs: 1,
             judge_model: None,
+            allow_overwrite: false,
         }
     }
 }
@@ -1250,6 +1252,7 @@ struct CliOverrides {
     conversation_jobs: Option<usize>,
     question_jobs: Option<usize>,
     judge_model: Option<String>,
+    allow_overwrite: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1294,6 +1297,9 @@ impl CliOverrides {
         }
         if let Some(judge_model) = self.judge_model {
             config.judge_model = Some(judge_model);
+        }
+        if self.allow_overwrite {
+            config.allow_overwrite = true;
         }
         if let Some(path) = self.config_path {
             config.config_path = Some(path);
@@ -1632,6 +1638,9 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
                         .clone(),
                 );
             }
+            "--force" => {
+                overrides.allow_overwrite = true;
+            }
             value if matches!(command, BenchCommand::Merge) && !value.starts_with('-') => {
                 merge_artifacts.push(PathBuf::from(value));
             }
@@ -1806,6 +1815,7 @@ fn run_config_from_artifact(artifact: &BenchmarkOutput) -> Result<RunConfig, Str
         conversation_jobs: manifest.conversation_concurrency.max(1),
         question_jobs: manifest.question_concurrency.max(1),
         judge_model: None,
+        allow_overwrite: false,
     })
 }
 
@@ -2247,6 +2257,7 @@ fn print_help() {
     eprintln!("  --conversation-jobs <N>         Parallel conversations");
     eprintln!("  --question-jobs <N>             Parallel questions per conversation");
     eprintln!("  --judge-model <MODEL>           Override judge model");
+    eprintln!("  --force                         Allow overwriting existing output files");
     eprintln!();
     eprintln!("Debug slice options:");
     eprintln!(
@@ -3001,6 +3012,64 @@ fn git_dirty_worktree() -> Option<bool> {
     )
 }
 
+fn same_path(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(lhs), Ok(rhs)) => lhs == rhs,
+        _ => false,
+    }
+}
+
+fn ensure_output_paths_are_safe(
+    command: BenchCommand,
+    output_path: &Path,
+    artifact_path: Option<&Path>,
+    merge_inputs: &[PathBuf],
+    allow_overwrite: bool,
+) -> Result<(), String> {
+    if allow_overwrite {
+        return Ok(());
+    }
+
+    if matches!(command, BenchCommand::Qa)
+        && artifact_path
+            .map(|artifact| same_path(output_path, artifact))
+            .unwrap_or(false)
+    {
+        return Ok(());
+    }
+
+    if matches!(command, BenchCommand::Merge)
+        && merge_inputs
+            .iter()
+            .any(|input| same_path(output_path, input))
+    {
+        return Err(format!(
+            "refusing to overwrite merge input {}; choose a different --out/--tag or pass --force",
+            output_path.display()
+        ));
+    }
+
+    let questions_path = sidecar_path(output_path, "questions");
+    let debug_path = sidecar_path(output_path, "debug");
+    let existing = [output_path, questions_path.as_path(), debug_path.as_path()]
+        .into_iter()
+        .filter(|path| path.exists())
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>();
+
+    if existing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "refusing to overwrite existing benchmark output: {}. Choose a new --tag/--out or pass --force",
+            existing.join(", ")
+        ))
+    }
+}
+
 // --- Main ---
 
 #[tokio::main]
@@ -3027,6 +3096,17 @@ async fn main() {
             command.as_str()
         ))
     };
+
+    if let Err(err) = ensure_output_paths_are_safe(
+        command,
+        &output_path,
+        artifact_path.as_deref(),
+        &merge_inputs,
+        config.allow_overwrite,
+    ) {
+        eprintln!("{err}");
+        std::process::exit(1);
+    }
 
     if matches!(command, BenchCommand::Merge) {
         if let Err(err) = merge_artifacts(&merge_inputs, &output_path, config.tag.clone()) {
@@ -3626,6 +3706,55 @@ mod tests {
         assert!(!status_line_is_ignored(
             "R  bench/locomo/results/old.json -> src/runtime.rs"
         ));
+    }
+
+    #[test]
+    fn blocks_overwriting_existing_fresh_output_without_force() {
+        let test_dir =
+            env::temp_dir().join(format!("locomo-overwrite-test-{}", std::process::id()));
+        fs::create_dir_all(&test_dir).expect("create overwrite test dir");
+        let output = test_dir.join("run.json");
+        fs::write(&output, "{}").expect("write existing output");
+
+        let err = ensure_output_paths_are_safe(BenchCommand::Run, &output, None, &[], false)
+            .expect_err("fresh overwrite should be blocked");
+        assert!(err.contains("refusing to overwrite"));
+
+        fs::remove_dir_all(&test_dir).ok();
+    }
+
+    #[test]
+    fn qa_allows_in_place_artifact_update_without_force() {
+        let test_dir = env::temp_dir().join(format!("locomo-qa-safe-test-{}", std::process::id()));
+        fs::create_dir_all(&test_dir).expect("create qa safe test dir");
+        let artifact = test_dir.join("artifact.json");
+        fs::write(&artifact, "{}").expect("write artifact");
+
+        ensure_output_paths_are_safe(BenchCommand::Qa, &artifact, Some(&artifact), &[], false)
+            .expect("qa should allow in-place update");
+
+        fs::remove_dir_all(&test_dir).ok();
+    }
+
+    #[test]
+    fn merge_output_must_differ_from_inputs_without_force() {
+        let test_dir =
+            env::temp_dir().join(format!("locomo-merge-safe-test-{}", std::process::id()));
+        fs::create_dir_all(&test_dir).expect("create merge safe test dir");
+        let input = test_dir.join("merged.json");
+        fs::write(&input, "{}").expect("write merge input");
+
+        let err = ensure_output_paths_are_safe(
+            BenchCommand::Merge,
+            &input,
+            None,
+            std::slice::from_ref(&input),
+            false,
+        )
+        .expect_err("merge should reject overwriting its input");
+        assert!(err.contains("refusing to overwrite merge input"));
+
+        fs::remove_dir_all(&test_dir).ok();
     }
 
     #[test]
