@@ -36,9 +36,9 @@ Only systems with directly inspectable methodology or primary-source papers are 
 
 Elephant does **not** currently have a benchmark-valid public comparison number.
 
-- The checked-in conv-26 artifact is single-conversation only.
-- That artifact also predates the 2026-03-09 fix that now hard-excludes Category 5.
-- A clean rerun is required before even the conv-26 slice should be cited externally.
+- Elephant now has a clean current-harness `conv-26` reference run.
+- That run is still single-conversation only, so it is a tuning/reference slice rather than a headline benchmark claim.
+- A full Cat.1-4 run plus at least one rerun/variance note is still required before citing Elephant competitively.
 
 ## Common Standard To Follow
 

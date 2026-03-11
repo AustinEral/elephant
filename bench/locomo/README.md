@@ -125,7 +125,7 @@ cargo run --release --bin locomo-bench -- \
   --profile full \
   --config bench/locomo/configs/question-jobs-5.json \
   --conversation conv-26 \
-  --tag series1-conv-26
+  --tag conv-26-q5
 
 # Merge disjoint subset artifacts into one canonical result
 cargo run --release --bin locomo-bench -- \

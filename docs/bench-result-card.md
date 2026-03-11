@@ -1,25 +1,27 @@
 # Elephant Benchmark Result Card
 
-## Run: temporal-consolidation (2026-03-08)
+## Run: series1-conv-26 (2026-03-10)
 
 ### Status
 
 | Field | Value |
 |---|---|
-| Publication status | **Not leaderboard-valid yet** |
-| Why | This artifact predates the 2026-03-09 harness fix that hard-excludes LoCoMo Category 5 |
-| Required action | Rerun with the current harness before using externally |
+| Publication status | **Clean single-conversation reference run** |
+| Why not a headline claim | `conv-26` only, no rerun/variance note, not full LoCoMo |
+| Required action | Run the full Cat.1-4 benchmark on frozen config and add a rerun or judge-variance note |
 
 ### Scope
 
 | Field | Value |
 |---|---|
 | Dataset | LoCoMo (ACL 2024) |
-| Conversations | conv-26 only (1 of 10) |
-| Sessions ingested | 26 |
-| Questions scored in legacy JSON | 154 |
-| Protocol-correct Cat.1-4 slice | 152 |
-| Cat.5 leakage in legacy JSON | 2 (`unanswerable`) |
+| Conversations | `conv-26` only (1 of 10) |
+| Sessions ingested | 19 |
+| Questions scored | 152 |
+| Categories | Cat.1-4 only |
+| Ingest mode | Session-level |
+| Consolidation | End-of-run |
+| Question concurrency | 5 |
 
 Full protocol: [benchmark-protocol.md](benchmark-protocol.md)
 
@@ -38,56 +40,51 @@ Full protocol: [benchmark-protocol.md](benchmark-protocol.md)
 
 | Slice | Accuracy | n |
 |---|---|---|
-| Legacy artifact (includes leaked Cat.5) | 94.2% | 154 |
-| Protocol-correct Cat.1-4 slice | **94.1%** | **152** |
+| Clean Cat.1-4 reference slice | **94.7%** | **152** |
 
-Cat.1-4 breakdown from the protocol-correct slice:
+Category breakdown:
 
 | Category | Accuracy | n |
 |---|---|---|
-| Temporal | **100.0%** | 13 |
+| Single-hop | 93.8% | 32 |
 | Multi-hop | 94.6% | 37 |
-| Open-domain | 94.3% | 70 |
-| Single-hop | 90.6% | 32 |
+| Temporal | 84.6% | 13 |
+| Open-domain | **97.1%** | 70 |
 
 ### Efficiency
 
 | Metric | Value |
 |---|---|
-| Total runtime | 103m 10s |
-| Avg reflect time | 38.6s/question |
-| Token usage | Not yet instrumented |
+| Total runtime | 135m 15s |
+| Ingest | 81m 38s |
+| Consolidation | 32m 03s |
+| QA | 21m 34s |
+| Avg QA time | 8.5s/question |
+| Token usage (total) | 4,998,181 |
+| Token usage (excluding judge) | 4,899,479 |
 
 ### Variance
 
-Not yet measured. A judge-only rerun and a fresh end-to-end rerun are still required to establish variance bounds. Backboard reports roughly 2-3% judge variance with GPT-4.1; Elephant has no measured variance yet.
+Not yet measured. Elephant still needs either a clean rerun or a judge-only variance pass before this should be cited beyond internal reference use.
 
 ### Reproduction
 
 ```bash
-# Legacy reproduction command (kept for traceability)
 cargo run --release --bin locomo-bench -- \
   run \
   --profile full \
+  --config bench/locomo/configs/question-jobs-5.json \
   --conversation conv-26 \
-  --tag temporal-consolidation-legacy-shape
-
-# Required next step: rerun with the current harness to get a clean Cat.1-4 artifact
-cargo run --release --bin locomo-bench -- \
-  run \
-  --profile full \
-  --conversation conv-26 \
-  --tag temporal-consolidation-rerun
+  --tag series1-conv-26
 ```
 
-Legacy results JSON: `bench/locomo/results/archive/legacy-v0/temporal-consolidation.json`
+Artifact: `bench/locomo/results/local/series1-conv-26.json`
 Schema: [results-format.md](results-format.md)
 
 ### Caveats
 
-- **Single conversation only** — still a stress test, not a full leaderboard claim
-- **Legacy artifact** — includes 2 Category 5 rows and should not be used for public comparison
-- **Fresh rerun still needed** — the checked-in JSON is legacy, even though the current harness now records token/cost data
+- **Single conversation only** — useful reference slice, not a full benchmark claim
 - **No variance data yet** — still single-run only
+- **Session ingest** — appropriate for current Elephant benchmarking, but turn-level evidence-trace metrics are weaker in this mode
 - **Same model for all stages** — extraction, reflection, consolidation, and judging all use Sonnet 4.6
 - **BLIP-2 image captions** — images replaced with captions per LoCoMo evaluation protocol

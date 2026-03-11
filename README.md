@@ -12,7 +12,7 @@
   <img src="https://img.shields.io/badge/license-MIT%2FApache--2.0-green" alt="License">
 </p>
 
-<p align="center"><b>94.2% accuracy</b> on <a href="bench/locomo/README.md">LoCoMo</a> (conv-26, 154 questions, Cat.1–4) · <b>100%</b> temporal reasoning</p>
+<p align="center"><b>94.7% accuracy</b> on <a href="bench/locomo/README.md">LoCoMo</a> (conv-26, 152 questions, Cat.1–4) · single-conversation reference run</p>
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> · <a href="#how-it-works">How It Works</a> · <a href="#features">Features</a> · <a href="#benchmarks">Benchmarks</a>
@@ -122,15 +122,15 @@ flowchart TB
 
 | Category | Accuracy | Description |
 |:--|:-:|:--|
-| **Temporal** | **100.0%** | Time-aware queries ("when did…", "before/after…") |
+| **Temporal** | 84.6% | Time-aware queries ("when did…", "before/after…") |
 | **Multi-hop** | 94.6% | Questions requiring reasoning across multiple memories |
-| **Open-domain** | 94.3% | General knowledge grounded in conversation history |
-| **Single-hop** | 90.6% | Direct fact retrieval from a single memory |
+| **Open-domain** | **97.1%** | General knowledge grounded in conversation history |
+| **Single-hop** | 93.8% | Direct fact retrieval from a single memory |
 | | | |
 | | | |
-| **Overall** | **94.2%** | **154 questions, conv-26 only (Cat.1–4)** |
+| **Overall** | **94.7%** | **152 questions, conv-26 only (Cat.1–4)** |
 
-<sub>Sonnet 4.6 · bge-small-en-v1.5 local embeddings · <a href="docs/benchmark-protocol.md">protocol</a> · <a href="docs/bench-result-card.md">full result card</a></sub>
+<sub>Sonnet 4.6 · bge-small-en-v1.5 local embeddings · <a href="docs/benchmark-protocol.md">protocol</a> · <a href="docs/bench-result-card.md">result card</a></sub>
 
 ## References
 

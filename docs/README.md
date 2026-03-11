@@ -6,6 +6,8 @@
 - **[bench-result-card.md](bench-result-card.md)** — current benchmark status, metadata, and caveats
 - **[bench-competitors.md](bench-competitors.md)** — competitive landscape and benchmark methodology references
 - **[results-format.md](results-format.md)** — JSON format for benchmark output files
+- **[../bench/locomo/README.md](../bench/locomo/README.md)** — LoCoMo benchmark runner usage and operational workflow
+- **[../bench/locomo/results/README.md](../bench/locomo/results/README.md)** — benchmark result layout and archive conventions
 
 ## Architecture
 
