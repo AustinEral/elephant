@@ -4,16 +4,6 @@ Evaluates long-term conversational memory using the [LoCoMo dataset](https://arx
 
 The checked-in public reference slice is `conv-26` on the current harness. Full-benchmark claims still require all 10 conversations plus a rerun or variance note.
 
-## What changed
-
-The benchmark now runs Elephant **in process** instead of talking to a running server over HTTP.
-
-That change was deliberate:
-
-- stage-token accounting is now precise
-- retain/reflect/consolidate are benchmarked through the real runtime wiring
-- turn provenance is still available when `--ingest turn` is used
-
 ## Scope
 
 - Categories scored: **1-4 only**
@@ -81,7 +71,7 @@ Results layout is split by purpose:
 
 - transient local outputs stay in `bench/locomo/results/local/`
 - final merged artifacts should be promoted intentionally to `bench/locomo/results/canonical/`
-- deprecated legacy artifacts live in `bench/locomo/results/archive/legacy-v0/`
+- historical artifacts live in `bench/locomo/results/archive/legacy-v0/`
 
 The serious runner surface is now profile-driven. Versioned profile files live in `bench/locomo/profiles/`, and `--config <path>` can layer additional JSON overrides on top.
 
@@ -223,4 +213,4 @@ Schema: [results-format.md](/docs/results-format.md)
 
 ## Publication status
 
-The checked-in historical artifacts are still legacy outputs from the old harness. Use the new runner for any benchmark claim or comparison work.
+Use the current runner and current artifact schema for any benchmark claim or comparison work.

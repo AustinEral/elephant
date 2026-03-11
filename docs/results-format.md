@@ -11,9 +11,7 @@ Recommended layout:
 - `bench/locomo/results/local/` for local `run` and `ingest` outputs
 - `bench/locomo/results/local/` for default `merge` outputs too
 - `bench/locomo/results/canonical/` for promoted merged artifacts
-- `bench/locomo/results/archive/legacy-v0/` for pre-refactor historical JSONs
-
-Historical pre-refactor JSONs are archived under `bench/locomo/results/archive/legacy-v0/`. They are not part of the current artifact contract.
+- `bench/locomo/results/archive/legacy-v0/` for historical JSONs outside the current artifact contract
 
 The summary file is the canonical run manifest and aggregate metric record. Per-question payloads live in sidecars so publication-grade runs do not balloon into one giant nested JSON document.
 
@@ -288,7 +286,7 @@ These are summed across the run and keyed by benchmark stage:
 
 Question records also carry `qa_stage_metrics`, which are the question-scoped `reflect` and `judge` costs only.
 
-Per-conversation summaries now carry their own `stage_metrics`, so QA-only runs can be merged on top of an earlier ingest artifact without losing the ingest/consolidation cost picture.
+Per-conversation summaries carry their own `stage_metrics`, so QA-only runs can be merged on top of an earlier ingest artifact without losing the ingest/consolidation cost picture.
 
 Per-conversation summaries also carry:
 
@@ -339,5 +337,5 @@ The debug sidecar carries the heavy provenance payload:
 
 - New runs serialize banks as `bank_ids`. Older Elephant results used `banks`; the harness reads both.
 - `turn_refs` only exists for runs that preserve turn provenance, typically `--ingest turn`.
-- Older result files may include `category_name: "unanswerable"` from the legacy Cat.5 leakage bug. Those are legacy artifacts.
-- The `view` tool now reads question sidecars automatically for new-style result files while remaining backward-compatible with older artifacts.
+- Result files that include `category_name: "unanswerable"` are outside the current benchmark contract.
+- The `view` tool reads question sidecars automatically for current result files.

@@ -13,9 +13,9 @@ Single source of truth for all benchmark methodology. All other benchmark docs r
 | Categories evaluated | **1-4 only** (single-hop, temporal, multi-hop, open-domain) |
 | Category 5 (adversarial) | **Excluded** — consistent with Mnemis, Backboard, and other recent systems |
 
-Benchmark enforcement note: as of 2026-03-09, the harness excludes Category 5 by `qa.category`, not by whether `answer` is present. This matters because the upstream `locomo10.json` contains two Category 5 rows with populated `answer` values. Older Elephant result files that include `unanswerable` should be treated as legacy artifacts, not leaderboard-valid runs.
+The harness excludes Category 5 by `qa.category`, not by whether `answer` is present. This matters because the upstream `locomo10.json` contains two Category 5 rows with populated `answer` values. Result files that include `unanswerable` are not benchmark-valid leaderboard artifacts.
 
-Benchmark execution note: as of 2026-03-10, the preferred Elephant benchmark path is the in-process runner. It uses the same runtime wiring as the server, meters stage-level LLM usage directly, and defaults to session-level ingest because that is closer to how Elephant should be retained in production and closer to Hindsight-style document/session retention. `--ingest turn` remains available as an explicit provenance-focused ablation when turn-level evidence tracing matters. The CLI is profile-driven and intentionally strict: serious runs should start from the `run` subcommand with `--profile full` or a checked-in `--config`. If banks have already been built, `qa <artifact>` is the supported way to skip ingest and consolidation while preserving the original bank ids.
+The benchmark runs Elephant in process against the shared runtime builder. It meters stage-level LLM usage directly and defaults to session-level ingest because that is closer to Elephant's intended retention shape and closer to Hindsight-style document/session retention. `--ingest turn` remains available as an explicit provenance-focused ablation when turn-level evidence tracing matters. The CLI is profile-driven and intentionally strict: serious runs start from the `run` subcommand with `--profile full` or a checked-in `--config`. If banks have already been built, `qa <artifact>` is the supported way to skip ingest and consolidation while preserving the original bank ids.
 
 ### Image handling
 
@@ -134,7 +134,7 @@ Recommended layout:
 
 - local scratch runs in `bench/locomo/results/local/`
 - canonical merged artifacts in `bench/locomo/results/canonical/` only when promoted explicitly with `--out`
-- deprecated historical artifacts in `bench/locomo/results/archive/legacy-v0/`
+- historical artifacts in `bench/locomo/results/archive/legacy-v0/`
 
 ## Merge constraints
 
