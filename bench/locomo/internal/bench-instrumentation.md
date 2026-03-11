@@ -17,9 +17,9 @@ The benchmark now instruments LLM-backed stages with a shared collector:
 
 Implementation:
 
-- [src/metrics.rs](/home/austin/elephant/src/metrics.rs)
-- [src/runtime.rs](/home/austin/elephant/src/runtime.rs)
-- [bench/locomo/locomo.rs](/home/austin/elephant/bench/locomo/locomo.rs)
+- [`src/metrics.rs`](../../../src/metrics.rs)
+- [`src/runtime.rs`](../../../src/runtime.rs)
+- [`bench/locomo/locomo.rs`](../locomo.rs)
 
 The metering path wraps `LlmClient.complete` directly, so token counts come from the same provider responses the product already returns in `CompletionResponse`.
 
