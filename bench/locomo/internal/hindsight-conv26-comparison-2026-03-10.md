@@ -75,9 +75,9 @@ So Hindsight's true answer quality for this run is bounded roughly by:
 
 This means the run is reliable for speed and token comparison, but not as a perfectly clean final answer-accuracy number.
 
-### Temporary runner category-label bug
+### Archived run category-label bug
 
-The external runner had a category-label mapping bug for LoCoMo category ids `1` and `2`.
+The external runner used for this archived run had a category-label mapping bug for LoCoMo category ids `1` and `2`.
 
 That means the archived Hindsight JSON has the `single-hop` and `multi-hop` names swapped.
 
@@ -92,6 +92,8 @@ This does **not** affect:
 - timing
 - token totals
 - call counts
+
+The helper script has since been corrected for future reruns. The bug only affects the archived `hindsight-conv26.json` category labels from this one comparison run.
 
 ### Metric source mismatch
 

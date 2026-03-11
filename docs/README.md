@@ -17,7 +17,7 @@
 
 ## Contributor Docs
 
-- **[STYLE.md](STYLE.md)** — Rust engineering conventions for this repo
+- **[../STYLE.md](../STYLE.md)** — Rust engineering conventions for this repo
 
 ## Internal
 

@@ -113,8 +113,8 @@ def fmt_s(seconds: float) -> str:
 
 
 CATEGORY_NAMES = {
-    1: "multi-hop",
-    2: "single-hop",
+    1: "single-hop",
+    2: "multi-hop",
     3: "temporal",
     4: "open-domain",
 }
