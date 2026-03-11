@@ -155,8 +155,8 @@ Use `--out bench/locomo/results/canonical/<name>.json` when you intentionally wa
 | `--config <path>` | Apply JSON overrides on top of the selected profile |
 | `--tag <name>` | Name the output stem in `results/local/` by default |
 | `--conversation <id>` | Run a specific conversation; repeat to run an explicit set |
-| `--ingest <turn|session|raw-json>` | Choose explicit turn ingest, the default session ingest, or unfair raw-json reproduction |
-| `--consolidation <end|per-session|off>` | Control when consolidation runs |
+| `--ingest <mode>` | Choose ingest mode: `turn`, `session` (default), or `raw-json` |
+| `--consolidation <mode>` | Control consolidation timing: `end`, `per-session`, or `off` |
 | `--conversation-jobs <n>` | Parallel conversations |
 | `--question-jobs <n>` | Parallel questions per conversation |
 | `--session-limit <n>` | Debug-only session slice |
