@@ -6,6 +6,7 @@ license = "MIT OR Apache-2.0"
 
 [dev-dependencies]
 anyhow = "1.0.102"
+datatest-stable = "0.3.3"
 proptest = "1"
 testcontainers = { version = "0.27.1", features = ["watchdog"] }
 testcontainers-modules = { version = "0.15.0", features = ["postgres"] }
@@ -48,3 +49,13 @@ path = "bench/view.rs"
 [[bin]]
 name = "reset-consolidation"
 path = "bench/reset_consolidation.rs"
+
+[[test]]
+name = "evals_validate"
+path = "tests/evals_validate.rs"
+harness = false
+
+[[test]]
+name = "evals_extract"
+path = "tests/evals_extract.rs"
+harness = false

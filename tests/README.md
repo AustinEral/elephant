@@ -18,6 +18,23 @@ Fast iteration on prompts — no Docker, no embeddings. Only needs `LLM_PROVIDER
 cargo test --test prompt_eval -- --ignored --nocapture
 ```
 
+## Accuracy eval tests
+
+File-driven internal accuracy cases live under [tests/evals](/home/austin/elephant/tests/evals).
+
+Validate case files:
+
+```bash
+cargo test --test evals_validate
+```
+
+Run live extract checks:
+
+```bash
+source .env
+cargo test --test evals_extract
+```
+
 ## Real integration tests
 
 Full retain→recall→reflect pipeline with real LLM and embedding APIs. Needs Docker.

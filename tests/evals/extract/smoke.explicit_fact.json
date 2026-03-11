@@ -1,0 +1,21 @@
+{
+  "id": "extract.smoke.explicit_fact",
+  "description": "Trivial smoke case to verify the live extract test has a clear passing path.",
+  "status": "guard",
+  "input": {
+    "mode": "turn",
+    "transcript": [
+      {
+        "speaker": "Nora",
+        "timestamp": "2026-02-14T09:00:00Z",
+        "text": "I signed the lease for the studio this morning."
+      }
+    ]
+  },
+  "assertions": [
+    {
+      "kind": "fact_contains",
+      "value": "signed the lease"
+    }
+  ]
+}
