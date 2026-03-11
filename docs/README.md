@@ -13,13 +13,13 @@
 
 - **[architecture.md](architecture.md)** — system design overview
 
-## Contributor
+## Contributor Docs
 
 - **[STYLE.md](STYLE.md)** — Rust engineering conventions for this repo
 
 ## Internal
 
-Development planning docs in [`internal/`](internal/):
+Internal notes in [`internal/`](internal/):
 
 - **[internal/bench-plan.md](internal/bench-plan.md)** — benchmark publication roadmap
 - **[internal/bench-instrumentation.md](internal/bench-instrumentation.md)** — token/cost tracking implementation

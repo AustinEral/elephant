@@ -2,6 +2,8 @@
 
 Evaluates long-term conversational memory using the [LoCoMo dataset](https://arxiv.org/abs/2402.17753) (ACL 2024).
 
+The checked-in public reference slice is `conv-26` on the current harness. Full-benchmark claims still require all 10 conversations plus a rerun or variance note.
+
 ## What changed
 
 The benchmark now runs Elephant **in process** instead of talking to a running server over HTTP.

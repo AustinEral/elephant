@@ -120,14 +120,14 @@ flowchart TB
 
 [LoCoMo](bench/locomo/README.md) — long-context conversational memory benchmark (ACL 2024).
 
+Current checked-in benchmark material is a clean `conv-26` reference run. It is useful as a benchmark slice, but it is not yet a full 10-conversation leaderboard claim.
+
 | Category | Accuracy | Description |
 |:--|:-:|:--|
 | **Temporal** | 84.6% | Time-aware queries ("when did…", "before/after…") |
 | **Multi-hop** | 94.6% | Questions requiring reasoning across multiple memories |
 | **Open-domain** | **97.1%** | General knowledge grounded in conversation history |
 | **Single-hop** | 93.8% | Direct fact retrieval from a single memory |
-| | | |
-| | | |
 | **Overall** | **94.7%** | **152 questions, conv-26 only (Cat.1–4)** |
 
 <sub>Sonnet 4.6 · bge-small-en-v1.5 local embeddings · <a href="docs/benchmark-protocol.md">protocol</a> · <a href="docs/bench-result-card.md">result card</a></sub>
