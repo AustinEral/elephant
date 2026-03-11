@@ -4,6 +4,15 @@ Evaluates long-term conversational memory using the [LoCoMo dataset](https://arx
 
 The checked-in public reference slice is `conv-26` on the current harness. Full-benchmark claims still require all 10 conversations plus a rerun or variance note.
 
+Related docs:
+
+- [protocol.md](protocol.md) — benchmark methodology and publication standard
+- [result-card.md](result-card.md) — current checked-in reference run
+- [competitors.md](competitors.md) — competitor methodology notes
+- [results-format.md](results-format.md) — artifact schema
+- [results/README.md](results/README.md) — results layout
+- [internal/README.md](internal/README.md) — benchmark planning and internal comparison notes
+
 ## Scope
 
 - Categories scored: **1-4 only**
@@ -209,7 +218,7 @@ A serious run now records:
 - evidence hit / evidence recall
 - merge provenance when a full benchmark is assembled from disjoint subset runs
 
-Schema: [results-format.md](/docs/results-format.md)
+Schema: [results-format.md](results-format.md)
 
 ## Publication status
 

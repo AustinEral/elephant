@@ -130,7 +130,7 @@ Current checked-in benchmark material is a clean `conv-26` reference run. It is 
 | **Single-hop** | 93.8% | Direct fact retrieval from a single memory |
 | **Overall** | **94.7%** | **152 questions, conv-26 only (Cat.1–4)** |
 
-<sub>Sonnet 4.6 · bge-small-en-v1.5 local embeddings · <a href="docs/benchmark-protocol.md">protocol</a> · <a href="docs/bench-result-card.md">result card</a></sub>
+<sub>Sonnet 4.6 · bge-small-en-v1.5 local embeddings · <a href="bench/locomo/protocol.md">protocol</a> · <a href="bench/locomo/result-card.md">result card</a></sub>
 
 ## References
 
