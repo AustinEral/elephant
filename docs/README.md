@@ -12,7 +12,10 @@
 ## Architecture
 
 - **[architecture.md](architecture.md)** — system design overview
-- **[build-plan.md](build-plan.md)** — implementation phases
+
+## Contributor
+
+- **[STYLE.md](STYLE.md)** — Rust engineering conventions for this repo
 
 ## Internal
 

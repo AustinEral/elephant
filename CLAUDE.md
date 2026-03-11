@@ -4,7 +4,7 @@
 
 Rust reimplementation of the Hindsight memory architecture (arXiv:2512.12818). Four-network memory (world, experience, observation, opinion), three operations (retain, recall, reflect), TEMPR retrieval with RRF fusion, CARA preference-conditioned reasoning.
 
-Build plan: see `docs/build-plan.md`
+Architecture reference: see `docs/architecture.md`
 
 ## Hindsight Memory (MCP)
 
@@ -16,7 +16,7 @@ Use the MCP tools directly — no curl commands needed.
 
 Retain after any of these events using `mcp__hindsight__retain` with a clear, standalone summary:
 
-- Completing a component or phase from the build plan
+- Completing a significant component or milestone
 - Making a design decision or changing an interface
 - Discovering something that didn't work and why
 - Changing a dependency or tool choice
@@ -52,4 +52,4 @@ If a memory MCP call fails, tell the user briefly so they know memory isn't accu
 - Tests use `testcontainers` for Postgres, mock LLM/embedding clients for unit tests
 - `#[ignore]` on tests that call real LLM APIs
 - Prompts live in `prompts/` as plain text files, not in Rust source
-- One crate, modules matching build plan phases
+- One crate, modules matching the current architecture boundaries
