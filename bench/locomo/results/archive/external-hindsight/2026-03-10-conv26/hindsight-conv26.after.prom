@@ -1,0 +1,340 @@
+# HELP python_gc_objects_collected_total Objects collected during gc
+# TYPE python_gc_objects_collected_total counter
+python_gc_objects_collected_total{generation="0"} 62152.0
+python_gc_objects_collected_total{generation="1"} 12726.0
+python_gc_objects_collected_total{generation="2"} 7905.0
+# HELP python_gc_objects_uncollectable_total Uncollectable objects found during GC
+# TYPE python_gc_objects_uncollectable_total counter
+python_gc_objects_uncollectable_total{generation="0"} 0.0
+python_gc_objects_uncollectable_total{generation="1"} 0.0
+python_gc_objects_uncollectable_total{generation="2"} 0.0
+# HELP python_gc_collections_total Number of times this generation was collected
+# TYPE python_gc_collections_total counter
+python_gc_collections_total{generation="0"} 3256.0
+python_gc_collections_total{generation="1"} 296.0
+python_gc_collections_total{generation="2"} 12.0
+# HELP python_info Python platform information
+# TYPE python_info gauge
+python_info{implementation="CPython",major="3",minor="11",patchlevel="15",version="3.11.15"} 1.0
+# HELP process_virtual_memory_bytes Virtual memory size in bytes.
+# TYPE process_virtual_memory_bytes gauge
+process_virtual_memory_bytes 1.5918505984e+010
+# HELP process_resident_memory_bytes Resident memory size in bytes.
+# TYPE process_resident_memory_bytes gauge
+process_resident_memory_bytes 2.360332288e+09
+# HELP process_start_time_seconds Start time of the process since unix epoch in seconds.
+# TYPE process_start_time_seconds gauge
+process_start_time_seconds 1.77319670234e+09
+# HELP process_cpu_seconds_total Total user and system CPU time spent in seconds.
+# TYPE process_cpu_seconds_total counter
+process_cpu_seconds_total 3137.0600000000004
+# HELP process_open_fds Number of open file descriptors.
+# TYPE process_open_fds gauge
+process_open_fds 28.0
+# HELP process_max_fds Maximum number of open file descriptors.
+# TYPE process_max_fds gauge
+process_max_fds 1.048576e+06
+# HELP target_info Target metadata
+# TYPE target_info gauge
+target_info{service_name="hindsight-api",service_version="1.0.0",telemetry_sdk_language="python",telemetry_sdk_name="opentelemetry",telemetry_sdk_version="1.40.0"} 1.0
+# HELP hindsight_llm_duration_seconds Duration of LLM API calls in seconds
+# TYPE hindsight_llm_duration_seconds histogram
+hindsight_llm_duration_seconds_bucket{le="0.1",model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="0.25",model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="0.5",model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="1.0",model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="2.0",model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="3.0",model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 1.0
+hindsight_llm_duration_seconds_bucket{le="5.0",model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 1.0
+hindsight_llm_duration_seconds_bucket{le="10.0",model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 1.0
+hindsight_llm_duration_seconds_bucket{le="15.0",model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 1.0
+hindsight_llm_duration_seconds_bucket{le="30.0",model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 1.0
+hindsight_llm_duration_seconds_bucket{le="60.0",model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 1.0
+hindsight_llm_duration_seconds_bucket{le="120.0",model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 1.0
+hindsight_llm_duration_seconds_bucket{le="+Inf",model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 1.0
+hindsight_llm_duration_seconds_count{model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 1.0
+hindsight_llm_duration_seconds_sum{model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 2.5192534923553467
+hindsight_llm_duration_seconds_bucket{le="0.1",model="claude-sonnet-4-6",provider="anthropic",scope="retain_extract_facts",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="0.25",model="claude-sonnet-4-6",provider="anthropic",scope="retain_extract_facts",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="0.5",model="claude-sonnet-4-6",provider="anthropic",scope="retain_extract_facts",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="1.0",model="claude-sonnet-4-6",provider="anthropic",scope="retain_extract_facts",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="2.0",model="claude-sonnet-4-6",provider="anthropic",scope="retain_extract_facts",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="3.0",model="claude-sonnet-4-6",provider="anthropic",scope="retain_extract_facts",success="true",tenant="public"} 1.0
+hindsight_llm_duration_seconds_bucket{le="5.0",model="claude-sonnet-4-6",provider="anthropic",scope="retain_extract_facts",success="true",tenant="public"} 4.0
+hindsight_llm_duration_seconds_bucket{le="10.0",model="claude-sonnet-4-6",provider="anthropic",scope="retain_extract_facts",success="true",tenant="public"} 29.0
+hindsight_llm_duration_seconds_bucket{le="15.0",model="claude-sonnet-4-6",provider="anthropic",scope="retain_extract_facts",success="true",tenant="public"} 47.0
+hindsight_llm_duration_seconds_bucket{le="30.0",model="claude-sonnet-4-6",provider="anthropic",scope="retain_extract_facts",success="true",tenant="public"} 47.0
+hindsight_llm_duration_seconds_bucket{le="60.0",model="claude-sonnet-4-6",provider="anthropic",scope="retain_extract_facts",success="true",tenant="public"} 47.0
+hindsight_llm_duration_seconds_bucket{le="120.0",model="claude-sonnet-4-6",provider="anthropic",scope="retain_extract_facts",success="true",tenant="public"} 47.0
+hindsight_llm_duration_seconds_bucket{le="+Inf",model="claude-sonnet-4-6",provider="anthropic",scope="retain_extract_facts",success="true",tenant="public"} 47.0
+hindsight_llm_duration_seconds_count{model="claude-sonnet-4-6",provider="anthropic",scope="retain_extract_facts",success="true",tenant="public"} 47.0
+hindsight_llm_duration_seconds_sum{model="claude-sonnet-4-6",provider="anthropic",scope="retain_extract_facts",success="true",tenant="public"} 431.45867252349854
+hindsight_llm_duration_seconds_bucket{le="0.1",model="claude-sonnet-4-6",provider="anthropic",scope="consolidation",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="0.25",model="claude-sonnet-4-6",provider="anthropic",scope="consolidation",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="0.5",model="claude-sonnet-4-6",provider="anthropic",scope="consolidation",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="1.0",model="claude-sonnet-4-6",provider="anthropic",scope="consolidation",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="2.0",model="claude-sonnet-4-6",provider="anthropic",scope="consolidation",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="3.0",model="claude-sonnet-4-6",provider="anthropic",scope="consolidation",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="5.0",model="claude-sonnet-4-6",provider="anthropic",scope="consolidation",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="10.0",model="claude-sonnet-4-6",provider="anthropic",scope="consolidation",success="true",tenant="public"} 2.0
+hindsight_llm_duration_seconds_bucket{le="15.0",model="claude-sonnet-4-6",provider="anthropic",scope="consolidation",success="true",tenant="public"} 3.0
+hindsight_llm_duration_seconds_bucket{le="30.0",model="claude-sonnet-4-6",provider="anthropic",scope="consolidation",success="true",tenant="public"} 14.0
+hindsight_llm_duration_seconds_bucket{le="60.0",model="claude-sonnet-4-6",provider="anthropic",scope="consolidation",success="true",tenant="public"} 25.0
+hindsight_llm_duration_seconds_bucket{le="120.0",model="claude-sonnet-4-6",provider="anthropic",scope="consolidation",success="true",tenant="public"} 25.0
+hindsight_llm_duration_seconds_bucket{le="+Inf",model="claude-sonnet-4-6",provider="anthropic",scope="consolidation",success="true",tenant="public"} 25.0
+hindsight_llm_duration_seconds_count{model="claude-sonnet-4-6",provider="anthropic",scope="consolidation",success="true",tenant="public"} 25.0
+hindsight_llm_duration_seconds_sum{model="claude-sonnet-4-6",provider="anthropic",scope="consolidation",success="true",tenant="public"} 714.8820729255676
+hindsight_llm_duration_seconds_bucket{le="0.1",model="claude-sonnet-4-6",provider="anthropic",scope="reflect_tool_call",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="0.25",model="claude-sonnet-4-6",provider="anthropic",scope="reflect_tool_call",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="0.5",model="claude-sonnet-4-6",provider="anthropic",scope="reflect_tool_call",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="1.0",model="claude-sonnet-4-6",provider="anthropic",scope="reflect_tool_call",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="2.0",model="claude-sonnet-4-6",provider="anthropic",scope="reflect_tool_call",success="true",tenant="public"} 1.0
+hindsight_llm_duration_seconds_bucket{le="3.0",model="claude-sonnet-4-6",provider="anthropic",scope="reflect_tool_call",success="true",tenant="public"} 41.0
+hindsight_llm_duration_seconds_bucket{le="5.0",model="claude-sonnet-4-6",provider="anthropic",scope="reflect_tool_call",success="true",tenant="public"} 148.0
+hindsight_llm_duration_seconds_bucket{le="10.0",model="claude-sonnet-4-6",provider="anthropic",scope="reflect_tool_call",success="true",tenant="public"} 230.0
+hindsight_llm_duration_seconds_bucket{le="15.0",model="claude-sonnet-4-6",provider="anthropic",scope="reflect_tool_call",success="true",tenant="public"} 283.0
+hindsight_llm_duration_seconds_bucket{le="30.0",model="claude-sonnet-4-6",provider="anthropic",scope="reflect_tool_call",success="true",tenant="public"} 350.0
+hindsight_llm_duration_seconds_bucket{le="60.0",model="claude-sonnet-4-6",provider="anthropic",scope="reflect_tool_call",success="true",tenant="public"} 372.0
+hindsight_llm_duration_seconds_bucket{le="120.0",model="claude-sonnet-4-6",provider="anthropic",scope="reflect_tool_call",success="true",tenant="public"} 372.0
+hindsight_llm_duration_seconds_bucket{le="+Inf",model="claude-sonnet-4-6",provider="anthropic",scope="reflect_tool_call",success="true",tenant="public"} 372.0
+hindsight_llm_duration_seconds_count{model="claude-sonnet-4-6",provider="anthropic",scope="reflect_tool_call",success="true",tenant="public"} 372.0
+hindsight_llm_duration_seconds_sum{model="claude-sonnet-4-6",provider="anthropic",scope="reflect_tool_call",success="true",tenant="public"} 4038.258013010025
+hindsight_llm_duration_seconds_bucket{le="0.1",model="claude-sonnet-4-6",provider="anthropic",scope="reflect",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="0.25",model="claude-sonnet-4-6",provider="anthropic",scope="reflect",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="0.5",model="claude-sonnet-4-6",provider="anthropic",scope="reflect",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="1.0",model="claude-sonnet-4-6",provider="anthropic",scope="reflect",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="2.0",model="claude-sonnet-4-6",provider="anthropic",scope="reflect",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="3.0",model="claude-sonnet-4-6",provider="anthropic",scope="reflect",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="5.0",model="claude-sonnet-4-6",provider="anthropic",scope="reflect",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="10.0",model="claude-sonnet-4-6",provider="anthropic",scope="reflect",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="15.0",model="claude-sonnet-4-6",provider="anthropic",scope="reflect",success="true",tenant="public"} 1.0
+hindsight_llm_duration_seconds_bucket{le="30.0",model="claude-sonnet-4-6",provider="anthropic",scope="reflect",success="true",tenant="public"} 1.0
+hindsight_llm_duration_seconds_bucket{le="60.0",model="claude-sonnet-4-6",provider="anthropic",scope="reflect",success="true",tenant="public"} 1.0
+hindsight_llm_duration_seconds_bucket{le="120.0",model="claude-sonnet-4-6",provider="anthropic",scope="reflect",success="true",tenant="public"} 1.0
+hindsight_llm_duration_seconds_bucket{le="+Inf",model="claude-sonnet-4-6",provider="anthropic",scope="reflect",success="true",tenant="public"} 1.0
+hindsight_llm_duration_seconds_count{model="claude-sonnet-4-6",provider="anthropic",scope="reflect",success="true",tenant="public"} 1.0
+hindsight_llm_duration_seconds_sum{model="claude-sonnet-4-6",provider="anthropic",scope="reflect",success="true",tenant="public"} 12.610982894897461
+# HELP hindsight_llm_calls_total Total number of LLM API calls
+# TYPE hindsight_llm_calls_total counter
+hindsight_llm_calls_total{model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 1.0
+hindsight_llm_calls_total{model="claude-sonnet-4-6",provider="anthropic",scope="retain_extract_facts",success="true",tenant="public"} 47.0
+hindsight_llm_calls_total{model="claude-sonnet-4-6",provider="anthropic",scope="consolidation",success="true",tenant="public"} 25.0
+hindsight_llm_calls_total{model="claude-sonnet-4-6",provider="anthropic",scope="reflect_tool_call",success="true",tenant="public"} 372.0
+hindsight_llm_calls_total{model="claude-sonnet-4-6",provider="anthropic",scope="reflect",success="true",tenant="public"} 1.0
+# HELP hindsight_llm_tokens_input_tokens_total Number of input tokens for LLM calls
+# TYPE hindsight_llm_tokens_input_tokens_total counter
+hindsight_llm_tokens_input_tokens_total{model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public",token_bucket="0-100"} 8.0
+hindsight_llm_tokens_input_tokens_total{model="claude-sonnet-4-6",provider="anthropic",scope="retain_extract_facts",success="true",tenant="public",token_bucket="1k-5k"} 183544.0
+hindsight_llm_tokens_input_tokens_total{model="claude-sonnet-4-6",provider="anthropic",scope="consolidation",success="true",tenant="public",token_bucket="1k-5k"} 7066.0
+hindsight_llm_tokens_input_tokens_total{model="claude-sonnet-4-6",provider="anthropic",scope="consolidation",success="true",tenant="public",token_bucket="5k-10k"} 42029.0
+hindsight_llm_tokens_input_tokens_total{model="claude-sonnet-4-6",provider="anthropic",scope="consolidation",success="true",tenant="public",token_bucket="10k-50k"} 281611.0
+hindsight_llm_tokens_input_tokens_total{model="claude-sonnet-4-6",provider="anthropic",scope="reflect_tool_call",success="true",tenant="public",token_bucket="1k-5k"} 409385.0
+hindsight_llm_tokens_input_tokens_total{model="claude-sonnet-4-6",provider="anthropic",scope="reflect_tool_call",success="true",tenant="public",token_bucket="50k+"} 1.5861509e+07
+hindsight_llm_tokens_input_tokens_total{model="claude-sonnet-4-6",provider="anthropic",scope="reflect",success="true",tenant="public",token_bucket="10k-50k"} 48315.0
+# HELP hindsight_llm_tokens_output_tokens_total Number of output tokens from LLM calls
+# TYPE hindsight_llm_tokens_output_tokens_total counter
+hindsight_llm_tokens_output_tokens_total{model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public",token_bucket="0-100"} 10.0
+hindsight_llm_tokens_output_tokens_total{model="claude-sonnet-4-6",provider="anthropic",scope="retain_extract_facts",success="true",tenant="public",token_bucket="100-500"} 3075.0
+hindsight_llm_tokens_output_tokens_total{model="claude-sonnet-4-6",provider="anthropic",scope="retain_extract_facts",success="true",tenant="public",token_bucket="500-1k"} 23091.0
+hindsight_llm_tokens_output_tokens_total{model="claude-sonnet-4-6",provider="anthropic",scope="retain_extract_facts",success="true",tenant="public",token_bucket="1k-5k"} 5296.0
+hindsight_llm_tokens_output_tokens_total{model="claude-sonnet-4-6",provider="anthropic",scope="retain_extract_facts",success="true",tenant="public",token_bucket="0-100"} 17.0
+hindsight_llm_tokens_output_tokens_total{model="claude-sonnet-4-6",provider="anthropic",scope="consolidation",success="true",tenant="public",token_bucket="500-1k"} 4072.0
+hindsight_llm_tokens_output_tokens_total{model="claude-sonnet-4-6",provider="anthropic",scope="consolidation",success="true",tenant="public",token_bucket="1k-5k"} 22592.0
+hindsight_llm_tokens_output_tokens_total{model="claude-sonnet-4-6",provider="anthropic",scope="consolidation",success="true",tenant="public",token_bucket="100-500"} 778.0
+hindsight_llm_tokens_output_tokens_total{model="claude-sonnet-4-6",provider="anthropic",scope="reflect_tool_call",success="true",tenant="public",token_bucket="100-500"} 65659.0
+hindsight_llm_tokens_output_tokens_total{model="claude-sonnet-4-6",provider="anthropic",scope="reflect_tool_call",success="true",tenant="public",token_bucket="1k-5k"} 25303.0
+hindsight_llm_tokens_output_tokens_total{model="claude-sonnet-4-6",provider="anthropic",scope="reflect_tool_call",success="true",tenant="public",token_bucket="500-1k"} 26820.0
+hindsight_llm_tokens_output_tokens_total{model="claude-sonnet-4-6",provider="anthropic",scope="reflect_tool_call",success="true",tenant="public",token_bucket="0-100"} 559.0
+hindsight_llm_tokens_output_tokens_total{model="claude-sonnet-4-6",provider="anthropic",scope="reflect",success="true",tenant="public",token_bucket="100-500"} 464.0
+# HELP hindsight_http_requests_in_progress_requests Number of HTTP requests in progress
+# TYPE hindsight_http_requests_in_progress_requests gauge
+hindsight_http_requests_in_progress_requests{endpoint="/health",method="GET"} 0.0
+hindsight_http_requests_in_progress_requests{endpoint="/metrics",method="GET"} 1.0
+hindsight_http_requests_in_progress_requests{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",method="DELETE"} 0.0
+hindsight_http_requests_in_progress_requests{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",method="PUT"} 0.0
+hindsight_http_requests_in_progress_requests{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/memories",method="POST"} 0.0
+hindsight_http_requests_in_progress_requests{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/stats",method="GET"} 0.0
+hindsight_http_requests_in_progress_requests{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/reflect",method="POST"} 0.0
+# HELP hindsight_http_duration_seconds Duration of HTTP requests in seconds
+# TYPE hindsight_http_duration_seconds histogram
+hindsight_http_duration_seconds_bucket{endpoint="/health",le="0.005",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/health",le="0.01",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/health",le="0.025",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/health",le="0.05",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/health",le="0.1",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/health",le="0.25",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/health",le="0.5",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/health",le="1.0",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/health",le="2.5",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/health",le="5.0",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/health",le="10.0",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/health",le="30.0",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/health",le="+Inf",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_count{endpoint="/health",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_sum{endpoint="/health",method="GET",status_class="2xx",status_code="200",tenant="public"} 0.00160980224609375
+hindsight_http_duration_seconds_bucket{endpoint="/metrics",le="0.005",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/metrics",le="0.01",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/metrics",le="0.025",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/metrics",le="0.05",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/metrics",le="0.1",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/metrics",le="0.25",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/metrics",le="0.5",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/metrics",le="1.0",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/metrics",le="2.5",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/metrics",le="5.0",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/metrics",le="10.0",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/metrics",le="30.0",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/metrics",le="+Inf",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_count{endpoint="/metrics",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_sum{endpoint="/metrics",method="GET",status_class="2xx",status_code="200",tenant="public"} 0.0015943050384521484
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",le="0.005",method="DELETE",status_class="2xx",status_code="200",tenant="public"} 0.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",le="0.01",method="DELETE",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",le="0.025",method="DELETE",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",le="0.05",method="DELETE",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",le="0.1",method="DELETE",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",le="0.25",method="DELETE",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",le="0.5",method="DELETE",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",le="1.0",method="DELETE",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",le="2.5",method="DELETE",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",le="5.0",method="DELETE",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",le="10.0",method="DELETE",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",le="30.0",method="DELETE",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",le="+Inf",method="DELETE",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_count{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",method="DELETE",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_sum{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",method="DELETE",status_class="2xx",status_code="200",tenant="public"} 0.006226301193237305
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",le="0.005",method="PUT",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",le="0.01",method="PUT",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",le="0.025",method="PUT",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",le="0.05",method="PUT",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",le="0.1",method="PUT",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",le="0.25",method="PUT",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",le="0.5",method="PUT",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",le="1.0",method="PUT",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",le="2.5",method="PUT",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",le="5.0",method="PUT",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",le="10.0",method="PUT",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",le="30.0",method="PUT",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",le="+Inf",method="PUT",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_count{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",method="PUT",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_sum{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",method="PUT",status_class="2xx",status_code="200",tenant="public"} 0.00295257568359375
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/memories",le="0.005",method="POST",status_class="2xx",status_code="200",tenant="public"} 0.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/memories",le="0.01",method="POST",status_class="2xx",status_code="200",tenant="public"} 0.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/memories",le="0.025",method="POST",status_class="2xx",status_code="200",tenant="public"} 0.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/memories",le="0.05",method="POST",status_class="2xx",status_code="200",tenant="public"} 0.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/memories",le="0.1",method="POST",status_class="2xx",status_code="200",tenant="public"} 0.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/memories",le="0.25",method="POST",status_class="2xx",status_code="200",tenant="public"} 0.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/memories",le="0.5",method="POST",status_class="2xx",status_code="200",tenant="public"} 0.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/memories",le="1.0",method="POST",status_class="2xx",status_code="200",tenant="public"} 0.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/memories",le="2.5",method="POST",status_class="2xx",status_code="200",tenant="public"} 0.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/memories",le="5.0",method="POST",status_class="2xx",status_code="200",tenant="public"} 0.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/memories",le="10.0",method="POST",status_class="2xx",status_code="200",tenant="public"} 0.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/memories",le="30.0",method="POST",status_class="2xx",status_code="200",tenant="public"} 0.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/memories",le="+Inf",method="POST",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_count{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/memories",method="POST",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_sum{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/memories",method="POST",status_class="2xx",status_code="200",tenant="public"} 57.05687618255615
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/stats",le="0.005",method="GET",status_class="2xx",status_code="200",tenant="public"} 44.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/stats",le="0.01",method="GET",status_class="2xx",status_code="200",tenant="public"} 368.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/stats",le="0.025",method="GET",status_class="2xx",status_code="200",tenant="public"} 406.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/stats",le="0.05",method="GET",status_class="2xx",status_code="200",tenant="public"} 406.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/stats",le="0.1",method="GET",status_class="2xx",status_code="200",tenant="public"} 407.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/stats",le="0.25",method="GET",status_class="2xx",status_code="200",tenant="public"} 407.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/stats",le="0.5",method="GET",status_class="2xx",status_code="200",tenant="public"} 407.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/stats",le="1.0",method="GET",status_class="2xx",status_code="200",tenant="public"} 407.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/stats",le="2.5",method="GET",status_class="2xx",status_code="200",tenant="public"} 407.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/stats",le="5.0",method="GET",status_class="2xx",status_code="200",tenant="public"} 407.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/stats",le="10.0",method="GET",status_class="2xx",status_code="200",tenant="public"} 407.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/stats",le="30.0",method="GET",status_class="2xx",status_code="200",tenant="public"} 407.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/stats",le="+Inf",method="GET",status_class="2xx",status_code="200",tenant="public"} 407.0
+hindsight_http_duration_seconds_count{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/stats",method="GET",status_class="2xx",status_code="200",tenant="public"} 407.0
+hindsight_http_duration_seconds_sum{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/stats",method="GET",status_class="2xx",status_code="200",tenant="public"} 2.622147798538208
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/reflect",le="0.005",method="POST",status_class="2xx",status_code="200",tenant="public"} 0.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/reflect",le="0.01",method="POST",status_class="2xx",status_code="200",tenant="public"} 0.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/reflect",le="0.025",method="POST",status_class="2xx",status_code="200",tenant="public"} 0.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/reflect",le="0.05",method="POST",status_class="2xx",status_code="200",tenant="public"} 0.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/reflect",le="0.1",method="POST",status_class="2xx",status_code="200",tenant="public"} 0.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/reflect",le="0.25",method="POST",status_class="2xx",status_code="200",tenant="public"} 0.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/reflect",le="0.5",method="POST",status_class="2xx",status_code="200",tenant="public"} 0.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/reflect",le="1.0",method="POST",status_class="2xx",status_code="200",tenant="public"} 0.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/reflect",le="2.5",method="POST",status_class="2xx",status_code="200",tenant="public"} 0.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/reflect",le="5.0",method="POST",status_class="2xx",status_code="200",tenant="public"} 0.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/reflect",le="10.0",method="POST",status_class="2xx",status_code="200",tenant="public"} 0.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/reflect",le="30.0",method="POST",status_class="2xx",status_code="200",tenant="public"} 91.0
+hindsight_http_duration_seconds_bucket{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/reflect",le="+Inf",method="POST",status_class="2xx",status_code="200",tenant="public"} 152.0
+hindsight_http_duration_seconds_count{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/reflect",method="POST",status_class="2xx",status_code="200",tenant="public"} 152.0
+hindsight_http_duration_seconds_sum{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/reflect",method="POST",status_class="2xx",status_code="200",tenant="public"} 4399.232431411743
+# HELP hindsight_http_requests_total Total number of HTTP requests
+# TYPE hindsight_http_requests_total counter
+hindsight_http_requests_total{endpoint="/health",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_requests_total{endpoint="/metrics",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_requests_total{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",method="DELETE",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_requests_total{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953",method="PUT",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_requests_total{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/memories",method="POST",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_requests_total{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/stats",method="GET",status_class="2xx",status_code="200",tenant="public"} 407.0
+hindsight_http_requests_total{endpoint="/v1/default/banks/locomo-conv-26-1773198466-9953/reflect",method="POST",status_class="2xx",status_code="200",tenant="public"} 152.0
+# HELP hindsight_process_cpu_seconds Process CPU time in seconds
+# TYPE hindsight_process_cpu_seconds gauge
+hindsight_process_cpu_seconds{type="user"} 2904.766475
+hindsight_process_cpu_seconds{type="system"} 232.306053
+# HELP hindsight_process_memory_bytes Process memory usage in bytes
+# TYPE hindsight_process_memory_bytes gauge
+hindsight_process_memory_bytes{type="rss_max"} 3.05688576e+09
+# HELP hindsight_process_open_fds Number of open file descriptors
+# TYPE hindsight_process_open_fds gauge
+hindsight_process_open_fds 28.0
+# HELP hindsight_process_threads Number of active threads
+# TYPE hindsight_process_threads gauge
+hindsight_process_threads 14.0
+# HELP hindsight_db_pool_size Current number of connections in the pool
+# TYPE hindsight_db_pool_size gauge
+hindsight_db_pool_size 6.0
+# HELP hindsight_db_pool_idle Number of idle connections in the pool
+# TYPE hindsight_db_pool_idle gauge
+hindsight_db_pool_idle 6.0
+# HELP hindsight_db_pool_min Minimum pool size
+# TYPE hindsight_db_pool_min gauge
+hindsight_db_pool_min 5.0
+# HELP hindsight_db_pool_max Maximum pool size
+# TYPE hindsight_db_pool_max gauge
+hindsight_db_pool_max 100.0
+# HELP hindsight_operation_duration_seconds Duration of Hindsight operations in seconds
+# TYPE hindsight_operation_duration_seconds histogram
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="",le="0.1",operation="retain",source="api",success="true",tenant="public"} 0.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="",le="0.25",operation="retain",source="api",success="true",tenant="public"} 0.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="",le="0.5",operation="retain",source="api",success="true",tenant="public"} 0.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="",le="0.75",operation="retain",source="api",success="true",tenant="public"} 0.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="",le="1.0",operation="retain",source="api",success="true",tenant="public"} 0.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="",le="2.0",operation="retain",source="api",success="true",tenant="public"} 0.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="",le="3.0",operation="retain",source="api",success="true",tenant="public"} 0.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="",le="5.0",operation="retain",source="api",success="true",tenant="public"} 0.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="",le="7.5",operation="retain",source="api",success="true",tenant="public"} 0.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="",le="10.0",operation="retain",source="api",success="true",tenant="public"} 0.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="",le="15.0",operation="retain",source="api",success="true",tenant="public"} 0.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="",le="20.0",operation="retain",source="api",success="true",tenant="public"} 0.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="",le="30.0",operation="retain",source="api",success="true",tenant="public"} 0.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="",le="60.0",operation="retain",source="api",success="true",tenant="public"} 1.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="",le="120.0",operation="retain",source="api",success="true",tenant="public"} 1.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="",le="+Inf",operation="retain",source="api",success="true",tenant="public"} 1.0
+hindsight_operation_duration_seconds_count{bank_id="locomo-conv-26-1773198466-9953",budget="",operation="retain",source="api",success="true",tenant="public"} 1.0
+hindsight_operation_duration_seconds_sum{bank_id="locomo-conv-26-1773198466-9953",budget="",operation="retain",source="api",success="true",tenant="public"} 57.05460476875305
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="high",le="0.1",operation="reflect",source="api",success="true",tenant="public"} 0.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="high",le="0.25",operation="reflect",source="api",success="true",tenant="public"} 0.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="high",le="0.5",operation="reflect",source="api",success="true",tenant="public"} 0.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="high",le="0.75",operation="reflect",source="api",success="true",tenant="public"} 0.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="high",le="1.0",operation="reflect",source="api",success="true",tenant="public"} 0.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="high",le="2.0",operation="reflect",source="api",success="true",tenant="public"} 0.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="high",le="3.0",operation="reflect",source="api",success="true",tenant="public"} 0.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="high",le="5.0",operation="reflect",source="api",success="true",tenant="public"} 0.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="high",le="7.5",operation="reflect",source="api",success="true",tenant="public"} 0.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="high",le="10.0",operation="reflect",source="api",success="true",tenant="public"} 0.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="high",le="15.0",operation="reflect",source="api",success="true",tenant="public"} 30.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="high",le="20.0",operation="reflect",source="api",success="true",tenant="public"} 59.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="high",le="30.0",operation="reflect",source="api",success="true",tenant="public"} 91.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="high",le="60.0",operation="reflect",source="api",success="true",tenant="public"} 144.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="high",le="120.0",operation="reflect",source="api",success="true",tenant="public"} 152.0
+hindsight_operation_duration_seconds_bucket{bank_id="locomo-conv-26-1773198466-9953",budget="high",le="+Inf",operation="reflect",source="api",success="true",tenant="public"} 152.0
+hindsight_operation_duration_seconds_count{bank_id="locomo-conv-26-1773198466-9953",budget="high",operation="reflect",source="api",success="true",tenant="public"} 152.0
+hindsight_operation_duration_seconds_sum{bank_id="locomo-conv-26-1773198466-9953",budget="high",operation="reflect",source="api",success="true",tenant="public"} 4399.093293190002
+# HELP hindsight_operation_operations_total Total number of operations executed
+# TYPE hindsight_operation_operations_total counter
+hindsight_operation_operations_total{bank_id="locomo-conv-26-1773198466-9953",budget="",operation="retain",source="api",success="true",tenant="public"} 1.0
+hindsight_operation_operations_total{bank_id="locomo-conv-26-1773198466-9953",budget="high",operation="reflect",source="api",success="true",tenant="public"} 152.0

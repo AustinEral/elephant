@@ -1,0 +1,114 @@
+# HELP python_gc_objects_collected_total Objects collected during gc
+# TYPE python_gc_objects_collected_total counter
+python_gc_objects_collected_total{generation="0"} 24975.0
+python_gc_objects_collected_total{generation="1"} 5283.0
+python_gc_objects_collected_total{generation="2"} 7688.0
+# HELP python_gc_objects_uncollectable_total Uncollectable objects found during GC
+# TYPE python_gc_objects_uncollectable_total counter
+python_gc_objects_uncollectable_total{generation="0"} 0.0
+python_gc_objects_uncollectable_total{generation="1"} 0.0
+python_gc_objects_uncollectable_total{generation="2"} 0.0
+# HELP python_gc_collections_total Number of times this generation was collected
+# TYPE python_gc_collections_total counter
+python_gc_collections_total{generation="0"} 2330.0
+python_gc_collections_total{generation="1"} 211.0
+python_gc_collections_total{generation="2"} 11.0
+# HELP python_info Python platform information
+# TYPE python_info gauge
+python_info{implementation="CPython",major="3",minor="11",patchlevel="15",version="3.11.15"} 1.0
+# HELP process_virtual_memory_bytes Virtual memory size in bytes.
+# TYPE process_virtual_memory_bytes gauge
+process_virtual_memory_bytes 8.555118592e+09
+# HELP process_resident_memory_bytes Resident memory size in bytes.
+# TYPE process_resident_memory_bytes gauge
+process_resident_memory_bytes 1.186275328e+09
+# HELP process_start_time_seconds Start time of the process since unix epoch in seconds.
+# TYPE process_start_time_seconds gauge
+process_start_time_seconds 1.77319670234e+09
+# HELP process_cpu_seconds_total Total user and system CPU time spent in seconds.
+# TYPE process_cpu_seconds_total counter
+process_cpu_seconds_total 14.41
+# HELP process_open_fds Number of open file descriptors.
+# TYPE process_open_fds gauge
+process_open_fds 19.0
+# HELP process_max_fds Maximum number of open file descriptors.
+# TYPE process_max_fds gauge
+process_max_fds 1.048576e+06
+# HELP target_info Target metadata
+# TYPE target_info gauge
+target_info{service_name="hindsight-api",service_version="1.0.0",telemetry_sdk_language="python",telemetry_sdk_name="opentelemetry",telemetry_sdk_version="1.40.0"} 1.0
+# HELP hindsight_llm_duration_seconds Duration of LLM API calls in seconds
+# TYPE hindsight_llm_duration_seconds histogram
+hindsight_llm_duration_seconds_bucket{le="0.1",model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="0.25",model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="0.5",model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="1.0",model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="2.0",model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 0.0
+hindsight_llm_duration_seconds_bucket{le="3.0",model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 1.0
+hindsight_llm_duration_seconds_bucket{le="5.0",model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 1.0
+hindsight_llm_duration_seconds_bucket{le="10.0",model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 1.0
+hindsight_llm_duration_seconds_bucket{le="15.0",model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 1.0
+hindsight_llm_duration_seconds_bucket{le="30.0",model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 1.0
+hindsight_llm_duration_seconds_bucket{le="60.0",model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 1.0
+hindsight_llm_duration_seconds_bucket{le="120.0",model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 1.0
+hindsight_llm_duration_seconds_bucket{le="+Inf",model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 1.0
+hindsight_llm_duration_seconds_count{model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 1.0
+hindsight_llm_duration_seconds_sum{model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 2.5192534923553467
+# HELP hindsight_llm_calls_total Total number of LLM API calls
+# TYPE hindsight_llm_calls_total counter
+hindsight_llm_calls_total{model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public"} 1.0
+# HELP hindsight_llm_tokens_input_tokens_total Number of input tokens for LLM calls
+# TYPE hindsight_llm_tokens_input_tokens_total counter
+hindsight_llm_tokens_input_tokens_total{model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public",token_bucket="0-100"} 8.0
+# HELP hindsight_llm_tokens_output_tokens_total Number of output tokens from LLM calls
+# TYPE hindsight_llm_tokens_output_tokens_total counter
+hindsight_llm_tokens_output_tokens_total{model="claude-sonnet-4-6",provider="anthropic",scope="verification",success="true",tenant="public",token_bucket="0-100"} 10.0
+# HELP hindsight_http_requests_in_progress_requests Number of HTTP requests in progress
+# TYPE hindsight_http_requests_in_progress_requests gauge
+hindsight_http_requests_in_progress_requests{endpoint="/health",method="GET"} 0.0
+hindsight_http_requests_in_progress_requests{endpoint="/metrics",method="GET"} 1.0
+# HELP hindsight_http_duration_seconds Duration of HTTP requests in seconds
+# TYPE hindsight_http_duration_seconds histogram
+hindsight_http_duration_seconds_bucket{endpoint="/health",le="0.005",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/health",le="0.01",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/health",le="0.025",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/health",le="0.05",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/health",le="0.1",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/health",le="0.25",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/health",le="0.5",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/health",le="1.0",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/health",le="2.5",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/health",le="5.0",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/health",le="10.0",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/health",le="30.0",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_bucket{endpoint="/health",le="+Inf",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_count{endpoint="/health",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+hindsight_http_duration_seconds_sum{endpoint="/health",method="GET",status_class="2xx",status_code="200",tenant="public"} 0.00160980224609375
+# HELP hindsight_http_requests_total Total number of HTTP requests
+# TYPE hindsight_http_requests_total counter
+hindsight_http_requests_total{endpoint="/health",method="GET",status_class="2xx",status_code="200",tenant="public"} 1.0
+# HELP hindsight_process_cpu_seconds Process CPU time in seconds
+# TYPE hindsight_process_cpu_seconds gauge
+hindsight_process_cpu_seconds{type="user"} 12.256491
+hindsight_process_cpu_seconds{type="system"} 2.168624
+# HELP hindsight_process_memory_bytes Process memory usage in bytes
+# TYPE hindsight_process_memory_bytes gauge
+hindsight_process_memory_bytes{type="rss_max"} 1.186275328e+09
+# HELP hindsight_process_open_fds Number of open file descriptors
+# TYPE hindsight_process_open_fds gauge
+hindsight_process_open_fds 19.0
+# HELP hindsight_process_threads Number of active threads
+# TYPE hindsight_process_threads gauge
+hindsight_process_threads 7.0
+# HELP hindsight_db_pool_size Current number of connections in the pool
+# TYPE hindsight_db_pool_size gauge
+hindsight_db_pool_size 1.0
+# HELP hindsight_db_pool_idle Number of idle connections in the pool
+# TYPE hindsight_db_pool_idle gauge
+hindsight_db_pool_idle 1.0
+# HELP hindsight_db_pool_min Minimum pool size
+# TYPE hindsight_db_pool_min gauge
+hindsight_db_pool_min 5.0
+# HELP hindsight_db_pool_max Maximum pool size
+# TYPE hindsight_db_pool_max gauge
+hindsight_db_pool_max 100.0
