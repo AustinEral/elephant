@@ -1,0 +1,249 @@
+{
+  "benchmark": "locomo",
+  "timestamp": "2026-03-12T16:22:37.141254016+00:00",
+  "commit": "7c9b3bd0304b",
+  "tag": "series1-conv-50",
+  "judge_model": "anthropic/claude-sonnet-4-6",
+  "retain_model": "anthropic/claude-sonnet-4-6",
+  "reflect_model": "anthropic/claude-sonnet-4-6",
+  "embedding_model": "local/bge-small-en-v1.5",
+  "reranker_model": "local/ms-marco-MiniLM-L-6-v2",
+  "consolidation_strategy": "end",
+  "total_questions": 158,
+  "accuracy": 0.9177215189873418,
+  "mean_f1": 0.055228674751165586,
+  "mean_evidence_recall": 0.012658227848101266,
+  "per_category": {
+    "single-hop": {
+      "accuracy": 0.875,
+      "mean_f1": 0.04265378158279219,
+      "mean_evidence_recall": 0.0,
+      "count": 32
+    },
+    "multi-hop": {
+      "accuracy": 0.9375,
+      "mean_f1": 0.07427061631479043,
+      "mean_evidence_recall": 0.0,
+      "count": 32
+    },
+    "open-domain": {
+      "accuracy": 0.9425287356321839,
+      "mean_f1": 0.05578602960367629,
+      "mean_evidence_recall": 0.0,
+      "count": 87
+    },
+    "temporal": {
+      "accuracy": 0.7142857142857143,
+      "mean_f1": 0.01873790034881197,
+      "mean_evidence_recall": 0.2857142857142857,
+      "count": 7
+    }
+  },
+  "per_conversation": {
+    "conv-50": {
+      "bank_id": "01KKHDPVBHBK0PF44SHB3S31WZ",
+      "accuracy": 0.9177215189873418,
+      "mean_f1": 0.055228674751165586,
+      "mean_evidence_recall": 0.012658227848101266,
+      "count": 158,
+      "ingest_time_s": 7354.724145082,
+      "consolidation_time_s": 2253.400757296,
+      "qa_time_s": 1435.099567761,
+      "total_time_s": 11043.224470139001,
+      "stage_metrics": {
+        "retain_extract": {
+          "prompt_tokens": 267693,
+          "completion_tokens": 73351,
+          "calls": 96,
+          "errors": 0,
+          "latency_ms": 857777
+        },
+        "retain_resolve": {
+          "prompt_tokens": 122,
+          "completion_tokens": 8,
+          "calls": 2,
+          "errors": 0,
+          "latency_ms": 3622
+        },
+        "retain_graph": {
+          "prompt_tokens": 70253,
+          "completion_tokens": 2760,
+          "calls": 690,
+          "errors": 0,
+          "latency_ms": 1646690
+        },
+        "retain_opinion": {
+          "prompt_tokens": 242003,
+          "completion_tokens": 10386,
+          "calls": 2291,
+          "errors": 0,
+          "latency_ms": 4819693
+        },
+        "reflect": {
+          "prompt_tokens": 4377890,
+          "completion_tokens": 209609,
+          "calls": 625,
+          "errors": 0,
+          "latency_ms": 5039026
+        },
+        "consolidate": {
+          "prompt_tokens": 189058,
+          "completion_tokens": 56806,
+          "calls": 76,
+          "errors": 0,
+          "latency_ms": 831176
+        },
+        "judge": {
+          "prompt_tokens": 96550,
+          "completion_tokens": 8031,
+          "calls": 158,
+          "errors": 0,
+          "latency_ms": 383219
+        }
+      },
+      "bank_stats": {
+        "sessions_ingested": 30,
+        "turns_ingested": 568,
+        "facts_stored": 754,
+        "entities_resolved": 1058,
+        "links_created": 183101,
+        "opinions_reinforced": 1069,
+        "opinions_weakened": 17,
+        "observations_created": 46,
+        "observations_updated": 168,
+        "final_fact_count": 800,
+        "final_observation_count": 46,
+        "final_opinion_count": 147,
+        "final_entity_count": 25
+      }
+    }
+  },
+  "bank_ids": {
+    "conv-50": "01KKHDPVBHBK0PF44SHB3S31WZ"
+  },
+  "turn_refs": {},
+  "manifest": {
+    "protocol_version": "2026-03-10-config-v1",
+    "profile": "full",
+    "mode": "run",
+    "config_path": "bench/locomo/configs/question-jobs-5.json",
+    "dataset_path": "data/locomo10.json",
+    "dataset_fingerprint": "8dfd1872bfb58ab8",
+    "command": "target/release/locomo-bench run --profile full --config bench/locomo/configs/question-jobs-5.json --conversation conv-50 --tag series1-conv-50",
+    "category_filter": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "selected_conversations": [
+      "conv-50"
+    ],
+    "image_policy": "blip_caption_inline",
+    "ingestion_granularity": "session",
+    "question_concurrency": 5,
+    "conversation_concurrency": 1,
+    "consolidation_strategy": "end",
+    "session_limit": null,
+    "question_limit": null,
+    "raw_json": false,
+    "dirty_worktree": false,
+    "prompt_hashes": {
+      "judge": "bdad9371b9ad2324",
+      "retain_extract": "a6b6ebdc25fc33ce",
+      "retain_resolve_system": "05a96c98f31d2cd9",
+      "retain_resolve_user": "ccc09800fd06a75a",
+      "retain_graph_system": "9ae2b2505f10e8dd",
+      "retain_graph_user": "f1752b7242698955",
+      "retain_opinion": "b703a0c626791577",
+      "reflect_agent": "ec915610b39bf9d3",
+      "consolidate": "fadb2d4186451969",
+      "opinion_merge": "6123818c6c302282"
+    },
+    "runtime_config": {
+      "chunk_max_tokens": 512,
+      "chunk_overlap_tokens": 64,
+      "dedup_threshold": 0.95,
+      "retriever_limit": 20,
+      "recall_rrf_k": 60.0,
+      "rerank_top_n": 50,
+      "reflect_max_iterations": 8,
+      "reflect_max_tokens": null,
+      "graph_semantic_threshold": 0.7,
+      "graph_temporal_max_days": 30,
+      "graph_enable_causal": true,
+      "graph_max_causal_checks": 10,
+      "consolidation_batch_size": 8,
+      "consolidation_max_tokens": 4096,
+      "consolidation_recall_budget": 512,
+      "reflect_budget_tokens": 4096,
+      "judge_temperature": 0.0,
+      "judge_max_tokens": 200,
+      "judge_max_attempts": 3,
+      "qa_updates_memory": false
+    }
+  },
+  "artifacts": {
+    "questions_path": "series1-conv-50.questions.jsonl",
+    "debug_path": "series1-conv-50.debug.jsonl"
+  },
+  "stage_metrics": {
+    "retain_extract": {
+      "prompt_tokens": 267693,
+      "completion_tokens": 73351,
+      "calls": 96,
+      "errors": 0,
+      "latency_ms": 857777
+    },
+    "retain_resolve": {
+      "prompt_tokens": 122,
+      "completion_tokens": 8,
+      "calls": 2,
+      "errors": 0,
+      "latency_ms": 3622
+    },
+    "retain_graph": {
+      "prompt_tokens": 70253,
+      "completion_tokens": 2760,
+      "calls": 690,
+      "errors": 0,
+      "latency_ms": 1646690
+    },
+    "retain_opinion": {
+      "prompt_tokens": 242003,
+      "completion_tokens": 10386,
+      "calls": 2291,
+      "errors": 0,
+      "latency_ms": 4819693
+    },
+    "reflect": {
+      "prompt_tokens": 4377890,
+      "completion_tokens": 209609,
+      "calls": 625,
+      "errors": 0,
+      "latency_ms": 5039026
+    },
+    "consolidate": {
+      "prompt_tokens": 189058,
+      "completion_tokens": 56806,
+      "calls": 76,
+      "errors": 0,
+      "latency_ms": 831176
+    },
+    "judge": {
+      "prompt_tokens": 96550,
+      "completion_tokens": 8031,
+      "calls": 158,
+      "errors": 0,
+      "latency_ms": 383219
+    }
+  },
+  "total_stage_usage": {
+    "prompt_tokens": 5243569,
+    "completion_tokens": 360951,
+    "calls": 3938,
+    "errors": 0,
+    "latency_ms": 13581203
+  },
+  "total_time_s": 11043.290864153
+}
