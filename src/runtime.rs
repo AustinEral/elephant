@@ -390,12 +390,21 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
     let reflect_max_tokens = env::var("REFLECT_MAX_TOKENS")
         .ok()
         .and_then(|s| s.parse().ok());
+    let reflect_source_limit: usize = env::var("REFLECT_SOURCE_LIMIT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(crate::reflect::DEFAULT_SOURCE_LOOKUP_LIMIT);
+    let reflect_source_max_chars = env::var("REFLECT_SOURCE_MAX_CHARS")
+        .ok()
+        .and_then(|s| s.parse().ok());
     let reflect = Arc::new(DefaultReflectPipeline::new_with_limits(
         recall.clone(),
         stage_llm(&reflect_config, LlmStage::Reflect, options.metrics.as_ref())?,
         store.clone(),
         reflect_max_iter,
         reflect_max_tokens,
+        reflect_source_limit,
+        reflect_source_max_chars,
     ));
 
     let consolidator = Arc::new(DefaultConsolidator::new(

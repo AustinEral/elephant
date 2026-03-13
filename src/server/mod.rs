@@ -157,6 +157,7 @@ mod tests {
                 new_opinions: vec![],
                 confidence: 0.5,
                 retrieved_context: Default::default(),
+                retrieved_sources: Default::default(),
                 trace: Default::default(),
                 final_done: None,
             })
@@ -170,7 +171,9 @@ mod tests {
         async fn consolidate_with_progress(
             &self,
             _bank_id: BankId,
-            _progress: Option<tokio::sync::mpsc::UnboundedSender<crate::consolidation::ConsolidationProgress>>,
+            _progress: Option<
+                tokio::sync::mpsc::UnboundedSender<crate::consolidation::ConsolidationProgress>,
+            >,
         ) -> Result<ConsolidationReport> {
             Ok(ConsolidationReport::default())
         }

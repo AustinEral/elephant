@@ -8,8 +8,9 @@ use sqlx::{PgPool, Row};
 use super::{MemoryStore, TransactionHandle};
 use crate::error::{Error, Result};
 use crate::types::{
-    BankId, Disposition, Entity, EntityId, EntityType, Fact, FactFilter, FactId, FactType,
-    GraphLink, LinkType, MemoryBank, NetworkType, ScoredFact, TemporalRange, TurnId,
+    BankId, Disposition, Entity, EntityId, EntityType, Fact, FactFilter, FactId, FactSourceLookup,
+    FactType, GraphLink, LinkType, MemoryBank, NetworkType, ScoredFact, Source, SourceId,
+    TemporalRange, TurnId,
 };
 
 /// PostgreSQL-backed memory store using pgvector for similarity search.
@@ -29,6 +30,9 @@ impl PgMemoryStore {
             .execute(&self.pool)
             .await?;
         sqlx::raw_sql(include_str!("../../migrations/002_consolidated_at.sql"))
+            .execute(&self.pool)
+            .await?;
+        sqlx::raw_sql(include_str!("../../migrations/003_sources.sql"))
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -133,6 +137,28 @@ fn row_to_bank(row: &PgRow) -> Result<MemoryBank> {
     })
 }
 
+fn row_to_source(row: &PgRow) -> Source {
+    let id: SourceId = row.get("id");
+    let bank_id: BankId = row.get("bank_id");
+    let content: String = row.get("content");
+    let context: Option<String> = row.get("context");
+    let speaker: Option<String> = row.get("speaker");
+    let rendered_input: Option<String> = row.get("rendered_input");
+    let timestamp: chrono::DateTime<chrono::Utc> = row.get("timestamp");
+    let created_at: chrono::DateTime<chrono::Utc> = row.get("created_at");
+
+    Source {
+        id,
+        bank_id,
+        content,
+        context,
+        speaker,
+        rendered_input,
+        timestamp,
+        created_at,
+    }
+}
+
 /// Serialize an enum to its serde string representation.
 fn enum_to_sql<T: serde::Serialize>(val: &T) -> Result<String> {
     let json_val = serde_json::to_value(val)?;
@@ -235,6 +261,102 @@ async fn get_facts_impl(conn: &mut PgConnection, ids: &[FactId]) -> Result<Vec<F
     .fetch_all(&mut *conn)
     .await?;
     rows.iter().map(row_to_fact).collect()
+}
+
+async fn insert_source_impl(conn: &mut PgConnection, source: &Source) -> Result<SourceId> {
+    sqlx::query(
+        "INSERT INTO sources (id, bank_id, content, context, speaker, rendered_input, timestamp, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+    )
+    .bind(source.id)
+    .bind(source.bank_id)
+    .bind(&source.content)
+    .bind(&source.context)
+    .bind(&source.speaker)
+    .bind(&source.rendered_input)
+    .bind(source.timestamp)
+    .bind(source.created_at)
+    .execute(&mut *conn)
+    .await?;
+    Ok(source.id)
+}
+
+async fn link_facts_to_source_impl(
+    conn: &mut PgConnection,
+    fact_ids: &[FactId],
+    source_id: SourceId,
+) -> Result<()> {
+    for fact_id in fact_ids {
+        sqlx::query(
+            "INSERT INTO fact_sources (fact_id, source_id)
+             VALUES ($1, $2)
+             ON CONFLICT (fact_id, source_id) DO NOTHING",
+        )
+        .bind(*fact_id)
+        .bind(source_id)
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn lookup_sources_impl(
+    conn: &mut PgConnection,
+    fact_ids: &[FactId],
+    per_fact_limit: usize,
+) -> Result<Vec<FactSourceLookup>> {
+    if fact_ids.is_empty() || per_fact_limit == 0 {
+        return Ok(vec![]);
+    }
+
+    let fact_uuids: Vec<uuid::Uuid> = fact_ids.iter().map(|id| id.to_uuid()).collect();
+    let rows = sqlx::query(
+        "WITH ranked_sources AS (
+            SELECT
+                fs.fact_id,
+                s.id,
+                s.bank_id,
+                s.content,
+                s.context,
+                s.speaker,
+                s.rendered_input,
+                s.timestamp,
+                s.created_at,
+                ROW_NUMBER() OVER (
+                    PARTITION BY fs.fact_id
+                    ORDER BY s.timestamp ASC, s.created_at ASC, s.id ASC
+                ) AS rank
+            FROM fact_sources fs
+            JOIN sources s ON s.id = fs.source_id
+            WHERE fs.fact_id = ANY($1)
+        )
+        SELECT fact_id, id, bank_id, content, context, speaker, rendered_input, timestamp, created_at
+        FROM ranked_sources
+        WHERE rank <= $2
+        ORDER BY fact_id ASC, timestamp ASC, created_at ASC, id ASC",
+    )
+    .bind(&fact_uuids)
+    .bind(per_fact_limit as i64)
+    .fetch_all(&mut *conn)
+    .await?;
+
+    let mut grouped = std::collections::HashMap::<FactId, Vec<Source>>::new();
+    for row in &rows {
+        let fact_id = FactId::from_uuid(row.get::<uuid::Uuid, _>("fact_id"));
+        let source = row_to_source(row);
+        grouped.entry(fact_id).or_default().push(source);
+    }
+
+    let mut lookups = Vec::new();
+    for fact_id in fact_ids {
+        if let Some(sources) = grouped.remove(fact_id) {
+            lookups.push(FactSourceLookup {
+                fact_id: *fact_id,
+                sources,
+            });
+        }
+    }
+    Ok(lookups)
 }
 
 async fn get_facts_by_bank_impl(
@@ -659,6 +781,25 @@ impl MemoryStore for PgMemoryStore {
         get_facts_impl(&mut conn, ids).await
     }
 
+    async fn insert_source(&self, source: &Source) -> Result<SourceId> {
+        let mut conn = self.pool.acquire().await?;
+        insert_source_impl(&mut conn, source).await
+    }
+
+    async fn link_facts_to_source(&self, fact_ids: &[FactId], source_id: SourceId) -> Result<()> {
+        let mut conn = self.pool.acquire().await?;
+        link_facts_to_source_impl(&mut conn, fact_ids, source_id).await
+    }
+
+    async fn lookup_sources(
+        &self,
+        fact_ids: &[FactId],
+        per_fact_limit: usize,
+    ) -> Result<Vec<FactSourceLookup>> {
+        let mut conn = self.pool.acquire().await?;
+        lookup_sources_impl(&mut conn, fact_ids, per_fact_limit).await
+    }
+
     async fn get_facts_by_bank(&self, bank: BankId, filter: FactFilter) -> Result<Vec<Fact>> {
         let mut conn = self.pool.acquire().await?;
         get_facts_by_bank_impl(&mut conn, bank, filter).await
@@ -806,6 +947,34 @@ impl MemoryStore for PgTransactionHandle {
             .as_mut()
             .ok_or_else(|| Error::Internal("transaction already consumed".into()))?;
         get_facts_impl(txn, ids).await
+    }
+
+    async fn insert_source(&self, source: &Source) -> Result<SourceId> {
+        let mut guard = txn_conn!(self);
+        let txn = guard
+            .as_mut()
+            .ok_or_else(|| Error::Internal("transaction already consumed".into()))?;
+        insert_source_impl(txn, source).await
+    }
+
+    async fn link_facts_to_source(&self, fact_ids: &[FactId], source_id: SourceId) -> Result<()> {
+        let mut guard = txn_conn!(self);
+        let txn = guard
+            .as_mut()
+            .ok_or_else(|| Error::Internal("transaction already consumed".into()))?;
+        link_facts_to_source_impl(txn, fact_ids, source_id).await
+    }
+
+    async fn lookup_sources(
+        &self,
+        fact_ids: &[FactId],
+        per_fact_limit: usize,
+    ) -> Result<Vec<FactSourceLookup>> {
+        let mut guard = txn_conn!(self);
+        let txn = guard
+            .as_mut()
+            .ok_or_else(|| Error::Internal("transaction already consumed".into()))?;
+        lookup_sources_impl(txn, fact_ids, per_fact_limit).await
     }
 
     async fn get_facts_by_bank(&self, bank: BankId, filter: FactFilter) -> Result<Vec<Fact>> {

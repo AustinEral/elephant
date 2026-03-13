@@ -108,6 +108,11 @@ define_id!(
 );
 
 define_id!(
+    /// Unique identifier for a provenance [`Source`](crate::types::Source).
+    SourceId
+);
+
+define_id!(
     /// Unique identifier for a conversation turn.
     TurnId
 );

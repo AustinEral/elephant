@@ -6,8 +6,8 @@ use async_trait::async_trait;
 
 use crate::error::Result;
 use crate::types::{
-    BankId, Entity, EntityId, Fact, FactFilter, FactId, GraphLink, LinkType, MemoryBank,
-    NetworkType, RetrievalSource, ScoredFact,
+    BankId, Entity, EntityId, Fact, FactFilter, FactId, FactSourceLookup, GraphLink, LinkType,
+    MemoryBank, NetworkType, RetrievalSource, ScoredFact, Source, SourceId,
 };
 use crate::util::cosine_similarity;
 
@@ -17,6 +17,8 @@ use super::{MemoryStore, TransactionHandle};
 #[derive(Clone)]
 pub struct MockMemoryStore {
     facts: Arc<Mutex<Vec<Fact>>>,
+    sources: Arc<Mutex<Vec<Source>>>,
+    fact_sources: Arc<Mutex<Vec<(FactId, SourceId)>>>,
     entities: Arc<Mutex<Vec<Entity>>>,
     links: Arc<Mutex<Vec<GraphLink>>>,
     banks: Arc<Mutex<Vec<MemoryBank>>>,
@@ -27,6 +29,8 @@ impl MockMemoryStore {
     pub fn new() -> Self {
         Self {
             facts: Arc::new(Mutex::new(Vec::new())),
+            sources: Arc::new(Mutex::new(Vec::new())),
+            fact_sources: Arc::new(Mutex::new(Vec::new())),
             entities: Arc::new(Mutex::new(Vec::new())),
             links: Arc::new(Mutex::new(Vec::new())),
             banks: Arc::new(Mutex::new(Vec::new())),
@@ -62,6 +66,62 @@ impl MemoryStore for MockMemoryStore {
             .filter(|f| ids.contains(&f.id))
             .cloned()
             .collect())
+    }
+
+    async fn insert_source(&self, source: &Source) -> Result<SourceId> {
+        let mut store = self.sources.lock().unwrap();
+        store.push(source.clone());
+        Ok(source.id)
+    }
+
+    async fn link_facts_to_source(&self, fact_ids: &[FactId], source_id: SourceId) -> Result<()> {
+        if fact_ids.is_empty() {
+            return Ok(());
+        }
+
+        let mut store = self.fact_sources.lock().unwrap();
+        for fact_id in fact_ids {
+            let link = (*fact_id, source_id);
+            if !store.contains(&link) {
+                store.push(link);
+            }
+        }
+        Ok(())
+    }
+
+    async fn lookup_sources(
+        &self,
+        fact_ids: &[FactId],
+        per_fact_limit: usize,
+    ) -> Result<Vec<FactSourceLookup>> {
+        if fact_ids.is_empty() || per_fact_limit == 0 {
+            return Ok(vec![]);
+        }
+
+        let sources = self.sources.lock().unwrap();
+        let fact_sources = self.fact_sources.lock().unwrap();
+        let mut lookups = Vec::new();
+
+        for fact_id in fact_ids {
+            let mut linked_sources = fact_sources
+                .iter()
+                .filter(|(linked_fact_id, _)| linked_fact_id == fact_id)
+                .filter_map(|(_, source_id)| sources.iter().find(|source| source.id == *source_id))
+                .cloned()
+                .collect::<Vec<_>>();
+
+            linked_sources.sort_by_key(|source| (source.timestamp, source.created_at, source.id));
+            linked_sources.truncate(per_fact_limit);
+
+            if !linked_sources.is_empty() {
+                lookups.push(FactSourceLookup {
+                    fact_id: *fact_id,
+                    sources: linked_sources,
+                });
+            }
+        }
+
+        Ok(lookups)
     }
 
     async fn get_facts_by_bank(&self, bank: BankId, filter: FactFilter) -> Result<Vec<Fact>> {
@@ -305,6 +365,22 @@ impl MemoryStore for MockTransactionHandle {
         self.inner.get_facts(ids).await
     }
 
+    async fn insert_source(&self, source: &Source) -> Result<SourceId> {
+        self.inner.insert_source(source).await
+    }
+
+    async fn link_facts_to_source(&self, fact_ids: &[FactId], source_id: SourceId) -> Result<()> {
+        self.inner.link_facts_to_source(fact_ids, source_id).await
+    }
+
+    async fn lookup_sources(
+        &self,
+        fact_ids: &[FactId],
+        per_fact_limit: usize,
+    ) -> Result<Vec<FactSourceLookup>> {
+        self.inner.lookup_sources(fact_ids, per_fact_limit).await
+    }
+
     async fn get_facts_by_bank(&self, bank: BankId, filter: FactFilter) -> Result<Vec<Fact>> {
         self.inner.get_facts_by_bank(bank, filter).await
     }
@@ -383,5 +459,65 @@ impl MemoryStore for MockTransactionHandle {
         at: chrono::DateTime<chrono::Utc>,
     ) -> Result<()> {
         self.inner.mark_consolidated(ids, at).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{TimeZone, Utc};
+
+    #[tokio::test]
+    async fn lookup_sources_dedups_links_and_orders_sources() {
+        let store = MockMemoryStore::new();
+        let bank_id = BankId::new();
+        let fact_id = FactId::new();
+        let early = Source {
+            id: SourceId::new(),
+            bank_id,
+            content: "Earlier source".into(),
+            context: Some("Earlier context".into()),
+            speaker: Some("Avery".into()),
+            rendered_input: Some(
+                "Speaker: Avery\n\n## Preceding Context\n\nEarlier context\n\n---\n\n## Content to Extract From\n\nEarlier source\n\nTimestamp: 2024-07-01T12:00:00+00:00".into(),
+            ),
+            timestamp: Utc.with_ymd_and_hms(2024, 7, 1, 12, 0, 0).unwrap(),
+            created_at: Utc.with_ymd_and_hms(2024, 7, 1, 12, 0, 1).unwrap(),
+        };
+        let late = Source {
+            id: SourceId::new(),
+            bank_id,
+            content: "Later source".into(),
+            context: None,
+            speaker: None,
+            rendered_input: Some(
+                "## Content to Extract From\n\nLater source\n\nTimestamp: 2024-07-03T12:00:00+00:00"
+                    .into(),
+            ),
+            timestamp: Utc.with_ymd_and_hms(2024, 7, 3, 12, 0, 0).unwrap(),
+            created_at: Utc.with_ymd_and_hms(2024, 7, 3, 12, 0, 1).unwrap(),
+        };
+
+        store.insert_source(&late).await.unwrap();
+        store.insert_source(&early).await.unwrap();
+        store
+            .link_facts_to_source(&[fact_id], late.id)
+            .await
+            .unwrap();
+        store
+            .link_facts_to_source(&[fact_id], late.id)
+            .await
+            .unwrap();
+        store
+            .link_facts_to_source(&[fact_id], early.id)
+            .await
+            .unwrap();
+
+        let lookups = store.lookup_sources(&[fact_id], 10).await.unwrap();
+        assert_eq!(lookups.len(), 1);
+        assert_eq!(lookups[0].fact_id, fact_id);
+        assert_eq!(lookups[0].sources.len(), 2);
+        assert_eq!(lookups[0].sources[0].id, early.id);
+        assert_eq!(lookups[0].sources[1].id, late.id);
     }
 }

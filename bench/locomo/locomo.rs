@@ -19,8 +19,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, Semaphore, mpsc};
 
-use elephant::consolidation::{ConsolidationProgress, observation};
 use elephant::MemoryStore;
+use elephant::consolidation::{ConsolidationProgress, observation};
 use elephant::llm::retry::{RetryPolicy, RetryingLlmClient};
 use elephant::llm::{self, LlmClient, Provider, ProviderConfig};
 use elephant::metrics::{
@@ -280,6 +280,16 @@ struct RetrievedFactEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct RetrievedSourceEntry {
+    id: String,
+    fact_id: String,
+    timestamp: String,
+    content: String,
+    #[serde(default)]
+    truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ReflectTraceEntry {
     iteration: usize,
     tool_name: String,
@@ -287,7 +297,11 @@ struct ReflectTraceEntry {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     returned_fact_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    requested_fact_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     new_fact_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    returned_source_ids: Vec<String>,
     facts_returned: usize,
     total_tokens: usize,
     latency_ms: u64,
@@ -332,6 +346,8 @@ struct QuestionDebugRecord {
     final_done: Option<ReflectDoneTrace>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     retrieved_context: Vec<RetrievedFactEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    retrieved_sources: Vec<RetrievedSourceEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -2250,9 +2266,7 @@ fn print_help() {
     eprintln!(
         "  --dataset <PATH>                Dataset path for `run`/`ingest` [default: data/locomo10.json]"
     );
-    eprintln!(
-        "  --tag <NAME>                    Save to results/local/<tag>.json by default"
-    );
+    eprintln!("  --tag <NAME>                    Save to results/local/<tag>.json by default");
     eprintln!("  --out <PATH>                    Output results path (overrides --tag)");
     eprintln!("  --conversation <ID>             Run one specific conversation (repeatable)");
     eprintln!("  --ingest <MODE>                 turn | session | raw-json (`run`/`ingest` only)");
@@ -2648,7 +2662,11 @@ async fn run_conversation(
             let failure_suffix = if session_failures == 0 {
                 String::new()
             } else {
-                format!(" | {} failure{}", session_failures, if session_failures == 1 { "" } else { "s" })
+                format!(
+                    " | {} failure{}",
+                    session_failures,
+                    if session_failures == 1 { "" } else { "s" }
+                )
             };
             println!(
                 "[{tag}] ingest [{idx}/{ingest_sessions}] {mode_label}-level complete | {session_turns} turns | {session_facts} facts | session: {} | total: {}{}",
@@ -2669,7 +2687,8 @@ async fn run_conversation(
                     bank.id,
                     conversation_metrics.clone(),
                 )
-                .await {
+                .await
+                {
                     Ok(cr) => {
                         bank_stats.observations_created += cr.observations_created;
                         bank_stats.observations_updated += cr.observations_updated;
@@ -2707,7 +2726,8 @@ async fn run_conversation(
             bank_id,
             conversation_metrics.clone(),
         )
-        .await {
+        .await
+        {
             Ok(resp) => {
                 let elapsed = t0.elapsed().as_secs_f64();
                 bank_stats.observations_created += resp.observations_created;
@@ -2807,6 +2827,7 @@ async fn run_conversation(
                 hypothesis,
                 _reflect_confidence,
                 retrieved_context,
+                retrieved_sources,
                 final_source_ids,
                 reflect_trace,
                 final_done,
@@ -2869,6 +2890,17 @@ async fn run_conversation(
                                     }
                                 })
                                 .collect::<Vec<_>>();
+                            let retrieved_sources = resp
+                                .retrieved_sources
+                                .into_iter()
+                                .map(|source| RetrievedSourceEntry {
+                                    id: source.id.to_string(),
+                                    fact_id: source.fact_id.to_string(),
+                                    timestamp: source.timestamp.to_rfc3339(),
+                                    content: source.content,
+                                    truncated: source.truncated,
+                                })
+                                .collect::<Vec<_>>();
                             let final_source_ids = resp
                                 .sources
                                 .into_iter()
@@ -2886,8 +2918,18 @@ async fn run_conversation(
                                         .into_iter()
                                         .map(|id| id.to_string())
                                         .collect(),
+                                    requested_fact_ids: step
+                                        .requested_fact_ids
+                                        .into_iter()
+                                        .map(|id| id.to_string())
+                                        .collect(),
                                     new_fact_ids: step
                                         .new_fact_ids
+                                        .into_iter()
+                                        .map(|id| id.to_string())
+                                        .collect(),
+                                    returned_source_ids: step
+                                        .returned_source_ids
                                         .into_iter()
                                         .map(|id| id.to_string())
                                         .collect(),
@@ -2900,6 +2942,7 @@ async fn run_conversation(
                                 resp.response,
                                 resp.confidence,
                                 retrieved_context,
+                                retrieved_sources,
                                 final_source_ids,
                                 reflect_trace,
                                 resp.final_done,
@@ -2911,6 +2954,7 @@ async fn run_conversation(
                         Err(e) => (
                             String::new(),
                             0.0,
+                            Vec::new(),
                             Vec::new(),
                             Vec::new(),
                             Vec::new(),
@@ -3000,6 +3044,7 @@ async fn run_conversation(
                 reflect_trace,
                 final_done,
                 retrieved_context,
+                retrieved_sources,
             };
 
             shared.lock().await.push_and_flush(
@@ -3669,6 +3714,7 @@ mod tests {
             reflect_trace: Vec::new(),
             final_done: None,
             retrieved_context: Vec::new(),
+            retrieved_sources: Vec::new(),
         };
         write_jsonl_records(&questions_path, std::slice::from_ref(&question))
             .expect("write question sidecar");
@@ -3923,7 +3969,10 @@ mod tests {
                         }
                     ]),
                 ),
-                ("session_1_date_time".into(), json!("1:56 pm on 8 May, 2023")),
+                (
+                    "session_1_date_time".into(),
+                    json!("1:56 pm on 8 May, 2023"),
+                ),
                 ("session_1_summary".into(), json!("summary text")),
                 ("session_1_observation".into(), json!({ "facts": [] })),
                 ("session_35_summary".into(), json!("later summary text")),

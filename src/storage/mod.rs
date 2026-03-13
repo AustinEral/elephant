@@ -8,8 +8,8 @@ use chrono::{DateTime, Utc};
 
 use crate::error::Result;
 use crate::types::{
-    BankId, Entity, EntityId, Fact, FactFilter, FactId, GraphLink, LinkType, MemoryBank,
-    NetworkType, ScoredFact,
+    BankId, Entity, EntityId, Fact, FactFilter, FactId, FactSourceLookup, GraphLink, LinkType,
+    MemoryBank, NetworkType, ScoredFact, Source, SourceId,
 };
 
 /// A database transaction that implements `MemoryStore`.
@@ -35,6 +35,19 @@ pub trait MemoryStore: Send + Sync {
 
     /// Retrieve facts by their IDs.
     async fn get_facts(&self, ids: &[FactId]) -> Result<Vec<Fact>>;
+
+    /// Insert a source record. Returns the source ID.
+    async fn insert_source(&self, source: &Source) -> Result<SourceId>;
+
+    /// Link facts to a supporting source. Duplicate links are ignored.
+    async fn link_facts_to_source(&self, fact_ids: &[FactId], source_id: SourceId) -> Result<()>;
+
+    /// Look up provenance sources for facts, capped per fact.
+    async fn lookup_sources(
+        &self,
+        fact_ids: &[FactId],
+        per_fact_limit: usize,
+    ) -> Result<Vec<FactSourceLookup>>;
 
     /// Retrieve facts for a bank, optionally filtered.
     async fn get_facts_by_bank(&self, bank: BankId, filter: FactFilter) -> Result<Vec<Fact>>;
