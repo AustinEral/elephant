@@ -3190,7 +3190,10 @@ fn ensure_output_paths_are_safe(
             .map(|artifact| same_path(output_path, artifact))
             .unwrap_or(false)
     {
-        return Ok(());
+        return Err(format!(
+            "refusing to overwrite source artifact {} during `qa`; choose --out or pass --force",
+            output_path.display()
+        ));
     }
 
     if matches!(command, BenchCommand::Merge)
@@ -3892,14 +3895,15 @@ mod tests {
     }
 
     #[test]
-    fn qa_allows_in_place_artifact_update_without_force() {
+    fn qa_blocks_in_place_artifact_update_without_force() {
         let test_dir = env::temp_dir().join(format!("locomo-qa-safe-test-{}", std::process::id()));
         fs::create_dir_all(&test_dir).expect("create qa safe test dir");
         let artifact = test_dir.join("artifact.json");
         fs::write(&artifact, "{}").expect("write artifact");
 
-        ensure_output_paths_are_safe(BenchCommand::Qa, &artifact, Some(&artifact), &[], false)
-            .expect("qa should allow in-place update");
+        let err = ensure_output_paths_are_safe(BenchCommand::Qa, &artifact, Some(&artifact), &[], false)
+            .expect_err("qa should block in-place update without force");
+        assert!(err.contains("refusing to overwrite source artifact"));
 
         fs::remove_dir_all(&test_dir).ok();
     }
