@@ -42,6 +42,7 @@ pub struct DefaultReflectPipeline {
     max_output_tokens: Option<usize>,
     source_lookup_limit: usize,
     source_content_max_chars: Option<usize>,
+    enable_source_lookup: bool,
 }
 
 /// Reflect agent prompt template.
@@ -50,6 +51,8 @@ pub const REFLECT_AGENT_PROMPT_TEMPLATE: &str = include_str!("../../prompts/refl
 pub const REFLECT_TEMPERATURE: f32 = 0.3;
 /// Default maximum number of sources returned per fact for source lookups.
 pub const DEFAULT_SOURCE_LOOKUP_LIMIT: usize = 3;
+/// Default lookup availability for reflect.
+pub const DEFAULT_ENABLE_SOURCE_LOOKUP: bool = true;
 
 impl DefaultReflectPipeline {
     /// Create a new reflect pipeline.
@@ -67,6 +70,7 @@ impl DefaultReflectPipeline {
             None,
             DEFAULT_SOURCE_LOOKUP_LIMIT,
             None,
+            DEFAULT_ENABLE_SOURCE_LOOKUP,
         )
     }
 
@@ -79,6 +83,7 @@ impl DefaultReflectPipeline {
         max_output_tokens: Option<usize>,
         source_lookup_limit: usize,
         source_content_max_chars: Option<usize>,
+        enable_source_lookup: bool,
     ) -> Self {
         Self {
             recall,
@@ -88,6 +93,7 @@ impl DefaultReflectPipeline {
             max_output_tokens,
             source_lookup_limit: source_lookup_limit.max(1),
             source_content_max_chars,
+            enable_source_lookup,
         }
     }
 }
@@ -104,9 +110,10 @@ struct SearchArgs {
 
 /// Arguments for provenance lookup by fact id.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct LookupSourcesArgs {
-    /// Fact IDs whose linked sources should be returned.
-    fact_ids: Vec<String>,
+    /// Fact ID whose linked sources should be returned.
+    fact_id: String,
     /// Optional per-fact cap, clamped to the pipeline maximum.
     #[serde(default)]
     limit: Option<usize>,
@@ -125,8 +132,8 @@ struct DoneArgs {
     source_ids: Vec<String>,
 }
 
-fn tool_defs() -> Vec<ToolDef> {
-    vec![
+fn tool_defs(enable_source_lookup: bool) -> Vec<ToolDef> {
+    let mut tools = vec![
         ToolDef::from_schema::<SearchArgs>(
             "search_observations",
             "Search consolidated observations (high-level summaries). Use first for the big picture.",
@@ -135,12 +142,18 @@ fn tool_defs() -> Vec<ToolDef> {
             "recall",
             "Search raw memories (facts and experiences). Ground truth data. Use to verify or fill gaps.",
         ),
-        ToolDef::from_schema::<LookupSourcesArgs>(
+    ];
+    if enable_source_lookup {
+        tools.push(ToolDef::from_schema::<LookupSourcesArgs>(
             "lookup_sources",
-            "Look up exact extraction inputs for known fact IDs. Use when original source text or source timing would help answer.",
-        ),
-        ToolDef::from_schema::<DoneArgs>("done", "Return the final answer with source citations."),
-    ]
+            "Look up exact extraction inputs for one known fact ID. Use when original source text or source timing would help answer.",
+        ));
+    }
+    tools.push(ToolDef::from_schema::<DoneArgs>(
+        "done",
+        "Return the final answer with source citations.",
+    ));
+    tools
 }
 
 #[async_trait]
@@ -181,7 +194,7 @@ impl DefaultReflectPipeline {
         let mut trace: Vec<ReflectTraceStep> = Vec::new();
         let mut support_cache: HashMap<FactId, Fact> = HashMap::new();
 
-        let tools = tool_defs();
+        let tools = tool_defs(self.enable_source_lookup);
 
         let last_iteration = self.max_iterations - 1;
         let done_only = vec![ToolDef::from_schema::<DoneArgs>(
@@ -344,14 +357,27 @@ impl DefaultReflectPipeline {
                         });
                     }
                     "lookup_sources" => {
-                        let args: LookupSourcesArgs = serde_json::from_value(tc.arguments.clone())
-                            .unwrap_or(LookupSourcesArgs {
-                                fact_ids: vec![],
-                                limit: None,
-                                reason: String::new(),
-                            });
+                        let args: LookupSourcesArgs = match serde_json::from_value(
+                            tc.arguments.clone(),
+                        ) {
+                            Ok(args) => args,
+                            Err(err) => {
+                                debug!(
+                                    tool_name = tc.name.as_str(),
+                                    error = %err,
+                                    "invalid_lookup_sources_args"
+                                );
+                                tool_results.push(ToolResult {
+                                    tool_call_id: tc.id.clone(),
+                                    content: "Invalid lookup_sources arguments. Provide exactly one fact_id.".into(),
+                                });
+                                continue;
+                            }
+                        };
 
-                        let requested_fact_ids = Self::parse_requested_fact_ids(&args.fact_ids);
+                        let requested_fact_ids = Self::parse_requested_fact_id(&args.fact_id)
+                            .into_iter()
+                            .collect::<Vec<_>>();
                         let per_fact_limit = self
                             .effective_source_limit(args.limit)
                             .min(self.source_lookup_limit);
@@ -383,7 +409,7 @@ impl DefaultReflectPipeline {
 
                         debug!(
                             tool_name = tc.name.as_str(),
-                            requested_fact_ids = args.fact_ids.len(),
+                            requested_fact_ids = requested_fact_ids.len(),
                             facts_with_sources = returned_fact_ids.len(),
                             sources_matched,
                             unique_sources_returned,
@@ -394,7 +420,7 @@ impl DefaultReflectPipeline {
                         trace.push(ReflectTraceStep {
                             iteration,
                             tool_name: tc.name.clone(),
-                            query: args.fact_ids.join(", "),
+                            query: args.fact_id.clone(),
                             returned_fact_ids,
                             requested_fact_ids,
                             new_fact_ids: vec![],
@@ -475,17 +501,8 @@ impl DefaultReflectPipeline {
             .min(self.source_lookup_limit)
     }
 
-    fn parse_requested_fact_ids(raw_ids: &[String]) -> Vec<FactId> {
-        let mut seen = HashSet::new();
-        let mut parsed = Vec::new();
-        for raw_id in raw_ids {
-            if let Ok(fact_id) = raw_id.parse::<FactId>()
-                && seen.insert(fact_id)
-            {
-                parsed.push(fact_id);
-            }
-        }
-        parsed
+    fn parse_requested_fact_id(raw_id: &str) -> Option<FactId> {
+        raw_id.parse::<FactId>().ok()
     }
 
     fn format_source_lookups(
@@ -540,7 +557,10 @@ impl DefaultReflectPipeline {
         }
 
         for source_id in source_order {
-            if let Some(source) = surfaced_sources.iter().find(|source| source.id == source_id) {
+            if let Some(source) = surfaced_sources
+                .iter()
+                .find(|source| source.id == source_id)
+            {
                 let fact_ids = source_fact_ids
                     .get(&source_id)
                     .expect("source fact ids should exist");
@@ -550,7 +570,7 @@ impl DefaultReflectPipeline {
                     .collect::<Vec<_>>()
                     .join(" ");
                 let _ = writeln!(output, "[SOURCE {}]", source.id);
-                let _ = writeln!(output, "Linked facts: {linked}");
+                let _ = writeln!(output, "Linked fact: {linked}");
                 let _ = writeln!(output, "{}", source.content);
                 let _ = writeln!(output, "[END SOURCE]");
             }
@@ -1125,7 +1145,7 @@ mod tests {
                 id: "call_3".into(),
                 name: "lookup_sources".into(),
                 arguments: serde_json::json!({
-                    "fact_ids": [fact_id.to_string()],
+                    "fact_id": fact_id.to_string(),
                     "limit": 1,
                     "reason": "Find when the memory was originally said"
                 }),
@@ -1176,7 +1196,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reflect_lookup_sources_dedups_shared_source_blocks() {
+    async fn reflect_lookup_sources_only_queries_one_fact() {
         let h = TestHarness::new().await;
         let emb = h
             .embeddings
@@ -1250,9 +1270,9 @@ mod tests {
                 id: "call_3".into(),
                 name: "lookup_sources".into(),
                 arguments: serde_json::json!({
-                    "fact_ids": [fact_a_id.to_string(), fact_b_id.to_string()],
+                    "fact_id": fact_a_id.to_string(),
                     "limit": 3,
-                    "reason": "Verify the shared source context"
+                    "reason": "Verify the source context for the first fact"
                 }),
             }],
         });
@@ -1286,12 +1306,24 @@ mod tests {
 
         assert_eq!(result.trace.len(), 3);
         assert_eq!(result.trace[2].tool_name, "lookup_sources");
-        assert_eq!(result.trace[2].requested_fact_ids, vec![fact_a_id, fact_b_id]);
-        assert_eq!(result.trace[2].returned_fact_ids, vec![fact_a_id, fact_b_id]);
+        assert_eq!(result.trace[2].query, fact_a_id.to_string());
+        assert_eq!(result.trace[2].requested_fact_ids, vec![fact_a_id]);
+        assert_eq!(result.trace[2].returned_fact_ids, vec![fact_a_id]);
         assert_eq!(result.trace[2].returned_source_ids, vec![source.id]);
         assert_eq!(result.trace[2].facts_returned, 1);
         assert_eq!(result.retrieved_sources.len(), 1);
         assert_eq!(result.retrieved_sources[0].id, source.id);
+        assert_eq!(result.retrieved_sources[0].fact_id, fact_a_id);
+    }
+
+    #[test]
+    fn tool_defs_omit_lookup_sources_when_disabled() {
+        let enabled = tool_defs(true);
+        let disabled = tool_defs(false);
+
+        assert!(enabled.iter().any(|tool| tool.name == "lookup_sources"));
+        assert!(!disabled.iter().any(|tool| tool.name == "lookup_sources"));
+        assert!(disabled.iter().any(|tool| tool.name == "done"));
     }
 
     #[tokio::test]

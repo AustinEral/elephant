@@ -3901,8 +3901,9 @@ mod tests {
         let artifact = test_dir.join("artifact.json");
         fs::write(&artifact, "{}").expect("write artifact");
 
-        let err = ensure_output_paths_are_safe(BenchCommand::Qa, &artifact, Some(&artifact), &[], false)
-            .expect_err("qa should block in-place update without force");
+        let err =
+            ensure_output_paths_are_safe(BenchCommand::Qa, &artifact, Some(&artifact), &[], false)
+                .expect_err("qa should block in-place update without force");
         assert!(err.contains("refusing to overwrite source artifact"));
 
         fs::remove_dir_all(&test_dir).ok();

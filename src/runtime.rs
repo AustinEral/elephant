@@ -85,6 +85,9 @@ pub struct RuntimeTuning {
     pub reflect_max_iterations: usize,
     /// Reflect completion cap.
     pub reflect_max_tokens: Option<usize>,
+    /// Whether reflect exposes the source lookup tool.
+    #[serde(default = "default_true")]
+    pub reflect_enable_source_lookup: bool,
     /// Graph semantic-link threshold.
     pub graph_semantic_threshold: f32,
     /// Graph temporal-link max distance.
@@ -116,6 +119,10 @@ pub struct RuntimeInfo {
     pub tuning: RuntimeTuning,
     /// Prompt template hashes.
     pub prompt_hashes: RuntimePromptHashes,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Fully constructed Elephant runtime.
@@ -397,6 +404,18 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
     let reflect_source_max_chars = env::var("REFLECT_SOURCE_MAX_CHARS")
         .ok()
         .and_then(|s| s.parse().ok());
+    let reflect_enable_source_lookup = match env::var("REFLECT_ENABLE_SOURCE_LOOKUP") {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "0" | "false" | "no" | "off" => false,
+            other => {
+                return Err(Error::Internal(format!(
+                    "REFLECT_ENABLE_SOURCE_LOOKUP must be a boolean, got: {other}"
+                )));
+            }
+        },
+        Err(_) => crate::reflect::DEFAULT_ENABLE_SOURCE_LOOKUP,
+    };
     let reflect = Arc::new(DefaultReflectPipeline::new_with_limits(
         recall.clone(),
         stage_llm(&reflect_config, LlmStage::Reflect, options.metrics.as_ref())?,
@@ -405,6 +424,7 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
         reflect_max_tokens,
         reflect_source_limit,
         reflect_source_max_chars,
+        reflect_enable_source_lookup,
     ));
 
     let consolidator = Arc::new(DefaultConsolidator::new(
@@ -442,6 +462,7 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
                 rerank_top_n,
                 reflect_max_iterations: reflect_max_iter,
                 reflect_max_tokens,
+                reflect_enable_source_lookup,
                 graph_semantic_threshold: graph_config.semantic_threshold,
                 graph_temporal_max_days: graph_config.temporal_max_days,
                 graph_enable_causal: graph_config.enable_causal,
