@@ -192,162 +192,7 @@ impl DefaultRetainPipeline {
 
         Ok((reinforced, weakened))
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Arc;
-
-    use crate::embedding::mock::MockEmbeddings;
-    use crate::llm::mock::MockLlmClient;
-    use crate::storage::mock::MockMemoryStore;
-    use crate::types::{Chunk, Disposition, ExtractedFact, FactType, MemoryBank};
-
-    struct StubChunker;
-
-    impl Chunker for StubChunker {
-        fn chunk(&self, input: &str, _config: &crate::types::ChunkConfig) -> Vec<Chunk> {
-            vec![Chunk {
-                content: input.to_string(),
-                index: 0,
-                context: None,
-            }]
-        }
-    }
-
-    struct StubExtractor;
-
-    #[async_trait]
-    impl FactExtractor for StubExtractor {
-        async fn extract(&self, _input: &ExtractionInput) -> Result<Vec<ExtractedFact>> {
-            Ok(vec![ExtractedFact {
-                content: "Avery shared the roadmap".into(),
-                fact_type: FactType::Experience,
-                network: NetworkType::Experience,
-                entity_mentions: vec![],
-                temporal_range: None,
-                confidence: None,
-            }])
-        }
-    }
-
-    struct StubResolver;
-
-    #[async_trait]
-    impl EntityResolver for StubResolver {
-        async fn resolve(
-            &self,
-            _mentions: &[String],
-            _bank_id: crate::types::BankId,
-            _store: &dyn MemoryStore,
-        ) -> Result<Vec<crate::types::ResolvedEntity>> {
-            Ok(vec![])
-        }
-    }
-
-    struct StubGraphBuilder;
-
-    #[async_trait]
-    impl GraphBuilder for StubGraphBuilder {
-        async fn build_links(
-            &self,
-            _new_facts: &[Fact],
-            _bank_id: crate::types::BankId,
-            _store: &dyn MemoryStore,
-        ) -> Result<Vec<crate::types::GraphLink>> {
-            Ok(vec![])
-        }
-    }
-
-    #[tokio::test]
-    async fn retain_creates_and_links_a_source_record() {
-        let store = MockMemoryStore::new();
-        let bank_id = crate::types::BankId::new();
-        store
-            .create_bank(&MemoryBank {
-                id: bank_id,
-                name: "test".into(),
-                mission: String::new(),
-                directives: vec![],
-                disposition: Disposition::default(),
-                embedding_model: "mock".into(),
-                embedding_dimensions: 8,
-            })
-            .await
-            .unwrap();
-
-        let pipeline = DefaultRetainPipeline::new(
-            Box::new(StubChunker),
-            Box::new(StubExtractor),
-            Box::new(StubResolver),
-            Box::new(StubGraphBuilder),
-            Box::new(store.clone()),
-            Box::new(MockEmbeddings::new(8)),
-            Arc::new(MockLlmClient::new()),
-            crate::types::ChunkConfig {
-                max_tokens: 2000,
-                overlap_tokens: 0,
-                preserve_turns: false,
-            },
-            None,
-        );
-
-        let timestamp = chrono::Utc::now();
-        let output = pipeline
-            .retain(&RetainInput {
-                bank_id,
-                content: "Avery shared the roadmap during the weekly sync.".into(),
-                timestamp,
-                turn_id: None,
-                context: None,
-                custom_instructions: None,
-                speaker: None,
-            })
-            .await
-            .unwrap();
-
-        assert_eq!(output.fact_ids.len(), 1);
-
-        let lookups = store.lookup_sources(&output.fact_ids, 5).await.unwrap();
-        assert_eq!(lookups.len(), 1);
-        assert_eq!(lookups[0].fact_id, output.fact_ids[0]);
-        assert_eq!(lookups[0].sources.len(), 1);
-        assert_eq!(
-            lookups[0].sources[0].content,
-            "Avery shared the roadmap during the weekly sync."
-        );
-        assert_eq!(lookups[0].sources[0].context, None);
-        assert_eq!(lookups[0].sources[0].speaker, None);
-        assert_eq!(
-            lookups[0].sources[0].rendered_input.as_deref(),
-            Some(
-                format!(
-                    "## Content to Extract From\n\nAvery shared the roadmap during the weekly sync.\n\nTimestamp: {}",
-                    timestamp.to_rfc3339()
-                )
-                .as_str()
-            )
-        );
-        assert_eq!(lookups[0].sources[0].timestamp, timestamp);
-    }
-}
-
-#[async_trait]
-impl RetainPipeline for DefaultRetainPipeline {
-    async fn retain(&self, input: &RetainInput) -> Result<RetainOutput> {
-        let retain_span = info_span!("retain",
-            bank_id = %input.bank_id,
-            content_len = input.content.len(),
-            facts_stored = tracing::field::Empty,
-            entities_resolved = tracing::field::Empty,
-            links_created = tracing::field::Empty,
-        );
-        self.retain_inner(input).instrument(retain_span).await
-    }
-}
-
-impl DefaultRetainPipeline {
     async fn retain_inner(&self, input: &RetainInput) -> Result<RetainOutput> {
         // 0. Validate embedding dimensions match the bank's config
         let bank = self.store.get_bank(input.bank_id).await?;
@@ -566,5 +411,158 @@ impl DefaultRetainPipeline {
             created_at: Utc::now(),
         };
         store.insert_source(&source).await
+    }
+}
+
+#[async_trait]
+impl RetainPipeline for DefaultRetainPipeline {
+    async fn retain(&self, input: &RetainInput) -> Result<RetainOutput> {
+        let retain_span = info_span!("retain",
+            bank_id = %input.bank_id,
+            content_len = input.content.len(),
+            facts_stored = tracing::field::Empty,
+            entities_resolved = tracing::field::Empty,
+            links_created = tracing::field::Empty,
+        );
+        self.retain_inner(input).instrument(retain_span).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    use crate::embedding::mock::MockEmbeddings;
+    use crate::llm::mock::MockLlmClient;
+    use crate::storage::mock::MockMemoryStore;
+    use crate::types::{Chunk, Disposition, ExtractedFact, FactType, MemoryBank};
+
+    struct StubChunker;
+
+    impl Chunker for StubChunker {
+        fn chunk(&self, input: &str, _config: &crate::types::ChunkConfig) -> Vec<Chunk> {
+            vec![Chunk {
+                content: input.to_string(),
+                index: 0,
+                context: None,
+            }]
+        }
+    }
+
+    struct StubExtractor;
+
+    #[async_trait]
+    impl FactExtractor for StubExtractor {
+        async fn extract(&self, _input: &ExtractionInput) -> Result<Vec<ExtractedFact>> {
+            Ok(vec![ExtractedFact {
+                content: "Avery shared the roadmap".into(),
+                fact_type: FactType::Experience,
+                network: NetworkType::Experience,
+                entity_mentions: vec![],
+                temporal_range: None,
+                confidence: None,
+            }])
+        }
+    }
+
+    struct StubResolver;
+
+    #[async_trait]
+    impl EntityResolver for StubResolver {
+        async fn resolve(
+            &self,
+            _mentions: &[String],
+            _bank_id: crate::types::BankId,
+            _store: &dyn MemoryStore,
+        ) -> Result<Vec<crate::types::ResolvedEntity>> {
+            Ok(vec![])
+        }
+    }
+
+    struct StubGraphBuilder;
+
+    #[async_trait]
+    impl GraphBuilder for StubGraphBuilder {
+        async fn build_links(
+            &self,
+            _new_facts: &[Fact],
+            _bank_id: crate::types::BankId,
+            _store: &dyn MemoryStore,
+        ) -> Result<Vec<crate::types::GraphLink>> {
+            Ok(vec![])
+        }
+    }
+
+    #[tokio::test]
+    async fn retain_creates_and_links_a_source_record() {
+        let store = MockMemoryStore::new();
+        let bank_id = crate::types::BankId::new();
+        store
+            .create_bank(&MemoryBank {
+                id: bank_id,
+                name: "test".into(),
+                mission: String::new(),
+                directives: vec![],
+                disposition: Disposition::default(),
+                embedding_model: "mock".into(),
+                embedding_dimensions: 8,
+            })
+            .await
+            .unwrap();
+
+        let pipeline = DefaultRetainPipeline::new(
+            Box::new(StubChunker),
+            Box::new(StubExtractor),
+            Box::new(StubResolver),
+            Box::new(StubGraphBuilder),
+            Box::new(store.clone()),
+            Box::new(MockEmbeddings::new(8)),
+            Arc::new(MockLlmClient::new()),
+            crate::types::ChunkConfig {
+                max_tokens: 2000,
+                overlap_tokens: 0,
+                preserve_turns: false,
+            },
+            None,
+        );
+
+        let timestamp = chrono::Utc::now();
+        let output = pipeline
+            .retain(&RetainInput {
+                bank_id,
+                content: "Avery shared the roadmap during the weekly sync.".into(),
+                timestamp,
+                turn_id: None,
+                context: None,
+                custom_instructions: None,
+                speaker: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(output.fact_ids.len(), 1);
+
+        let lookups = store.lookup_sources(&output.fact_ids, 5).await.unwrap();
+        assert_eq!(lookups.len(), 1);
+        assert_eq!(lookups[0].fact_id, output.fact_ids[0]);
+        assert_eq!(lookups[0].sources.len(), 1);
+        assert_eq!(
+            lookups[0].sources[0].content,
+            "Avery shared the roadmap during the weekly sync."
+        );
+        assert_eq!(lookups[0].sources[0].context, None);
+        assert_eq!(lookups[0].sources[0].speaker, None);
+        assert_eq!(
+            lookups[0].sources[0].rendered_input.as_deref(),
+            Some(
+                format!(
+                    "## Content to Extract From\n\nAvery shared the roadmap during the weekly sync.\n\nTimestamp: {}",
+                    timestamp.to_rfc3339()
+                )
+                .as_str()
+            )
+        );
+        assert_eq!(lookups[0].sources[0].timestamp, timestamp);
     }
 }
