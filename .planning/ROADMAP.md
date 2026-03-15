@@ -79,23 +79,23 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 04-01-PLAN.md -- Extract common judge module, create LongMemEval judge prompts and prompt selection logic
-- [ ] 04-02-PLAN.md -- Wire QA evaluation into per-instance loop, accuracy computation, manifest updates
+- [x] 04-01-PLAN.md -- Extract common judge module, create LongMemEval judge prompts and prompt selection logic
+- [x] 04-02-PLAN.md -- Wire QA evaluation into per-instance loop, accuracy computation, manifest updates
 
 ### Phase 5: Concurrency, Resume, and View Tool
 **Goal**: User can run instances in parallel, resume interrupted runs, and inspect results with a standalone view tool
 **Depends on**: Phase 4
-**Requirements**: CLI-05, CLI-10, VIEW-01, VIEW-02, VIEW-03
+**Requirements**: CLI-05, CLI-10, INGEST-05, VIEW-01, VIEW-02, VIEW-03
 **Success Criteria** (what must be TRUE):
   1. `--instance-jobs N` controls parallel instance processing via semaphore
   2. `qa` subcommand reuses bank_ids from an ingest artifact to skip re-ingestion
   3. `longmemeval-view` binary displays per-category accuracy with question counts from a results artifact
   4. View tool shows config, summary, and per-question table in single-artifact mode
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 05-01: TBD
-- [ ] 05-02: TBD
+- [ ] 05-01-PLAN.md -- Semaphore-gated concurrency, pool sizing, SharedState with incremental flush, resume under concurrency
+- [ ] 05-02-PLAN.md -- Standalone longmemeval-view binary with single-file and comparison modes
 
 ## Progress
 
@@ -108,4 +108,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | 2. Ingestion Pipeline | 1/1 | Complete    | 2026-03-15 |
 | 3. CLI and Artifact Infrastructure | 2/2 | Complete   | 2026-03-15 |
 | 4. Evaluation Path | 2/2 | Complete   | 2026-03-15 |
-| 5. Concurrency, Resume, and View Tool | 0/? | Not started | - |
+| 5. Concurrency, Resume, and View Tool | 0/2 | Not started | - |
