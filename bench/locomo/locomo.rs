@@ -1431,6 +1431,9 @@ fn resolve_qa_config(artifact_path: &Path, overrides: CliOverrides) -> Result<Ru
     if let Some(judge_model) = overrides.judge_model {
         config.judge_model = Some(judge_model);
     }
+    if overrides.allow_overwrite {
+        config.allow_overwrite = true;
+    }
 
     Ok(config)
 }
@@ -3235,9 +3238,15 @@ fn default_output_path(
     }
 
     match command {
-        BenchCommand::Qa => artifact_path
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("bench/locomo/results/local/qa.json")),
+        BenchCommand::Qa => {
+            if let Some(ref tag) = config.tag {
+                PathBuf::from(format!("bench/locomo/results/local/{tag}.json"))
+            } else {
+                artifact_path
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| PathBuf::from("bench/locomo/results/local/qa.json"))
+            }
+        }
         BenchCommand::Merge => {
             let stem = config.tag.as_deref().unwrap_or("merged");
             PathBuf::from(format!("bench/locomo/results/local/{stem}.json"))

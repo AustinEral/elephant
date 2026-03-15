@@ -156,6 +156,40 @@ fn tool_defs(enable_source_lookup: bool) -> Vec<ToolDef> {
     tools
 }
 
+fn tool_defs_for_iteration(
+    enable_source_lookup: bool,
+    iteration: usize,
+    last_iteration: usize,
+) -> (Vec<ToolDef>, ToolChoice) {
+    if iteration == last_iteration {
+        return (
+            vec![ToolDef::from_schema::<DoneArgs>(
+                "done",
+                "Return the final answer with source citations.",
+            )],
+            ToolChoice::Specific("done".into()),
+        );
+    }
+
+    match iteration {
+        0 => (
+            vec![ToolDef::from_schema::<SearchArgs>(
+                "search_observations",
+                "Search consolidated observations (high-level summaries). Use first for the big picture.",
+            )],
+            ToolChoice::Specific("search_observations".into()),
+        ),
+        1 => (
+            vec![ToolDef::from_schema::<SearchArgs>(
+                "recall",
+                "Search raw memories (facts and experiences). Ground truth data. Use to verify or fill gaps.",
+            )],
+            ToolChoice::Specific("recall".into()),
+        ),
+        _ => (tool_defs(enable_source_lookup), ToolChoice::Required),
+    }
+}
+
 #[async_trait]
 impl ReflectPipeline for DefaultReflectPipeline {
     async fn reflect(&self, query: &ReflectQuery) -> Result<ReflectResult> {
@@ -194,20 +228,14 @@ impl DefaultReflectPipeline {
         let mut trace: Vec<ReflectTraceStep> = Vec::new();
         let mut support_cache: HashMap<FactId, Fact> = HashMap::new();
 
-        let tools = tool_defs(self.enable_source_lookup);
-
         let last_iteration = self.max_iterations - 1;
-        let done_only = vec![ToolDef::from_schema::<DoneArgs>(
-            "done",
-            "Return the final answer with source citations.",
-        )];
 
         for iteration in 0..self.max_iterations {
             let forced_tool = match iteration {
                 _ if iteration == last_iteration => "done",
                 0 => "search_observations",
                 1 => "recall",
-                _ => "auto",
+                _ => "required",
             };
             debug!(iteration, forced_tool, "reflect_iter_start");
 
@@ -216,24 +244,16 @@ impl DefaultReflectPipeline {
             //   1           → recall
             //   2..last-1   → required (all tools)
             //   last        → done only, required
-            let (iter_tools, tool_choice) = if iteration == last_iteration {
-                (&done_only, Some(ToolChoice::Specific("done".into())))
-            } else {
-                let choice = match iteration {
-                    0 => Some(ToolChoice::Specific("search_observations".into())),
-                    1 => Some(ToolChoice::Specific("recall".into())),
-                    _ => Some(ToolChoice::Required),
-                };
-                (&tools, choice)
-            };
+            let (iter_tools, tool_choice) =
+                tool_defs_for_iteration(self.enable_source_lookup, iteration, last_iteration);
 
             let request = CompletionRequest {
                 messages: messages.clone(),
                 temperature: Some(REFLECT_TEMPERATURE),
                 max_tokens: self.max_output_tokens,
                 system: Some(system_prompt.clone()),
-                tools: Some(iter_tools.clone()),
-                tool_choice,
+                tools: Some(iter_tools),
+                tool_choice: Some(tool_choice),
                 ..Default::default()
             };
 
@@ -1324,6 +1344,51 @@ mod tests {
         assert!(enabled.iter().any(|tool| tool.name == "lookup_sources"));
         assert!(!disabled.iter().any(|tool| tool.name == "lookup_sources"));
         assert!(disabled.iter().any(|tool| tool.name == "done"));
+    }
+
+    #[test]
+    fn reflect_forced_iterations_only_expose_the_expected_tool() {
+        let last_iteration = 7;
+
+        let (tools, choice) = tool_defs_for_iteration(true, 0, last_iteration);
+        assert_eq!(
+            tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["search_observations"]
+        );
+        assert_eq!(choice, ToolChoice::Specific("search_observations".into()));
+
+        let (tools, choice) = tool_defs_for_iteration(true, 1, last_iteration);
+        assert_eq!(
+            tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["recall"]
+        );
+        assert_eq!(choice, ToolChoice::Specific("recall".into()));
+
+        let (tools, choice) = tool_defs_for_iteration(true, 2, last_iteration);
+        assert_eq!(
+            tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["search_observations", "recall", "lookup_sources", "done"]
+        );
+        assert_eq!(choice, ToolChoice::Required);
+
+        let (tools, choice) = tool_defs_for_iteration(false, last_iteration, last_iteration);
+        assert_eq!(
+            tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["done"]
+        );
+        assert_eq!(choice, ToolChoice::Specific("done".into()));
     }
 
     #[tokio::test]
