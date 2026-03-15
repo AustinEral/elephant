@@ -1,8 +1,10 @@
 //! LongMemEval benchmark harness for Elephant.
 
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
@@ -12,7 +14,16 @@ mod common;
 mod dataset;
 mod ingest;
 
+use common::io::sidecar_path;
 use ingest::{ConsolidationMode, IngestFormat};
+
+#[allow(unused_imports)]
+use elephant::metrics::{LlmStage, StageUsage};
+#[allow(unused_imports)]
+use elephant::runtime::{
+    ElephantRuntime, RuntimePromptHashes as ElephantPromptHashes,
+    RuntimeTuning as ElephantRuntimeTuning,
+};
 
 // --- CLI ---
 
@@ -473,9 +484,8 @@ fn resolve_fresh_config(overrides: CliOverrides) -> Result<RunConfig, String> {
 
 fn resolve_qa_config(artifact_path: &Path, overrides: CliOverrides) -> Result<RunConfig, String> {
     validate_qa_overrides(&overrides)?;
-    // For now, start with default config since we don't have BenchmarkOutput yet (Phase 4).
-    // The qa subcommand will load the artifact and extract config from it.
-    let mut config = RunConfig::default();
+    let artifact = load_benchmark_output(artifact_path)?;
+    let mut config = run_config_from_artifact(&artifact)?;
 
     if let Some(output) = overrides.output {
         config.output = Some(output);
@@ -605,6 +615,344 @@ fn print_help() {
     );
 }
 
+// --- Artifact types ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BenchmarkOutput {
+    benchmark: String,
+    timestamp: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    commit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    tag: Option<String>,
+    retain_model: String,
+    reflect_model: String,
+    embedding_model: String,
+    reranker_model: String,
+    #[serde(default)]
+    judge_model: String,
+    consolidation_strategy: String,
+    total_questions: usize,
+    #[serde(default)]
+    accuracy: f64,
+    #[serde(default)]
+    per_category: HashMap<String, CategoryResult>,
+    /// Maps question_id -> bank_id for resume/audit.
+    #[serde(default)]
+    banks: HashMap<String, String>,
+    #[serde(default)]
+    manifest: BenchmarkManifest,
+    #[serde(default)]
+    artifacts: BenchmarkArtifacts,
+    #[serde(default)]
+    stage_metrics: BTreeMap<LlmStage, StageUsage>,
+    #[serde(default)]
+    total_time_s: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CategoryResult {
+    accuracy: f64,
+    count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct BenchmarkManifest {
+    #[serde(default)]
+    protocol_version: String,
+    #[serde(default)]
+    profile: String,
+    #[serde(default)]
+    mode: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    config_path: Option<String>,
+    #[serde(default)]
+    dataset_path: String,
+    #[serde(default)]
+    dataset_fingerprint: String,
+    #[serde(default)]
+    command: String,
+    #[serde(default)]
+    selected_instances: Vec<String>,
+    #[serde(default)]
+    ingest_format: String,
+    #[serde(default)]
+    instance_concurrency: usize,
+    #[serde(default)]
+    consolidation_strategy: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    session_limit: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    instance_limit: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    dirty_worktree: Option<bool>,
+    #[serde(default)]
+    prompt_hashes: BenchmarkPromptHashes,
+    #[serde(default)]
+    runtime_config: BenchmarkRuntimeConfig,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    source_artifact: Option<SourceArtifact>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct BenchmarkPromptHashes {
+    #[serde(default)]
+    judge: String,
+    #[serde(flatten)]
+    elephant: ElephantPromptHashes,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct BenchmarkRuntimeConfig {
+    #[serde(flatten)]
+    elephant: ElephantRuntimeTuning,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct BenchmarkArtifacts {
+    #[serde(default)]
+    questions_path: String,
+    #[serde(default)]
+    debug_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct SourceArtifact {
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    fingerprint: String,
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    tag: Option<String>,
+    #[serde(default)]
+    commit: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct QuestionResult {
+    question_id: String,
+    category: String,
+    judge_correct: bool,
+    #[serde(default)]
+    judge_reasoning: String,
+    #[serde(default)]
+    hypothesis: String,
+    ground_truth: String,
+    bank_id: String,
+    #[serde(default)]
+    elapsed_s: f64,
+    #[serde(default)]
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    error: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    qa_stage_metrics: BTreeMap<LlmStage, StageUsage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct QuestionDebugRecord {
+    question_id: String,
+    question: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    reflect_trace: Vec<ReflectTraceEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    final_done: Option<elephant::types::ReflectDoneTrace>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    retrieved_context: Vec<RetrievedFactEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ReflectTraceEntry {
+    iteration: usize,
+    tool_name: String,
+    query: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RetrievedFactEntry {
+    id: String,
+    content: String,
+    score: f32,
+    network: String,
+}
+
+// --- Git helpers ---
+
+fn git_commit_sha() -> Option<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--short=12", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8(output.stdout).ok()?;
+    let sha = sha.trim();
+    if sha.is_empty() {
+        None
+    } else {
+        Some(sha.to_string())
+    }
+}
+
+fn is_generated_bench_artifact_path(path: &str) -> bool {
+    let path = path.trim().trim_matches('"');
+    path.starts_with("bench/longmemeval/results/")
+}
+
+fn git_dirty_worktree() -> Option<bool> {
+    let output = Command::new("git")
+        .args(["status", "--porcelain"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    Some(stdout.lines().any(|line| {
+        !line.trim().is_empty() && !is_generated_bench_artifact_path(&line[3..])
+    }))
+}
+
+// --- Output safety ---
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(lhs), Ok(rhs)) => lhs == rhs,
+        _ => false,
+    }
+}
+
+fn ensure_output_paths_are_safe(
+    command: BenchCommand,
+    output_path: &Path,
+    artifact_path: Option<&Path>,
+    allow_overwrite: bool,
+) -> Result<(), String> {
+    if allow_overwrite {
+        return Ok(());
+    }
+
+    if matches!(command, BenchCommand::Qa)
+        && artifact_path
+            .map(|artifact| same_path(output_path, artifact))
+            .unwrap_or(false)
+    {
+        return Err(format!(
+            "refusing to overwrite source artifact {} during `qa`; choose --out or pass --force",
+            output_path.display()
+        ));
+    }
+
+    let questions_path = sidecar_path(output_path, "questions");
+    let debug_path = sidecar_path(output_path, "debug");
+    let existing = [output_path, questions_path.as_path(), debug_path.as_path()]
+        .into_iter()
+        .filter(|path| path.exists())
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>();
+
+    if existing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "refusing to overwrite existing benchmark output: {}. Choose a new --tag/--out or pass --force",
+            existing.join(", ")
+        ))
+    }
+}
+
+// --- Artifact loading ---
+
+fn load_benchmark_output(path: &Path) -> Result<BenchmarkOutput, String> {
+    let raw =
+        fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    serde_json::from_str(&raw).map_err(|e| format!("failed to parse {}: {e}", path.display()))
+}
+
+fn run_config_from_artifact(artifact: &BenchmarkOutput) -> Result<RunConfig, String> {
+    let profile = artifact
+        .manifest
+        .profile
+        .parse::<RunProfile>()
+        .unwrap_or_default();
+
+    let consolidation = match artifact.manifest.consolidation_strategy.as_str() {
+        "end" => ConsolidationMode::End,
+        "per-session" => ConsolidationMode::PerSession,
+        "off" => ConsolidationMode::Off,
+        other => {
+            return Err(format!("unknown consolidation strategy in artifact: {other}"))
+        }
+    };
+
+    let ingest_format = match artifact.manifest.ingest_format.as_str() {
+        "text" => IngestFormat::Text,
+        "json" => IngestFormat::Json,
+        other => return Err(format!("unknown ingest format in artifact: {other}")),
+    };
+
+    Ok(RunConfig {
+        profile,
+        config_path: artifact.manifest.config_path.as_ref().map(PathBuf::from),
+        dataset: PathBuf::from(&artifact.manifest.dataset_path),
+        output: None,
+        tag: artifact.tag.clone(),
+        instances: artifact.manifest.selected_instances.clone(),
+        session_limit: artifact.manifest.session_limit,
+        instance_limit: artifact.manifest.instance_limit,
+        ingest_format,
+        consolidation,
+        instance_jobs: artifact.manifest.instance_concurrency.max(1),
+        judge_model: if artifact.judge_model.is_empty() {
+            None
+        } else {
+            Some(artifact.judge_model.clone())
+        },
+        allow_overwrite: false,
+    })
+}
+
+fn benchmark_prompt_hashes(runtime: &ElephantRuntime) -> BenchmarkPromptHashes {
+    BenchmarkPromptHashes {
+        judge: String::new(),
+        elephant: runtime.info.prompt_hashes.clone(),
+    }
+}
+
+fn benchmark_runtime_config(runtime: &ElephantRuntime) -> BenchmarkRuntimeConfig {
+    BenchmarkRuntimeConfig {
+        elephant: runtime.info.tuning.clone(),
+    }
+}
+
+fn compute_per_category(results: &[QuestionResult]) -> HashMap<String, CategoryResult> {
+    let mut counts: HashMap<String, (usize, usize)> = HashMap::new();
+    for r in results {
+        let entry = counts.entry(r.category.clone()).or_insert((0, 0));
+        entry.0 += 1;
+        if r.judge_correct {
+            entry.1 += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .map(|(cat, (count, correct))| {
+            let accuracy = if count > 0 {
+                correct as f64 / count as f64
+            } else {
+                0.0
+            };
+            (cat, CategoryResult { accuracy, count })
+        })
+        .collect()
+}
+
 // --- Main ---
 
 fn main() {
@@ -718,10 +1066,45 @@ mod tests {
 
     #[test]
     fn parse_qa_subcommand_with_path() {
-        let raw = vec![s("bin"), s("qa"), s("path.json")];
+        let dir = env::temp_dir().join(format!("longmemeval-qa-parse-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let artifact = dir.join("artifact.json");
+
+        let output = BenchmarkOutput {
+            benchmark: "longmemeval".into(),
+            timestamp: "2026-03-15T00:00:00Z".into(),
+            commit: None,
+            tag: None,
+            retain_model: "m1".into(),
+            reflect_model: "m2".into(),
+            embedding_model: "m3".into(),
+            reranker_model: "m4".into(),
+            judge_model: String::new(),
+            consolidation_strategy: "end".into(),
+            total_questions: 0,
+            accuracy: 0.0,
+            per_category: HashMap::new(),
+            banks: HashMap::new(),
+            manifest: BenchmarkManifest {
+                profile: "smoke".into(),
+                dataset_path: "data/test.json".into(),
+                ingest_format: "text".into(),
+                consolidation_strategy: "end".into(),
+                instance_concurrency: 1,
+                ..BenchmarkManifest::default()
+            },
+            artifacts: BenchmarkArtifacts::default(),
+            stage_metrics: BTreeMap::new(),
+            total_time_s: 0.0,
+        };
+        fs::write(&artifact, serde_json::to_string(&output).unwrap()).unwrap();
+
+        let raw = vec![s("bin"), s("qa"), s(&artifact.display().to_string())];
         let inv = parse_args_from(&raw).unwrap().unwrap();
         assert_eq!(inv.command, BenchCommand::Qa);
-        assert_eq!(inv.artifact_path, Some(PathBuf::from("path.json")));
+        assert_eq!(inv.artifact_path, Some(artifact.clone()));
+
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1304,5 +1687,393 @@ mod tests {
         assert_eq!(ConsolidationMode::End.as_str(), "end");
         assert_eq!(ConsolidationMode::PerSession.as_str(), "per-session");
         assert_eq!(ConsolidationMode::Off.as_str(), "off");
+    }
+
+    // --- Artifact type serde roundtrips ---
+
+    #[test]
+    fn benchmark_output_serde_roundtrip() {
+        let mut banks = HashMap::new();
+        banks.insert("q1".to_string(), "bank1".to_string());
+
+        let mut per_category = HashMap::new();
+        per_category.insert(
+            "multi-session".to_string(),
+            CategoryResult {
+                accuracy: 0.75,
+                count: 4,
+            },
+        );
+
+        let output = BenchmarkOutput {
+            benchmark: "longmemeval".into(),
+            timestamp: "2026-03-15T00:00:00Z".into(),
+            commit: Some("abc123".into()),
+            tag: Some("test".into()),
+            retain_model: "model-a".into(),
+            reflect_model: "model-b".into(),
+            embedding_model: "model-c".into(),
+            reranker_model: "model-d".into(),
+            judge_model: String::new(),
+            consolidation_strategy: "end".into(),
+            total_questions: 10,
+            accuracy: 0.0,
+            per_category,
+            banks,
+            manifest: BenchmarkManifest::default(),
+            artifacts: BenchmarkArtifacts::default(),
+            stage_metrics: BTreeMap::new(),
+            total_time_s: 42.0,
+        };
+
+        let json = serde_json::to_string(&output).unwrap();
+        let back: BenchmarkOutput = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.benchmark, "longmemeval");
+        assert_eq!(back.total_questions, 10);
+        assert_eq!(back.banks.get("q1").unwrap(), "bank1");
+        assert_eq!(back.per_category["multi-session"].count, 4);
+    }
+
+    #[test]
+    fn category_result_serde_roundtrip() {
+        let cr = CategoryResult {
+            accuracy: 0.85,
+            count: 20,
+        };
+        let json = serde_json::to_string(&cr).unwrap();
+        let back: CategoryResult = serde_json::from_str(&json).unwrap();
+        assert!((back.accuracy - 0.85).abs() < f64::EPSILON);
+        assert_eq!(back.count, 20);
+    }
+
+    #[test]
+    fn benchmark_manifest_serde_roundtrip() {
+        let m = BenchmarkManifest {
+            protocol_version: "2026-03-15-longmemeval-v1".into(),
+            profile: "smoke".into(),
+            mode: "run".into(),
+            config_path: None,
+            dataset_path: "data/test.json".into(),
+            dataset_fingerprint: "abc123".into(),
+            command: "longmemeval-bench run".into(),
+            selected_instances: vec!["q1".into()],
+            ingest_format: "text".into(),
+            instance_concurrency: 1,
+            consolidation_strategy: "end".into(),
+            session_limit: Some(5),
+            instance_limit: Some(1),
+            dirty_worktree: Some(false),
+            prompt_hashes: BenchmarkPromptHashes::default(),
+            runtime_config: BenchmarkRuntimeConfig::default(),
+            source_artifact: None,
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        let back: BenchmarkManifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.protocol_version, "2026-03-15-longmemeval-v1");
+        assert_eq!(back.profile, "smoke");
+        assert_eq!(back.session_limit, Some(5));
+    }
+
+    #[test]
+    fn question_result_serde_roundtrip() {
+        let qr = QuestionResult {
+            question_id: "q1".into(),
+            category: "multi-session".into(),
+            judge_correct: true,
+            judge_reasoning: "correct".into(),
+            hypothesis: "answer".into(),
+            ground_truth: "truth".into(),
+            bank_id: "bank1".into(),
+            elapsed_s: 1.5,
+            status: "ok".into(),
+            error: None,
+            qa_stage_metrics: BTreeMap::new(),
+        };
+        let json = serde_json::to_string(&qr).unwrap();
+        let back: QuestionResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.question_id, "q1");
+        assert!(back.judge_correct);
+        assert_eq!(back.status, "ok");
+    }
+
+    #[test]
+    fn question_debug_record_serde_roundtrip() {
+        let dr = QuestionDebugRecord {
+            question_id: "q1".into(),
+            question: "What happened?".into(),
+            reflect_trace: vec![ReflectTraceEntry {
+                iteration: 0,
+                tool_name: "search_observations".into(),
+                query: "test query".into(),
+            }],
+            final_done: None,
+            retrieved_context: vec![RetrievedFactEntry {
+                id: "f1".into(),
+                content: "some fact".into(),
+                score: 0.95,
+                network: "world".into(),
+            }],
+        };
+        let json = serde_json::to_string(&dr).unwrap();
+        let back: QuestionDebugRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.question_id, "q1");
+        assert_eq!(back.reflect_trace.len(), 1);
+        assert_eq!(back.retrieved_context.len(), 1);
+    }
+
+    #[test]
+    fn benchmark_artifacts_serde_roundtrip() {
+        let a = BenchmarkArtifacts {
+            questions_path: "results/test.questions.jsonl".into(),
+            debug_path: "results/test.debug.jsonl".into(),
+        };
+        let json = serde_json::to_string(&a).unwrap();
+        let back: BenchmarkArtifacts = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.questions_path, "results/test.questions.jsonl");
+    }
+
+    #[test]
+    fn source_artifact_serde_roundtrip() {
+        let sa = SourceArtifact {
+            path: "results/prev.json".into(),
+            fingerprint: "abc123".into(),
+            mode: "ingest".into(),
+            tag: Some("prev".into()),
+            commit: Some("def456".into()),
+        };
+        let json = serde_json::to_string(&sa).unwrap();
+        let back: SourceArtifact = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.path, "results/prev.json");
+        assert_eq!(back.tag, Some("prev".into()));
+    }
+
+    // --- ensure_output_paths_are_safe ---
+
+    #[test]
+    fn safety_blocks_existing_output() {
+        let dir = env::temp_dir().join(format!("longmemeval-safety-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let output = dir.join("test.json");
+        fs::write(&output, "{}").unwrap();
+
+        let err =
+            ensure_output_paths_are_safe(BenchCommand::Run, &output, None, false).unwrap_err();
+        assert!(err.contains("refusing to overwrite"));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn safety_allows_with_force() {
+        let dir = env::temp_dir().join(format!("longmemeval-safety-force-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let output = dir.join("test.json");
+        fs::write(&output, "{}").unwrap();
+
+        assert!(ensure_output_paths_are_safe(BenchCommand::Run, &output, None, true).is_ok());
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn safety_allows_nonexistent_output() {
+        let dir = env::temp_dir().join(format!(
+            "longmemeval-safety-nofile-{}",
+            std::process::id()
+        ));
+        let output = dir.join("nonexistent.json");
+        assert!(ensure_output_paths_are_safe(BenchCommand::Run, &output, None, false).is_ok());
+    }
+
+    #[test]
+    fn safety_qa_blocks_overwriting_source_artifact() {
+        let dir = env::temp_dir().join(format!(
+            "longmemeval-safety-qa-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let artifact = dir.join("artifact.json");
+        fs::write(&artifact, "{}").unwrap();
+
+        let err = ensure_output_paths_are_safe(
+            BenchCommand::Qa,
+            &artifact,
+            Some(&artifact),
+            false,
+        )
+        .unwrap_err();
+        assert!(err.contains("source artifact"));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- git helpers ---
+
+    #[test]
+    fn git_commit_sha_returns_some() {
+        // Running in a git repo, should return Some
+        let sha = git_commit_sha();
+        assert!(sha.is_some());
+        let sha = sha.unwrap();
+        assert!(!sha.is_empty());
+        assert!(sha.len() <= 12);
+    }
+
+    #[test]
+    fn git_dirty_worktree_returns_some() {
+        let result = git_dirty_worktree();
+        assert!(result.is_some());
+    }
+
+    // --- load_benchmark_output ---
+
+    #[test]
+    fn load_benchmark_output_parses_valid_json() {
+        let dir = env::temp_dir().join(format!(
+            "longmemeval-load-artifact-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test-artifact.json");
+
+        let output = BenchmarkOutput {
+            benchmark: "longmemeval".into(),
+            timestamp: "2026-03-15T00:00:00Z".into(),
+            commit: None,
+            tag: None,
+            retain_model: "m1".into(),
+            reflect_model: "m2".into(),
+            embedding_model: "m3".into(),
+            reranker_model: "m4".into(),
+            judge_model: String::new(),
+            consolidation_strategy: "end".into(),
+            total_questions: 5,
+            accuracy: 0.0,
+            per_category: HashMap::new(),
+            banks: HashMap::new(),
+            manifest: BenchmarkManifest {
+                profile: "smoke".into(),
+                mode: "ingest".into(),
+                dataset_path: "data/test.json".into(),
+                ingest_format: "text".into(),
+                consolidation_strategy: "end".into(),
+                instance_concurrency: 1,
+                ..BenchmarkManifest::default()
+            },
+            artifacts: BenchmarkArtifacts::default(),
+            stage_metrics: BTreeMap::new(),
+            total_time_s: 10.0,
+        };
+        let json = serde_json::to_string_pretty(&output).unwrap();
+        fs::write(&path, &json).unwrap();
+
+        let loaded = load_benchmark_output(&path).unwrap();
+        assert_eq!(loaded.benchmark, "longmemeval");
+        assert_eq!(loaded.total_questions, 5);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- run_config_from_artifact ---
+
+    #[test]
+    fn run_config_from_artifact_extracts_config() {
+        let output = BenchmarkOutput {
+            benchmark: "longmemeval".into(),
+            timestamp: "2026-03-15T00:00:00Z".into(),
+            commit: None,
+            tag: Some("test-tag".into()),
+            retain_model: "m1".into(),
+            reflect_model: "m2".into(),
+            embedding_model: "m3".into(),
+            reranker_model: "m4".into(),
+            judge_model: "gpt-4o".into(),
+            consolidation_strategy: "end".into(),
+            total_questions: 5,
+            accuracy: 0.0,
+            per_category: HashMap::new(),
+            banks: HashMap::new(),
+            manifest: BenchmarkManifest {
+                profile: "smoke".into(),
+                mode: "ingest".into(),
+                dataset_path: "data/longmemeval_s_cleaned.json".into(),
+                ingest_format: "text".into(),
+                consolidation_strategy: "end".into(),
+                instance_concurrency: 2,
+                session_limit: Some(10),
+                selected_instances: vec!["q1".into(), "q2".into()],
+                ..BenchmarkManifest::default()
+            },
+            artifacts: BenchmarkArtifacts::default(),
+            stage_metrics: BTreeMap::new(),
+            total_time_s: 10.0,
+        };
+
+        let config = run_config_from_artifact(&output).unwrap();
+        assert_eq!(config.profile, RunProfile::Smoke);
+        assert_eq!(
+            config.dataset,
+            PathBuf::from("data/longmemeval_s_cleaned.json")
+        );
+        assert_eq!(config.consolidation, ConsolidationMode::End);
+        assert_eq!(config.ingest_format, IngestFormat::Text);
+        assert_eq!(config.session_limit, Some(10));
+        assert_eq!(config.instance_jobs, 2);
+        assert_eq!(config.tag, Some("test-tag".into()));
+        assert_eq!(config.judge_model, Some("gpt-4o".into()));
+        assert_eq!(config.instances, vec!["q1", "q2"]);
+    }
+
+    // --- compute_per_category ---
+
+    #[test]
+    fn compute_per_category_groups_and_counts() {
+        let results = vec![
+            QuestionResult {
+                question_id: "q1".into(),
+                category: "multi-session".into(),
+                judge_correct: true,
+                judge_reasoning: String::new(),
+                hypothesis: String::new(),
+                ground_truth: String::new(),
+                bank_id: String::new(),
+                elapsed_s: 0.0,
+                status: "ok".into(),
+                error: None,
+                qa_stage_metrics: BTreeMap::new(),
+            },
+            QuestionResult {
+                question_id: "q2".into(),
+                category: "multi-session".into(),
+                judge_correct: false,
+                judge_reasoning: String::new(),
+                hypothesis: String::new(),
+                ground_truth: String::new(),
+                bank_id: String::new(),
+                elapsed_s: 0.0,
+                status: "ok".into(),
+                error: None,
+                qa_stage_metrics: BTreeMap::new(),
+            },
+            QuestionResult {
+                question_id: "q3".into(),
+                category: "temporal-reasoning".into(),
+                judge_correct: true,
+                judge_reasoning: String::new(),
+                hypothesis: String::new(),
+                ground_truth: String::new(),
+                bank_id: String::new(),
+                elapsed_s: 0.0,
+                status: "ok".into(),
+                error: None,
+                qa_stage_metrics: BTreeMap::new(),
+            },
+        ];
+
+        let cats = compute_per_category(&results);
+        assert_eq!(cats["multi-session"].count, 2);
+        assert!((cats["multi-session"].accuracy - 0.5).abs() < f64::EPSILON);
+        assert_eq!(cats["temporal-reasoning"].count, 1);
+        assert!((cats["temporal-reasoning"].accuracy - 1.0).abs() < f64::EPSILON);
     }
 }
