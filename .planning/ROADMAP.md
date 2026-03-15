@@ -109,10 +109,10 @@ Plans:
   3. The reflect agent's prompt/query includes temporal context when available
   4. `--session-limit N` actually limits the number of sessions ingested per instance
   5. `IngestConfig` has a `session_limit` field wired from `RunConfig`
-**Plans**: 0 plans
+**Plans**: 1 plan
 
 Plans:
-(none yet — run `/gsd:plan-phase 6`)
+- [ ] 06-01-PLAN.md -- Wire temporal_context to ReflectQuery and reflect agent, wire session_limit through IngestConfig to session iterator
 
 ## Progress
 
@@ -126,4 +126,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 | 3. CLI and Artifact Infrastructure | 2/2 | Complete   | 2026-03-15 |
 | 4. Evaluation Path | 2/2 | Complete   | 2026-03-15 |
 | 5. Concurrency, Resume, and View Tool | 2/2 | Complete   | 2026-03-15 |
-| 6. Wire Temporal Context & Session Limit | 0/0 | Planned | — |
+| 6. Wire Temporal Context & Session Limit | 0/1 | Planned | — |
