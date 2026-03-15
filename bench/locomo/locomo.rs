@@ -24,17 +24,14 @@ use tokio::sync::{Mutex, Semaphore, mpsc};
 
 use elephant::MemoryStore;
 use elephant::consolidation::{ConsolidationProgress, observation};
-use elephant::llm::retry::{RetryPolicy, RetryingLlmClient};
-use elephant::llm::{self, LlmClient, Provider, ProviderConfig};
-use elephant::metrics::{
-    LlmStage, MeteredLlmClient, MetricsCollector, StageUsage, with_scoped_collector,
-};
+use elephant::llm::LlmClient;
+use elephant::metrics::{LlmStage, MetricsCollector, StageUsage, with_scoped_collector};
 use elephant::runtime::{
     BuildRuntimeOptions, ElephantRuntime, RuntimePromptHashes as ElephantPromptHashes,
     RuntimeTuning as ElephantRuntimeTuning, build_runtime_from_env,
 };
 use elephant::types::{
-    BankId, CompletionRequest, Disposition, MemoryBank, Message, NetworkType, ReflectDoneTrace,
+    BankId, Disposition, MemoryBank, NetworkType, ReflectDoneTrace,
     ReflectQuery, RetainInput, RetrievalSource, TurnId,
 };
 
@@ -75,13 +72,7 @@ struct QaPair {
     evidence: Vec<String>,
 }
 
-// --- Judge types ---
-
-#[derive(Debug, Deserialize)]
-struct JudgeResponse {
-    reasoning: String,
-    label: String,
-}
+// --- Judge types (delegated to common::judge) ---
 
 // --- Result types ---
 
@@ -620,9 +611,9 @@ fn benchmark_runtime_config(runtime: &ElephantRuntime) -> BenchmarkRuntimeConfig
     BenchmarkRuntimeConfig {
         elephant: runtime.info.tuning.clone(),
         reflect_budget_tokens: REFLECT_BUDGET_TOKENS,
-        judge_temperature: JUDGE_TEMPERATURE,
-        judge_max_tokens: JUDGE_MAX_TOKENS,
-        judge_max_attempts: JUDGE_MAX_ATTEMPTS,
+        judge_temperature: common::judge::JUDGE_TEMPERATURE,
+        judge_max_tokens: common::judge::JUDGE_MAX_TOKENS,
+        judge_max_attempts: common::judge::JUDGE_MAX_ATTEMPTS,
         qa_updates_memory: false,
     }
 }
@@ -653,13 +644,21 @@ async fn finalize_bank_stats(
     Ok(())
 }
 
-// --- LLM Judge ---
+// --- LLM Judge (delegated to common::judge) ---
 
 const JUDGE_PROMPT: &str = include_str!("judge_answer.txt");
-const JUDGE_TEMPERATURE: f32 = 0.0;
-const JUDGE_MAX_TOKENS: usize = 200;
-const JUDGE_MAX_ATTEMPTS: usize = 3;
 const REFLECT_BUDGET_TOKENS: usize = 4096;
+
+fn build_judge_client(
+    metrics: Arc<MetricsCollector>,
+    override_model: Option<String>,
+) -> Arc<dyn LlmClient> {
+    common::judge::build_judge_client(metrics, override_model)
+}
+
+fn judge_label(override_model: &Option<String>) -> String {
+    common::judge::judge_label(override_model)
+}
 
 async fn llm_judge(
     judge: &dyn LlmClient,
@@ -667,92 +666,11 @@ async fn llm_judge(
     gold_answer: &str,
     generated_answer: &str,
 ) -> Result<(bool, String), String> {
-    let prompt = JUDGE_PROMPT
+    let rendered = JUDGE_PROMPT
         .replace("{question}", question)
         .replace("{gold_answer}", gold_answer)
         .replace("{generated_answer}", generated_answer);
-
-    let request = CompletionRequest {
-        model: String::new(),
-        messages: vec![Message::text("user", prompt)],
-        max_tokens: Some(JUDGE_MAX_TOKENS),
-        temperature: Some(JUDGE_TEMPERATURE),
-        system: None,
-        ..Default::default()
-    };
-
-    for attempt in 0..JUDGE_MAX_ATTEMPTS {
-        let result = judge.complete(request.clone()).await;
-        match result {
-            Ok(resp) => {
-                if let Ok(parsed) = serde_json::from_str::<JudgeResponse>(&resp.content) {
-                    let correct = parsed.label.eq_ignore_ascii_case("CORRECT");
-                    return Ok((correct, parsed.reasoning));
-                }
-                if let Ok(json_str) = llm::extract_json(&resp.content)
-                    && let Ok(parsed) = serde_json::from_str::<JudgeResponse>(&json_str)
-                {
-                    let correct = parsed.label.eq_ignore_ascii_case("CORRECT");
-                    return Ok((correct, parsed.reasoning));
-                }
-                if attempt + 1 == JUDGE_MAX_ATTEMPTS {
-                    return Err(format!(
-                        "could not parse judge response: {}",
-                        &resp.content[..resp.content.len().min(120)]
-                    ));
-                }
-            }
-            Err(e) => {
-                return Err(format!("judge error: {e}"));
-            }
-        }
-    }
-    Err("judge failed after retries".into())
-}
-
-fn build_judge_client(
-    metrics: Arc<MetricsCollector>,
-    override_model: Option<String>,
-) -> Arc<dyn LlmClient> {
-    let judge_provider_str = env::var("JUDGE_PROVIDER")
-        .or_else(|_| env::var("LLM_PROVIDER"))
-        .expect("JUDGE_PROVIDER or LLM_PROVIDER must be set");
-    let judge_api_key = env::var("JUDGE_API_KEY")
-        .or_else(|_| env::var("LLM_API_KEY"))
-        .expect("JUDGE_API_KEY or LLM_API_KEY must be set");
-    let judge_model = override_model.unwrap_or_else(|| {
-        env::var("JUDGE_MODEL")
-            .or_else(|_| env::var("LLM_MODEL"))
-            .expect("JUDGE_MODEL or LLM_MODEL must be set")
-    });
-    let provider = match judge_provider_str.as_str() {
-        "openai" => Provider::OpenAi,
-        _ => Provider::Anthropic,
-    };
-    let judge_config = ProviderConfig {
-        provider,
-        api_key: judge_api_key,
-        model: judge_model,
-        base_url: env::var("JUDGE_BASE_URL")
-            .ok()
-            .or_else(|| env::var("LLM_BASE_URL").ok()),
-    };
-    let inner: Arc<dyn LlmClient> = Arc::from(llm::build_client(&judge_config).unwrap());
-    let metered: Arc<dyn LlmClient> =
-        Arc::new(MeteredLlmClient::new(inner, metrics, LlmStage::Judge));
-    Arc::new(RetryingLlmClient::new(metered, RetryPolicy::default()))
-}
-
-fn judge_label(override_model: &Option<String>) -> String {
-    let provider = env::var("JUDGE_PROVIDER")
-        .or_else(|_| env::var("LLM_PROVIDER"))
-        .expect("JUDGE_PROVIDER or LLM_PROVIDER must be set");
-    let model = override_model.clone().unwrap_or_else(|| {
-        env::var("JUDGE_MODEL")
-            .or_else(|_| env::var("LLM_MODEL"))
-            .expect("JUDGE_MODEL or LLM_MODEL must be set")
-    });
-    format!("{provider}/{model}")
+    common::judge::llm_judge(judge, &rendered).await
 }
 
 // --- Result flushing ---
