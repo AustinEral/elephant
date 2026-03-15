@@ -43,8 +43,8 @@ Requirements for initial release. Each maps to roadmap phases.
 - [ ] **CLI-05**: `--instance-jobs N` concurrency control for parallel instance processing
 - [x] **CLI-06**: `--config` JSON overlay on top of profile for local tuning
 - [x] **CLI-07**: `--instance` flag to run specific question instances (repeatable)
-- [ ] **CLI-08**: Three-artifact output: summary JSON, question JSONL sidecar, debug JSONL sidecar
-- [ ] **CLI-09**: Manifest with full reproducibility contract (dataset fingerprint, prompt hashes, runtime config, git commit, CLI invocation)
+- [x] **CLI-08**: Three-artifact output: summary JSON, question JSONL sidecar, debug JSONL sidecar
+- [x] **CLI-09**: Manifest with full reproducibility contract (dataset fingerprint, prompt hashes, runtime config, git commit, CLI invocation)
 - [ ] **CLI-10**: Resume via `qa` subcommand reusing bank_ids from ingest artifact
 - [x] **CLI-11**: Results default to `bench/longmemeval/results/local/`, promotable via `--out`
 
@@ -126,8 +126,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CLI-05 | Phase 5 | Pending |
 | CLI-06 | Phase 3 | Complete |
 | CLI-07 | Phase 3 | Complete |
-| CLI-08 | Phase 3 | Pending |
-| CLI-09 | Phase 3 | Pending |
+| CLI-08 | Phase 3 | Complete |
+| CLI-09 | Phase 3 | Complete |
 | CLI-10 | Phase 5 | Pending |
 | CLI-11 | Phase 3 | Complete |
 | VIEW-01 | Phase 5 | Pending |

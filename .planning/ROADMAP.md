@@ -13,8 +13,8 @@ Build a LongMemEval benchmark harness for the Elephant memory engine. The harnes
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Dataset Foundation** - Parse and validate LongMemEval dataset with correct types, categories, and fingerprinting (completed 2026-03-15)
-- [ ] **Phase 2: Ingestion Pipeline** - Per-instance bank creation, session ingestion with timestamps, and consolidation
-- [ ] **Phase 3: CLI and Artifact Infrastructure** - Binary, subcommands, profiles, three-artifact output, manifest, and config overlay
+- [x] **Phase 2: Ingestion Pipeline** - Per-instance bank creation, session ingestion with timestamps, and consolidation (completed 2026-03-15)
+- [x] **Phase 3: CLI and Artifact Infrastructure** - Binary, subcommands, profiles, three-artifact output, manifest, and config overlay (completed 2026-03-15)
 - [ ] **Phase 4: Evaluation Path** - Reflect with temporal context, dual judge prompts, per-category accuracy scoring
 - [ ] **Phase 5: Concurrency, Resume, and View Tool** - Parallel execution, resume from ingest artifacts, and standalone view binary
 
@@ -48,7 +48,7 @@ Plans:
 **Plans**: 1 plan
 
 Plans:
-- [ ] 02-01-PLAN.md -- Types, formatters, date parsing, and ingest_instance orchestration function
+- [x] 02-01-PLAN.md -- Types, formatters, date parsing, and ingest_instance orchestration function
 
 ### Phase 3: CLI and Artifact Infrastructure
 **Goal**: User can run the harness via CLI with subcommands, profiles, and get reproducible three-artifact output
@@ -63,8 +63,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 03-01-PLAN.md -- CLI types, parsing, config resolution, profile system with unit tests
-- [ ] 03-02-PLAN.md -- Artifact types, manifest, pipeline orchestration, main()
+- [x] 03-01-PLAN.md -- CLI types, parsing, config resolution, profile system with unit tests
+- [x] 03-02-PLAN.md -- Artifact types, manifest, pipeline orchestration, main()
 
 ### Phase 4: Evaluation Path
 **Goal**: User can score all 500 questions including abstention, with per-category accuracy breakdown and configurable judge
@@ -105,7 +105,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Dataset Foundation | 2/2 | Complete    | 2026-03-15 |
-| 2. Ingestion Pipeline | 0/1 | Not started | - |
-| 3. CLI and Artifact Infrastructure | 1/2 | In Progress|  |
+| 2. Ingestion Pipeline | 1/1 | Complete    | 2026-03-15 |
+| 3. CLI and Artifact Infrastructure | 2/2 | Complete   | 2026-03-15 |
 | 4. Evaluation Path | 0/? | Not started | - |
 | 5. Concurrency, Resume, and View Tool | 0/? | Not started | - |
