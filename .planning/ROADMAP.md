@@ -108,4 +108,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | 2. Ingestion Pipeline | 1/1 | Complete    | 2026-03-15 |
 | 3. CLI and Artifact Infrastructure | 2/2 | Complete   | 2026-03-15 |
 | 4. Evaluation Path | 2/2 | Complete   | 2026-03-15 |
-| 5. Concurrency, Resume, and View Tool | 0/2 | Not started | - |
+| 5. Concurrency, Resume, and View Tool | 1/2 | In Progress|  |

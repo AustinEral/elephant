@@ -50,9 +50,9 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### View Tool
 
-- [ ] **VIEW-01**: Separate `longmemeval-view` binary (independent of LoCoMo view)
-- [ ] **VIEW-02**: Per-category accuracy display with question counts
-- [ ] **VIEW-03**: Single-artifact view mode with config, summary, and question tables
+- [x] **VIEW-01**: Separate `longmemeval-view` binary (independent of LoCoMo view)
+- [x] **VIEW-02**: Per-category accuracy display with question counts
+- [x] **VIEW-03**: Single-artifact view mode with config, summary, and question tables
 
 ## v2 Requirements
 
@@ -130,9 +130,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CLI-09 | Phase 3 | Complete |
 | CLI-10 | Phase 5 | Pending |
 | CLI-11 | Phase 3 | Complete |
-| VIEW-01 | Phase 5 | Pending |
-| VIEW-02 | Phase 5 | Pending |
-| VIEW-03 | Phase 5 | Pending |
+| VIEW-01 | Phase 5 | Complete |
+| VIEW-02 | Phase 5 | Complete |
+| VIEW-03 | Phase 5 | Complete |
 
 **Coverage:**
 - v1 requirements: 32 total
