@@ -3,6 +3,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 mod dataset;
+mod ingest;
 
 fn main() {
     eprintln!("longmemeval-bench: not yet implemented (Phase 3)");
