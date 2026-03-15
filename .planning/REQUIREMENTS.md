@@ -9,8 +9,8 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Dataset & Parsing
 
-- [ ] **DATA-01**: Harness loads `longmemeval_s_cleaned.json` (~50 sessions per instance, ~115k tokens)
-- [ ] **DATA-02**: Harness loads `longmemeval_m_cleaned.json` (~500 sessions per instance, ~1.5M tokens)
+- [x] **DATA-01**: Harness loads `longmemeval_s_cleaned.json` (~50 sessions per instance, ~115k tokens)
+- [x] **DATA-02**: Harness loads `longmemeval_m_cleaned.json` (~500 sessions per instance, ~1.5M tokens)
 - [x] **DATA-03**: All 500 questions parsed with correct question_type categorization (7 types)
 - [x] **DATA-04**: Mixed-type `answer` field handled via serde_json::Value coercion to string
 - [x] **DATA-05**: Dataset fingerprinting (FNV1a-64 hash) stored in manifest for reproducibility
@@ -101,8 +101,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| DATA-01 | Phase 1 | Pending |
-| DATA-02 | Phase 1 | Pending |
+| DATA-01 | Phase 1 | Complete |
+| DATA-02 | Phase 1 | Complete |
 | DATA-03 | Phase 1 | Complete |
 | DATA-04 | Phase 1 | Complete |
 | DATA-05 | Phase 1 | Complete |

@@ -12,7 +12,7 @@ Build a LongMemEval benchmark harness for the Elephant memory engine. The harnes
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Dataset Foundation** - Parse and validate LongMemEval dataset with correct types, categories, and fingerprinting
+- [x] **Phase 1: Dataset Foundation** - Parse and validate LongMemEval dataset with correct types, categories, and fingerprinting (completed 2026-03-15)
 - [ ] **Phase 2: Ingestion Pipeline** - Per-instance bank creation, session ingestion with timestamps, and consolidation
 - [ ] **Phase 3: CLI and Artifact Infrastructure** - Binary, subcommands, profiles, three-artifact output, manifest, and config overlay
 - [ ] **Phase 4: Evaluation Path** - Reflect with temporal context, dual judge prompts, per-category accuracy scoring
@@ -104,7 +104,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Dataset Foundation | 1/2 | In progress | - |
+| 1. Dataset Foundation | 2/2 | Complete   | 2026-03-15 |
 | 2. Ingestion Pipeline | 0/? | Not started | - |
 | 3. CLI and Artifact Infrastructure | 0/? | Not started | - |
 | 4. Evaluation Path | 0/? | Not started | - |
