@@ -27,12 +27,12 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Evaluation
 
-- [ ] **EVAL-01**: Configurable LLM judge — GPT-4o default, overridable via `--judge-model`
-- [ ] **EVAL-02**: Two judge prompt variants: factual (for standard questions) and abstention (for false-premise)
+- [x] **EVAL-01**: Configurable LLM judge — GPT-4o default, overridable via `--judge-model`
+- [x] **EVAL-02**: Two judge prompt variants: factual (for standard questions) and abstention (for false-premise)
 - [ ] **EVAL-03**: All 500 questions scored including 30 false-premise abstention questions
 - [ ] **EVAL-04**: Per-category accuracy breakdown across 7 question types (single-session-user, single-session-assistant, single-session-preference, multi-session, knowledge-update, temporal-reasoning, abstention)
 - [ ] **EVAL-05**: Overall accuracy metric (correct / total across all 500 questions)
-- [ ] **EVAL-06**: Abstention questions identified by `_abs` suffix on question_id and scored with abstention judge
+- [x] **EVAL-06**: Abstention questions identified by `_abs` suffix on question_id and scored with abstention judge
 
 ### CLI & Infrastructure
 
@@ -113,12 +113,12 @@ Which phases cover which requirements. Updated during roadmap creation.
 | INGEST-03 | Phase 2 | Complete |
 | INGEST-04 | Phase 2 | Complete |
 | INGEST-05 | Phase 5 | Pending |
-| EVAL-01 | Phase 4 | Pending |
-| EVAL-02 | Phase 4 | Pending |
+| EVAL-01 | Phase 4 | Complete |
+| EVAL-02 | Phase 4 | Complete |
 | EVAL-03 | Phase 4 | Pending |
 | EVAL-04 | Phase 4 | Pending |
 | EVAL-05 | Phase 4 | Pending |
-| EVAL-06 | Phase 4 | Pending |
+| EVAL-06 | Phase 4 | Complete |
 | CLI-01 | Phase 3 | Complete |
 | CLI-02 | Phase 3 | Complete |
 | CLI-03 | Phase 3 | Complete |
