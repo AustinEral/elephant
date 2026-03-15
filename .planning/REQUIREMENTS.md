@@ -11,11 +11,11 @@ Requirements for initial release. Each maps to roadmap phases.
 
 - [ ] **DATA-01**: Harness loads `longmemeval_s_cleaned.json` (~50 sessions per instance, ~115k tokens)
 - [ ] **DATA-02**: Harness loads `longmemeval_m_cleaned.json` (~500 sessions per instance, ~1.5M tokens)
-- [ ] **DATA-03**: All 500 questions parsed with correct question_type categorization (7 types)
-- [ ] **DATA-04**: Mixed-type `answer` field handled via serde_json::Value coercion to string
-- [ ] **DATA-05**: Dataset fingerprinting (FNV1a-64 hash) stored in manifest for reproducibility
-- [ ] **DATA-06**: `question_date` parsed and passed to reflect agent as temporal context
-- [ ] **DATA-07**: `haystack_sessions` and `haystack_dates` zip-validated (equal length assertion)
+- [x] **DATA-03**: All 500 questions parsed with correct question_type categorization (7 types)
+- [x] **DATA-04**: Mixed-type `answer` field handled via serde_json::Value coercion to string
+- [x] **DATA-05**: Dataset fingerprinting (FNV1a-64 hash) stored in manifest for reproducibility
+- [x] **DATA-06**: `question_date` parsed and passed to reflect agent as temporal context
+- [x] **DATA-07**: `haystack_sessions` and `haystack_dates` zip-validated (equal length assertion)
 
 ### Ingestion
 
@@ -103,11 +103,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 |-------------|-------|--------|
 | DATA-01 | Phase 1 | Pending |
 | DATA-02 | Phase 1 | Pending |
-| DATA-03 | Phase 1 | Pending |
-| DATA-04 | Phase 1 | Pending |
-| DATA-05 | Phase 1 | Pending |
-| DATA-06 | Phase 1 | Pending |
-| DATA-07 | Phase 1 | Pending |
+| DATA-03 | Phase 1 | Complete |
+| DATA-04 | Phase 1 | Complete |
+| DATA-05 | Phase 1 | Complete |
+| DATA-06 | Phase 1 | Complete |
+| DATA-07 | Phase 1 | Complete |
 | INGEST-01 | Phase 2 | Pending |
 | INGEST-02 | Phase 2 | Pending |
 | INGEST-03 | Phase 2 | Pending |

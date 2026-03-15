@@ -33,7 +33,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: 2 plans
 
 Plans:
-- [ ] 01-01-PLAN.md -- Extract bench/common/ shared infrastructure, create LongMemEval types/loading/validation with unit tests
+- [x] 01-01-PLAN.md -- Extract bench/common/ shared infrastructure, create LongMemEval types/loading/validation with unit tests
 - [ ] 01-02-PLAN.md -- Integration tests for real dataset file loading (S and M datasets)
 
 ### Phase 2: Ingestion Pipeline
@@ -104,7 +104,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Dataset Foundation | 0/2 | Planning complete | - |
+| 1. Dataset Foundation | 1/2 | In progress | - |
 | 2. Ingestion Pipeline | 0/? | Not started | - |
 | 3. CLI and Artifact Infrastructure | 0/? | Not started | - |
 | 4. Evaluation Path | 0/? | Not started | - |
