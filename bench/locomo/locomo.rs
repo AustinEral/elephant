@@ -3441,6 +3441,14 @@ async fn main() {
     println!("Consolidation: {}", config.consolidation.as_str());
     println!("Conversation concurrency: {}", config.conversation_jobs);
     println!("Question concurrency: {}", config.question_jobs);
+    println!(
+        "Worktree: {}",
+        match git_dirty_worktree() {
+            Some(true) => "dirty",
+            Some(false) => "clean",
+            None => "unknown",
+        }
+    );
 
     let run_timestamp = Utc::now().to_rfc3339();
     let commit = git_commit_sha();
