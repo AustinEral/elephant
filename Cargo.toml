@@ -51,6 +51,10 @@ name = "longmemeval-bench"
 path = "bench/longmemeval/longmemeval.rs"
 
 [[bin]]
+name = "longmemeval-view"
+path = "bench/longmemeval/view.rs"
+
+[[bin]]
 name = "reset-consolidation"
 path = "bench/reset_consolidation.rs"
 
