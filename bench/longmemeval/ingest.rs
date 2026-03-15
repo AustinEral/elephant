@@ -1,12 +1,17 @@
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
+use tracing::{debug, info, warn};
 
+use elephant::error::Result;
 use elephant::metrics::{LlmStage, StageUsage};
+use elephant::runtime::ElephantRuntime;
 use elephant::types::id::BankId;
+use elephant::types::{Disposition, MemoryBank, RetainInput};
 
-use super::dataset::Turn;
+use super::dataset::{LongMemEvalInstance, Turn};
 
 /// Session formatting mode for ingestion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -163,6 +168,165 @@ pub fn format_session_json(turns: &[Turn]) -> String {
         .map(|t| serde_json::json!({"role": t.role, "content": t.content}))
         .collect();
     serde_json::to_string(&cleaned).unwrap_or_default()
+}
+
+/// Ingest a single LongMemEval instance into its own isolated bank.
+///
+/// Creates a new bank, ingests all haystack sessions sequentially, then
+/// optionally runs consolidation based on the configured mode.
+///
+/// Note: INGEST-05 (pool sizing for concurrent ops) is deferred to Phase 5.
+/// This function assumes sequential invocation.
+pub async fn ingest_instance(
+    instance: &LongMemEvalInstance,
+    runtime: &ElephantRuntime,
+    config: &IngestConfig,
+) -> Result<IngestResult> {
+    let total_start = Instant::now();
+    let mut stats = IngestStats::default();
+
+    // 1. Create bank
+    let bank = MemoryBank {
+        id: BankId::new(),
+        name: format!("longmemeval-{}", instance.question_id),
+        mission: "Long-term conversational memory benchmark".into(),
+        directives: vec![],
+        disposition: Disposition::default(),
+        embedding_model: runtime.embeddings.model_name().to_string(),
+        embedding_dimensions: runtime.embeddings.dimensions() as u16,
+    };
+    runtime.store.create_bank(&bank).await?;
+
+    let total_sessions = instance.haystack_sessions.len();
+    info!(
+        question_id = %instance.question_id,
+        sessions = total_sessions,
+        format = ?config.format,
+        consolidation = ?config.consolidation,
+        "starting ingestion"
+    );
+
+    // 2. Ingest sessions sequentially
+    let ingest_start = Instant::now();
+
+    for (idx, (session, date_str)) in instance
+        .haystack_sessions
+        .iter()
+        .zip(instance.haystack_dates.iter())
+        .enumerate()
+    {
+        debug!(
+            question_id = %instance.question_id,
+            session = idx + 1,
+            total = total_sessions,
+            "ingesting session"
+        );
+
+        let content = match config.format {
+            IngestFormat::Text => format_session_text(session, date_str),
+            IngestFormat::Json => {
+                format!("{}\n\n{}", parse_date_prefix(date_str), format_session_json(session))
+            }
+        };
+        let timestamp = parse_haystack_date(date_str);
+
+        match runtime
+            .retain
+            .retain(&RetainInput {
+                bank_id: bank.id,
+                content,
+                timestamp,
+                turn_id: None,
+                context: None,
+                custom_instructions: None,
+                speaker: None,
+            })
+            .await
+        {
+            Ok(resp) => {
+                stats.sessions_ingested += 1;
+                stats.facts_stored += resp.facts_stored;
+                stats.entities_resolved += resp.entities_resolved;
+                stats.links_created += resp.links_created;
+                stats.opinions_reinforced += resp.opinions_reinforced;
+                stats.opinions_weakened += resp.opinions_weakened;
+            }
+            Err(e) => {
+                warn!(
+                    question_id = %instance.question_id,
+                    session = idx + 1,
+                    total = total_sessions,
+                    error = %e,
+                    "session ingestion failed"
+                );
+                stats.session_failures += 1;
+            }
+        }
+
+        // Per-session consolidation
+        if config.consolidation.per_session() {
+            match runtime.consolidator.consolidate(bank.id).await {
+                Ok(cr) => {
+                    stats.observations_created += cr.observations_created;
+                    stats.observations_updated += cr.observations_updated;
+                }
+                Err(e) => {
+                    warn!(
+                        question_id = %instance.question_id,
+                        session = idx + 1,
+                        error = %e,
+                        "per-session consolidation failed"
+                    );
+                }
+            }
+        }
+    }
+
+    let ingest_time_s = ingest_start.elapsed().as_secs_f64();
+
+    // 3. End-of-ingestion consolidation
+    let mut consolidation_time_s = 0.0;
+    if config.consolidation.enabled() && !config.consolidation.per_session() {
+        let t0 = Instant::now();
+        match runtime.consolidator.consolidate(bank.id).await {
+            Ok(cr) => {
+                stats.observations_created += cr.observations_created;
+                stats.observations_updated += cr.observations_updated;
+            }
+            Err(e) => {
+                warn!(
+                    question_id = %instance.question_id,
+                    error = %e,
+                    "end-of-ingestion consolidation failed"
+                );
+            }
+        }
+        consolidation_time_s = t0.elapsed().as_secs_f64();
+    }
+
+    let total_time_s = total_start.elapsed().as_secs_f64();
+
+    info!(
+        question_id = %instance.question_id,
+        bank_id = %bank.id,
+        sessions = stats.sessions_ingested,
+        facts = stats.facts_stored,
+        failures = stats.session_failures,
+        duration_s = format!("{total_time_s:.1}"),
+        "ingestion complete"
+    );
+
+    Ok(IngestResult {
+        question_id: instance.question_id.clone(),
+        bank_id: bank.id,
+        stage_metrics: BTreeMap::new(),
+        stats,
+        timing: IngestTiming {
+            ingest_time_s,
+            consolidation_time_s,
+            total_time_s,
+        },
+    })
 }
 
 #[cfg(test)]
