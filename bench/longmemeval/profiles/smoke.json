@@ -1,0 +1,7 @@
+{
+  "dataset": "data/longmemeval_s_cleaned.json",
+  "instance_limit": 1,
+  "ingest_format": "text",
+  "consolidation": "end",
+  "instance_jobs": 1
+}

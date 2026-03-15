@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::str::FromStr;
 use std::time::Instant;
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
@@ -27,6 +28,29 @@ impl Default for IngestFormat {
     }
 }
 
+impl IngestFormat {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Json => "json",
+        }
+    }
+}
+
+impl FromStr for IngestFormat {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "text" => Ok(Self::Text),
+            "json" => Ok(Self::Json),
+            other => Err(format!(
+                "invalid --ingest-format value: {other} (expected one of: text, json)"
+            )),
+        }
+    }
+}
+
 /// Consolidation strategy after ingestion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -39,6 +63,31 @@ pub enum ConsolidationMode {
 impl Default for ConsolidationMode {
     fn default() -> Self {
         Self::End
+    }
+}
+
+impl ConsolidationMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::End => "end",
+            Self::PerSession => "per-session",
+            Self::Off => "off",
+        }
+    }
+}
+
+impl FromStr for ConsolidationMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "end" => Ok(Self::End),
+            "per-session" => Ok(Self::PerSession),
+            "off" => Ok(Self::Off),
+            other => Err(format!(
+                "invalid --consolidation value: {other} (expected one of: end, per-session, off)"
+            )),
+        }
     }
 }
 
