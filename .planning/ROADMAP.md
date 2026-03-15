@@ -30,11 +30,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Each parsed instance has a correct `question_type` matching one of the 7 LongMemEval categories
   4. Mixed-type `answer` fields (string and integer) are coerced to strings without data loss
   5. Dataset fingerprint (FNV1a-64) is deterministic across runs on the same file
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 01-01: TBD
-- [ ] 01-02: TBD
+- [ ] 01-01-PLAN.md -- Extract bench/common/ shared infrastructure, create LongMemEval types/loading/validation with unit tests
+- [ ] 01-02-PLAN.md -- Integration tests for real dataset file loading (S and M datasets)
 
 ### Phase 2: Ingestion Pipeline
 **Goal**: User can ingest a LongMemEval instance's full conversation history into an isolated bank with correct timestamps and consolidation
@@ -104,7 +104,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Dataset Foundation | 0/? | Not started | - |
+| 1. Dataset Foundation | 0/2 | Planning complete | - |
 | 2. Ingestion Pipeline | 0/? | Not started | - |
 | 3. CLI and Artifact Infrastructure | 0/? | Not started | - |
 | 4. Evaluation Path | 0/? | Not started | - |
