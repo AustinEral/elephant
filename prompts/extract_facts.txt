@@ -27,7 +27,7 @@ Extract these categories of information:
 
 ## What NOT to extract
 
-- Greetings, filler, or pleasantries ("Hey, how's it going?", "That's nice")
+- Greetings and filler ("Hey, how's it going?", "Yeah so anyway")
 - Transient task chatter ("Let me think about that", "One moment")
 - Information already fully captured by another extracted fact
 - Vague statements with no concrete content ("Things are going well")
