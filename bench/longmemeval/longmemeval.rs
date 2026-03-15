@@ -26,6 +26,7 @@ use elephant::runtime::{
     BuildRuntimeOptions, ElephantRuntime, RuntimePromptHashes as ElephantPromptHashes,
     RuntimeTuning as ElephantRuntimeTuning, build_runtime_from_env,
 };
+use elephant::types::ReflectQuery;
 
 // --- Judge prompts ---
 
@@ -1011,6 +1012,14 @@ fn compute_per_category(results: &[QuestionResult]) -> HashMap<String, CategoryR
         .collect()
 }
 
+fn compute_accuracy(results: &[QuestionResult]) -> f64 {
+    if results.is_empty() {
+        return 0.0;
+    }
+    let correct = results.iter().filter(|r| r.judge_correct).count();
+    correct as f64 / results.len() as f64
+}
+
 // --- Main ---
 
 #[tokio::main]
@@ -1188,6 +1197,19 @@ async fn main() {
         source_artifact,
     };
 
+    // Build judge client (only needed for Run/Qa)
+    let judge_override = resolve_judge_model(&config);
+    let judge = if !matches!(command, BenchCommand::Ingest) {
+        Some(common::judge::build_judge_client(metrics.clone(), judge_override.clone()))
+    } else {
+        None
+    };
+    let jl = if !matches!(command, BenchCommand::Ingest) {
+        common::judge::judge_label(&judge_override)
+    } else {
+        String::new()
+    };
+
     // Per-instance loop
     let mut banks = existing_banks;
     let mut all_question_results = Vec::new();
@@ -1222,22 +1244,127 @@ async fn main() {
             bid
         };
 
-        // QA stub (Phase 4 will implement this)
+        // QA evaluation
+        if matches!(command, BenchCommand::Ingest) {
+            // Ingest-only: write stub result, no reflect/judge
+            let qr = QuestionResult {
+                question_id: instance.question_id.clone(),
+                category: instance.reporting_category().to_string(),
+                judge_correct: false,
+                judge_reasoning: String::new(),
+                hypothesis: String::new(),
+                ground_truth: instance.answer_string(),
+                bank_id: bank_id_str,
+                elapsed_s: 0.0,
+                status: "ingest-only".into(),
+                error: None,
+                qa_stage_metrics: BTreeMap::new(),
+            };
+            append_jsonl(&questions_path, &qr);
+            all_question_results.push(qr);
+            let dr = QuestionDebugRecord {
+                question_id: instance.question_id.clone(),
+                question: instance.question.clone(),
+                reflect_trace: vec![],
+                final_done: None,
+                retrieved_context: vec![],
+            };
+            append_jsonl(&debug_path, &dr);
+            continue;
+        }
+
+        let qa_start = Instant::now();
+
+        // 1. Call reflect with scoped metrics
+        let reflect_result = with_scoped_collector(
+            metrics.clone(),
+            runtime.reflect.reflect(&ReflectQuery {
+                bank_id: bank_id_str.parse().unwrap(),
+                question: instance.question.clone(),
+                budget_tokens: REFLECT_BUDGET_TOKENS,
+            }),
+        )
+        .await;
+
+        // 2. Process reflect result
+        let (hypothesis, retrieved_context, reflect_trace, final_done, status, error) =
+            match reflect_result {
+                Ok(resp) => {
+                    let rc: Vec<RetrievedFactEntry> = resp
+                        .retrieved_context
+                        .iter()
+                        .map(|f| RetrievedFactEntry {
+                            id: f.id.to_string(),
+                            content: f.content.clone(),
+                            score: f.score,
+                            network: format!("{:?}", f.network),
+                        })
+                        .collect();
+                    let rt: Vec<ReflectTraceEntry> = resp
+                        .trace
+                        .iter()
+                        .map(|s| ReflectTraceEntry {
+                            iteration: s.iteration,
+                            tool_name: s.tool_name.clone(),
+                            query: s.query.clone(),
+                        })
+                        .collect();
+                    (
+                        resp.response.clone(),
+                        rc,
+                        rt,
+                        resp.final_done.clone(),
+                        "ok".to_string(),
+                        None,
+                    )
+                }
+                Err(e) => {
+                    let err_msg = format!("{e}");
+                    eprintln!("  reflect error: {err_msg}");
+                    (
+                        String::new(),
+                        vec![],
+                        vec![],
+                        None,
+                        "reflect_error".to_string(),
+                        Some(err_msg),
+                    )
+                }
+            };
+
+        // 3. Judge (skip if reflect failed / empty hypothesis)
+        let (judge_correct, judge_reasoning, status, error) = if hypothesis.is_empty() {
+            (false, error.clone().unwrap_or_default(), status, error)
+        } else {
+            let prompt_template = select_judge_prompt(instance);
+            let rendered = render_judge_prompt(
+                prompt_template,
+                &instance.question,
+                &instance.answer_string(),
+                &hypothesis,
+            );
+            match common::judge::llm_judge(judge.as_ref().unwrap().as_ref(), &rendered).await {
+                Ok((correct, reasoning)) => (correct, reasoning, "ok".into(), None),
+                Err(e) => {
+                    eprintln!("  judge error: {e}");
+                    (false, e.clone(), "judge_error".into(), Some(e))
+                }
+            }
+        };
+
+        let elapsed = qa_start.elapsed().as_secs_f64();
+
         let qr = QuestionResult {
             question_id: instance.question_id.clone(),
             category: instance.reporting_category().to_string(),
-            judge_correct: false,
-            judge_reasoning: String::new(),
-            hypothesis: String::new(),
+            judge_correct,
+            judge_reasoning,
+            hypothesis,
             ground_truth: instance.answer_string(),
             bank_id: bank_id_str,
-            elapsed_s: 0.0,
-            status: if matches!(command, BenchCommand::Ingest) {
-                "ingest-only".into()
-            } else {
-                "qa-not-implemented".into()
-            },
-            error: None,
+            elapsed_s: elapsed,
+            status,
+            error,
             qa_stage_metrics: BTreeMap::new(),
         };
         append_jsonl(&questions_path, &qr);
@@ -1246,9 +1373,9 @@ async fn main() {
         let dr = QuestionDebugRecord {
             question_id: instance.question_id.clone(),
             question: instance.question.clone(),
-            reflect_trace: vec![],
-            final_done: None,
-            retrieved_context: vec![],
+            reflect_trace,
+            final_done,
+            retrieved_context,
         };
         append_jsonl(&debug_path, &dr);
     }
@@ -1266,10 +1393,10 @@ async fn main() {
         reflect_model: runtime.info.reflect_model.clone(),
         embedding_model: runtime.info.embedding_model.clone(),
         reranker_model: runtime.info.reranker_model.clone(),
-        judge_model: String::new(),
+        judge_model: jl.clone(),
         consolidation_strategy: config.consolidation.as_str().into(),
         total_questions: all_question_results.len(),
-        accuracy: 0.0,
+        accuracy: compute_accuracy(&all_question_results),
         per_category,
         banks,
         manifest,
@@ -1289,9 +1416,13 @@ async fn main() {
     eprintln!("Debug:     {}", debug_path.display());
     eprintln!("Time:      {:.1}s", bench_start.elapsed().as_secs_f64());
 
-    if matches!(command, BenchCommand::Run) {
-        eprintln!();
-        eprintln!("NOTE: QA scoring not yet implemented (Phase 4). Banks created, accuracy is 0.0.");
+    if !matches!(command, BenchCommand::Ingest) {
+        let acc = compute_accuracy(&all_question_results);
+        eprintln!("Accuracy:  {:.1}% ({}/{})",
+            acc * 100.0,
+            all_question_results.iter().filter(|r| r.judge_correct).count(),
+            all_question_results.len(),
+        );
     }
 }
 
@@ -2507,5 +2638,75 @@ mod tests {
         let original = env::var(key).ok();
         unsafe { env::remove_var(key) };
         EnvGuard { key, original }
+    }
+
+    // --- compute_accuracy ---
+
+    fn make_qr(question_id: &str, correct: bool, status: &str) -> QuestionResult {
+        QuestionResult {
+            question_id: question_id.into(),
+            category: "test".into(),
+            judge_correct: correct,
+            judge_reasoning: String::new(),
+            hypothesis: String::new(),
+            ground_truth: String::new(),
+            bank_id: String::new(),
+            elapsed_s: 0.0,
+            status: status.into(),
+            error: None,
+            qa_stage_metrics: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn accuracy_all_correct() {
+        let results = vec![
+            make_qr("q1", true, "ok"),
+            make_qr("q2", true, "ok"),
+            make_qr("q3", true, "ok"),
+        ];
+        let acc = compute_accuracy(&results);
+        assert!((acc - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn accuracy_mixed() {
+        let results = vec![
+            make_qr("q1", true, "ok"),
+            make_qr("q2", true, "ok"),
+            make_qr("q3", false, "ok"),
+        ];
+        let acc = compute_accuracy(&results);
+        assert!((acc - 2.0 / 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn accuracy_all_wrong() {
+        let results = vec![
+            make_qr("q1", false, "ok"),
+            make_qr("q2", false, "ok"),
+            make_qr("q3", false, "ok"),
+        ];
+        let acc = compute_accuracy(&results);
+        assert!((acc - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn accuracy_with_errors_counted_wrong() {
+        // reflect_error results have judge_correct=false, counted in denominator
+        let results = vec![
+            make_qr("q1", true, "ok"),
+            make_qr("q2", false, "reflect_error"),
+            make_qr("q3", true, "ok"),
+        ];
+        let acc = compute_accuracy(&results);
+        assert!((acc - 2.0 / 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn accuracy_empty() {
+        let results: Vec<QuestionResult> = vec![];
+        let acc = compute_accuracy(&results);
+        assert!((acc - 0.0).abs() < f64::EPSILON);
     }
 }
