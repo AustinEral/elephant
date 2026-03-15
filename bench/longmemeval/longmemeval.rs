@@ -1268,217 +1268,300 @@ async fn main() {
 
     // Build judge client (only needed for Run/Qa)
     let judge_override = resolve_judge_model(&config);
-    let judge = if !matches!(command, BenchCommand::Ingest) {
-        Some(common::judge::build_judge_client(metrics.clone(), judge_override.clone()))
-    } else {
-        None
-    };
+    let judge: Option<Arc<dyn elephant::llm::LlmClient>> =
+        if !matches!(command, BenchCommand::Ingest) {
+            Some(common::judge::build_judge_client(
+                metrics.clone(),
+                judge_override.clone(),
+            ))
+        } else {
+            None
+        };
     let jl = if !matches!(command, BenchCommand::Ingest) {
         common::judge::judge_label(&judge_override)
     } else {
         String::new()
     };
 
-    // Per-instance loop
-    let mut banks = existing_banks;
-    let mut all_question_results = Vec::new();
+    // Concurrent per-instance loop
     let total_instances = instances.len();
     let bench_start = Instant::now();
+    let run_timestamp = Utc::now().to_rfc3339();
+    let commit = git_commit_sha();
 
-    for (idx, instance) in instances.iter().enumerate() {
-        eprintln!("[{}/{}] {}", idx + 1, total_instances, instance.question_id);
-
-        // Ingest (skip if qa mode with existing bank)
-        let bank_id_str = if matches!(command, BenchCommand::Qa) {
-            banks.get(&instance.question_id).unwrap().clone()
-        } else {
-            let ingest_config = IngestConfig {
-                format: config.ingest_format,
-                consolidation: config.consolidation,
-            };
-            let result = with_scoped_collector(
-                metrics.clone(),
-                ingest::ingest_instance(instance, &runtime, &ingest_config),
-            )
-            .await
-            .unwrap_or_else(|e| {
-                eprintln!(
-                    "ERROR ingesting {}: {e}",
-                    instance.question_id
-                );
-                std::process::exit(1);
-            });
-            let bid = result.bank_id.to_string();
-            banks.insert(instance.question_id.clone(), bid.clone());
-            bid
-        };
-
-        // QA evaluation
-        if matches!(command, BenchCommand::Ingest) {
-            // Ingest-only: write stub result, no reflect/judge
-            let qr = QuestionResult {
-                question_id: instance.question_id.clone(),
-                category: instance.reporting_category().to_string(),
-                judge_correct: false,
-                judge_reasoning: String::new(),
-                hypothesis: String::new(),
-                ground_truth: instance.answer_string(),
-                bank_id: bank_id_str,
-                elapsed_s: 0.0,
-                status: "ingest-only".into(),
-                error: None,
-                qa_stage_metrics: BTreeMap::new(),
-            };
-            append_jsonl(&questions_path, &qr);
-            all_question_results.push(qr);
-            let dr = QuestionDebugRecord {
-                question_id: instance.question_id.clone(),
-                question: instance.question.clone(),
-                reflect_trace: vec![],
-                final_done: None,
-                retrieved_context: vec![],
-            };
-            append_jsonl(&debug_path, &dr);
-            continue;
-        }
-
-        let qa_start = Instant::now();
-
-        // 1. Call reflect with scoped metrics
-        let reflect_result = with_scoped_collector(
-            metrics.clone(),
-            runtime.reflect.reflect(&ReflectQuery {
-                bank_id: bank_id_str.parse().unwrap(),
-                question: instance.question.clone(),
-                budget_tokens: REFLECT_BUDGET_TOKENS,
-            }),
-        )
-        .await;
-
-        // 2. Process reflect result
-        let (hypothesis, retrieved_context, reflect_trace, final_done, status, error) =
-            match reflect_result {
-                Ok(resp) => {
-                    let rc: Vec<RetrievedFactEntry> = resp
-                        .retrieved_context
-                        .iter()
-                        .map(|f| RetrievedFactEntry {
-                            id: f.id.to_string(),
-                            content: f.content.clone(),
-                            score: f.score,
-                            network: format!("{:?}", f.network),
-                        })
-                        .collect();
-                    let rt: Vec<ReflectTraceEntry> = resp
-                        .trace
-                        .iter()
-                        .map(|s| ReflectTraceEntry {
-                            iteration: s.iteration,
-                            tool_name: s.tool_name.clone(),
-                            query: s.query.clone(),
-                        })
-                        .collect();
-                    (
-                        resp.response.clone(),
-                        rc,
-                        rt,
-                        resp.final_done.clone(),
-                        "ok".to_string(),
-                        None,
-                    )
-                }
-                Err(e) => {
-                    let err_msg = format!("{e}");
-                    eprintln!("  reflect error: {err_msg}");
-                    (
-                        String::new(),
-                        vec![],
-                        vec![],
-                        None,
-                        "reflect_error".to_string(),
-                        Some(err_msg),
-                    )
-                }
-            };
-
-        // 3. Judge (skip if reflect failed / empty hypothesis)
-        let (judge_correct, judge_reasoning, status, error) = if hypothesis.is_empty() {
-            (false, error.clone().unwrap_or_default(), status, error)
-        } else {
-            let prompt_template = select_judge_prompt(instance);
-            let rendered = render_judge_prompt(
-                prompt_template,
-                &instance.question,
-                &instance.answer_string(),
-                &hypothesis,
-            );
-            match common::judge::llm_judge(judge.as_ref().unwrap().as_ref(), &rendered).await {
-                Ok((correct, reasoning)) => (correct, reasoning, "ok".into(), None),
-                Err(e) => {
-                    eprintln!("  judge error: {e}");
-                    (false, e.clone(), "judge_error".into(), Some(e))
-                }
-            }
-        };
-
-        let elapsed = qa_start.elapsed().as_secs_f64();
-
-        let qr = QuestionResult {
-            question_id: instance.question_id.clone(),
-            category: instance.reporting_category().to_string(),
-            judge_correct,
-            judge_reasoning,
-            hypothesis,
-            ground_truth: instance.answer_string(),
-            bank_id: bank_id_str,
-            elapsed_s: elapsed,
-            status,
-            error,
-            qa_stage_metrics: BTreeMap::new(),
-        };
-        append_jsonl(&questions_path, &qr);
-        all_question_results.push(qr);
-
-        let dr = QuestionDebugRecord {
-            question_id: instance.question_id.clone(),
-            question: instance.question.clone(),
-            reflect_trace,
-            final_done,
-            retrieved_context,
-        };
-        append_jsonl(&debug_path, &dr);
-    }
-
-    // Compute per-category aggregates
-    let per_category = compute_per_category(&all_question_results);
-
-    // Write summary JSON
-    let output = BenchmarkOutput {
-        benchmark: "longmemeval".into(),
-        timestamp: Utc::now().to_rfc3339(),
-        commit: git_commit_sha(),
+    let shared = Arc::new(Mutex::new(SharedState {
+        results: Vec::new(),
+        banks: existing_banks,
+        output_path: output_path.clone(),
+        questions_path: questions_path.clone(),
+        debug_path: debug_path.clone(),
+        judge_label: jl.clone(),
         tag: config.tag.clone(),
         retain_model: runtime.info.retain_model.clone(),
         reflect_model: runtime.info.reflect_model.clone(),
         embedding_model: runtime.info.embedding_model.clone(),
         reranker_model: runtime.info.reranker_model.clone(),
-        judge_model: jl.clone(),
         consolidation_strategy: config.consolidation.as_str().into(),
-        total_questions: all_question_results.len(),
-        accuracy: compute_accuracy(&all_question_results),
-        per_category,
-        banks,
         manifest,
-        artifacts: BenchmarkArtifacts {
-            questions_path: questions_path.display().to_string(),
-            debug_path: debug_path.display().to_string(),
-        },
-        stage_metrics: metrics.snapshot(),
-        total_time_s: bench_start.elapsed().as_secs_f64(),
-    };
-    let json = serde_json::to_string_pretty(&output).expect("serialize output");
-    fs::write(&output_path, json).expect("write summary");
+        metrics: metrics.clone(),
+        run_timestamp,
+        commit,
+        bench_start,
+        total_questions_expected: total_instances,
+    }));
 
+    let semaphore = Arc::new(Semaphore::new(config.instance_jobs));
+    let completed = Arc::new(AtomicUsize::new(0));
+    let ingest_format = config.ingest_format;
+    let consolidation = config.consolidation;
+
+    let mut handles = Vec::new();
+    for instance in instances {
+        let sem = semaphore.clone();
+        let runtime = runtime.clone();
+        let judge = judge.clone();
+        let metrics = metrics.clone();
+        let shared = shared.clone();
+        let completed = completed.clone();
+
+        handles.push(tokio::spawn(async move {
+            let _permit = sem
+                .acquire()
+                .await
+                .map_err(|e| format!("semaphore closed: {e}"))?;
+
+            let instance_start = Instant::now();
+
+            // Ingest (skip if qa mode with existing bank)
+            let bank_id_str = if matches!(command, BenchCommand::Qa) {
+                shared
+                    .lock()
+                    .await
+                    .banks
+                    .get(&instance.question_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        format!("no bank_id for {} in QA mode", instance.question_id)
+                    })?
+            } else {
+                let ingest_config = IngestConfig {
+                    format: ingest_format,
+                    consolidation,
+                };
+                let result = with_scoped_collector(
+                    metrics.clone(),
+                    ingest::ingest_instance(&instance, &runtime, &ingest_config),
+                )
+                .await;
+                match result {
+                    Ok(r) => {
+                        let bid = r.bank_id.to_string();
+                        shared
+                            .lock()
+                            .await
+                            .record_bank(instance.question_id.clone(), bid.clone());
+                        bid
+                    }
+                    Err(e) => {
+                        let err_msg = format!("{e}");
+                        eprintln!(
+                            "ERROR ingesting {}: {err_msg}",
+                            instance.question_id
+                        );
+                        // Record a failed result instead of aborting
+                        let qr = QuestionResult {
+                            question_id: instance.question_id.clone(),
+                            category: instance.reporting_category().to_string(),
+                            judge_correct: false,
+                            judge_reasoning: String::new(),
+                            hypothesis: String::new(),
+                            ground_truth: instance.answer_string(),
+                            bank_id: String::new(),
+                            elapsed_s: instance_start.elapsed().as_secs_f64(),
+                            status: "ingest_error".into(),
+                            error: Some(err_msg.clone()),
+                            qa_stage_metrics: BTreeMap::new(),
+                        };
+                        let dr = QuestionDebugRecord {
+                            question_id: instance.question_id.clone(),
+                            question: instance.question.clone(),
+                            reflect_trace: vec![],
+                            final_done: None,
+                            retrieved_context: vec![],
+                        };
+                        shared.lock().await.push_and_flush(qr, dr);
+                        let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                        eprintln!(
+                            "[{done}/{total_instances}] {} err ingest {:.1}s",
+                            instance.question_id,
+                            instance_start.elapsed().as_secs_f64(),
+                        );
+                        return Err(err_msg);
+                    }
+                }
+            };
+
+            let ingest_elapsed = instance_start.elapsed().as_secs_f64();
+
+            // QA evaluation
+            if matches!(command, BenchCommand::Ingest) {
+                // Ingest-only: write stub result, no reflect/judge
+                let qr = QuestionResult {
+                    question_id: instance.question_id.clone(),
+                    category: instance.reporting_category().to_string(),
+                    judge_correct: false,
+                    judge_reasoning: String::new(),
+                    hypothesis: String::new(),
+                    ground_truth: instance.answer_string(),
+                    bank_id: bank_id_str,
+                    elapsed_s: 0.0,
+                    status: "ingest-only".into(),
+                    error: None,
+                    qa_stage_metrics: BTreeMap::new(),
+                };
+                let dr = QuestionDebugRecord {
+                    question_id: instance.question_id.clone(),
+                    question: instance.question.clone(),
+                    reflect_trace: vec![],
+                    final_done: None,
+                    retrieved_context: vec![],
+                };
+                shared.lock().await.push_and_flush(qr, dr);
+                let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                eprintln!(
+                    "[{done}/{total_instances}] {} ok ingest {:.1}s",
+                    instance.question_id,
+                    ingest_elapsed,
+                );
+                return Ok(());
+            }
+
+            let qa_start = Instant::now();
+
+            // 1. Call reflect with scoped metrics
+            let reflect_result = with_scoped_collector(
+                metrics.clone(),
+                runtime.reflect.reflect(&ReflectQuery {
+                    bank_id: bank_id_str.parse().unwrap(),
+                    question: instance.question.clone(),
+                    budget_tokens: REFLECT_BUDGET_TOKENS,
+                }),
+            )
+            .await;
+
+            // 2. Process reflect result
+            let (hypothesis, retrieved_context, reflect_trace, final_done, status, error) =
+                match reflect_result {
+                    Ok(resp) => {
+                        let rc: Vec<RetrievedFactEntry> = resp
+                            .retrieved_context
+                            .iter()
+                            .map(|f| RetrievedFactEntry {
+                                id: f.id.to_string(),
+                                content: f.content.clone(),
+                                score: f.score,
+                                network: format!("{:?}", f.network),
+                            })
+                            .collect();
+                        let rt: Vec<ReflectTraceEntry> = resp
+                            .trace
+                            .iter()
+                            .map(|s| ReflectTraceEntry {
+                                iteration: s.iteration,
+                                tool_name: s.tool_name.clone(),
+                                query: s.query.clone(),
+                            })
+                            .collect();
+                        (
+                            resp.response.clone(),
+                            rc,
+                            rt,
+                            resp.final_done.clone(),
+                            "ok".to_string(),
+                            None,
+                        )
+                    }
+                    Err(e) => {
+                        let err_msg = format!("{e}");
+                        eprintln!("  reflect error ({}): {err_msg}", instance.question_id);
+                        (
+                            String::new(),
+                            vec![],
+                            vec![],
+                            None,
+                            "reflect_error".to_string(),
+                            Some(err_msg),
+                        )
+                    }
+                };
+
+            // 3. Judge (skip if reflect failed / empty hypothesis)
+            let (judge_correct, judge_reasoning, status, error) = if hypothesis.is_empty() {
+                (false, error.clone().unwrap_or_default(), status, error)
+            } else {
+                let prompt_template = select_judge_prompt(&instance);
+                let rendered = render_judge_prompt(
+                    prompt_template,
+                    &instance.question,
+                    &instance.answer_string(),
+                    &hypothesis,
+                );
+                match common::judge::llm_judge(judge.as_ref().unwrap().as_ref(), &rendered).await {
+                    Ok((correct, reasoning)) => (correct, reasoning, "ok".into(), None),
+                    Err(e) => {
+                        eprintln!("  judge error ({}): {e}", instance.question_id);
+                        (false, e.clone(), "judge_error".into(), Some(e))
+                    }
+                }
+            };
+
+            let qa_elapsed = qa_start.elapsed().as_secs_f64();
+
+            let qr = QuestionResult {
+                question_id: instance.question_id.clone(),
+                category: instance.reporting_category().to_string(),
+                judge_correct,
+                judge_reasoning,
+                hypothesis,
+                ground_truth: instance.answer_string(),
+                bank_id: bank_id_str,
+                elapsed_s: qa_elapsed,
+                status,
+                error,
+                qa_stage_metrics: BTreeMap::new(),
+            };
+            let dr = QuestionDebugRecord {
+                question_id: instance.question_id.clone(),
+                question: instance.question.clone(),
+                reflect_trace,
+                final_done,
+                retrieved_context,
+            };
+            shared.lock().await.push_and_flush(qr, dr);
+
+            let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+            eprintln!(
+                "[{done}/{total_instances}] {} {} ingest {:.1}s qa {:.1}s",
+                instance.question_id,
+                if judge_correct { "ok" } else { "err" },
+                ingest_elapsed,
+                qa_elapsed,
+            );
+
+            Ok::<(), String>(())
+        }));
+    }
+
+    for handle in handles {
+        match handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => eprintln!("instance failed: {e}"),
+            Err(e) => eprintln!("instance task panicked: {e}"),
+        }
+    }
+
+    // Final summary (SharedState.flush() already keeps summary JSON up to date)
+    let shared_snapshot = shared.lock().await;
     eprintln!();
     eprintln!("Summary:   {}", output_path.display());
     eprintln!("Questions: {}", questions_path.display());
@@ -1486,11 +1569,16 @@ async fn main() {
     eprintln!("Time:      {:.1}s", bench_start.elapsed().as_secs_f64());
 
     if !matches!(command, BenchCommand::Ingest) {
-        let acc = compute_accuracy(&all_question_results);
-        eprintln!("Accuracy:  {:.1}% ({}/{})",
+        let acc = compute_accuracy(&shared_snapshot.results);
+        eprintln!(
+            "Accuracy:  {:.1}% ({}/{})",
             acc * 100.0,
-            all_question_results.iter().filter(|r| r.judge_correct).count(),
-            all_question_results.len(),
+            shared_snapshot
+                .results
+                .iter()
+                .filter(|r| r.judge_correct)
+                .count(),
+            shared_snapshot.results.len(),
         );
     }
 }
