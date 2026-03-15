@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 04-01-PLAN.md
-last_updated: "2026-03-15T13:52:09Z"
-last_activity: 2026-03-15 -- Completed plan 04-01 (judge infrastructure and prompts)
+stopped_at: Completed 04-02-PLAN.md
+last_updated: "2026-03-15T13:58:11Z"
+last_activity: 2026-03-15 -- Completed plan 04-02 (QA evaluation path)
 progress:
   total_phases: 5
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 7
-  completed_plans: 6
-  percent: 86
+  completed_plans: 7
+  percent: 100
 ---
 
 # Project State
@@ -25,19 +25,19 @@ See: .planning/PROJECT.md (updated 2026-03-15)
 
 ## Current Position
 
-Phase: 4 of 5 (Evaluation Path)
-Plan: 1 of 2 in current phase -- COMPLETE
+Phase: 4 of 5 (Evaluation Path) -- COMPLETE
+Plan: 2 of 2 in current phase -- COMPLETE
 Status: Executing
-Last activity: 2026-03-15 -- Completed plan 04-01 (judge infrastructure and prompts)
+Last activity: 2026-03-15 -- Completed plan 04-02 (QA evaluation path)
 
-Progress: [########--] 86%
+Progress: [##########] 100%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 6
-- Average duration: 3.5 min
-- Total execution time: 0.37 hours
+- Total plans completed: 7
+- Average duration: 3.6 min
+- Total execution time: 0.42 hours
 
 **By Phase:**
 
@@ -46,7 +46,7 @@ Progress: [########--] 86%
 | 01-dataset-foundation | 2 | 4 min | 2 min |
 | 02-ingestion-pipeline | 1 | 5 min | 5 min |
 | 03-cli-artifact-infrastructure | 2 | 7 min | 3.5 min |
-| 04-evaluation-path | 1 | 6 min | 6 min |
+| 04-evaluation-path | 2 | 9 min | 4.5 min |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -78,6 +78,9 @@ Recent decisions affecting current work:
 - Exported judge constants as pub const from common::judge for BenchmarkRuntimeConfig references
 - resolve_judge_model returns None when JUDGE_MODEL env var set, Some("gpt-4o") as fallback default
 - Used assert_eq! for prompt selection tests (include_str! pointer identity not guaranteed)
+- Factored accuracy into compute_accuracy() helper for testability
+- Judge client built lazily (only for Run/Qa, not Ingest)
+- Reflect errors count as wrong in denominator (no exclusions per EVAL-05)
 
 ### Pending Todos
 
@@ -89,6 +92,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-15T13:52:09Z
-Stopped at: Completed 04-01-PLAN.md
-Resume file: .planning/phases/04-evaluation-path/04-01-SUMMARY.md
+Last session: 2026-03-15T13:58:11Z
+Stopped at: Completed 04-02-PLAN.md
+Resume file: .planning/phases/04-evaluation-path/04-02-SUMMARY.md
