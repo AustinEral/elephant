@@ -1314,6 +1314,7 @@ async fn main() {
     let completed = Arc::new(AtomicUsize::new(0));
     let ingest_format = config.ingest_format;
     let consolidation = config.consolidation;
+    let session_limit = config.session_limit;
 
     let mut handles = Vec::new();
     for instance in instances {
@@ -1347,6 +1348,7 @@ async fn main() {
                 let ingest_config = IngestConfig {
                     format: ingest_format,
                     consolidation,
+                    session_limit,
                 };
                 let result = with_scoped_collector(
                     metrics.clone(),

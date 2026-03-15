@@ -110,6 +110,9 @@ pub struct IngestConfig {
     pub format: IngestFormat,
     /// Consolidation strategy: end (default), per-session, or off.
     pub consolidation: ConsolidationMode,
+    /// Optional limit on the number of haystack sessions to ingest.
+    #[serde(default)]
+    pub session_limit: Option<usize>,
 }
 
 impl Default for IngestConfig {
@@ -117,6 +120,7 @@ impl Default for IngestConfig {
         Self {
             format: IngestFormat::default(),
             consolidation: ConsolidationMode::default(),
+            session_limit: None,
         }
     }
 }
@@ -247,9 +251,14 @@ pub async fn ingest_instance(
     runtime.store.create_bank(&bank).await?;
 
     let total_sessions = instance.haystack_sessions.len();
+    let ingest_count = config
+        .session_limit
+        .map(|n| n.min(total_sessions))
+        .unwrap_or(total_sessions);
     info!(
         question_id = %instance.question_id,
         sessions = total_sessions,
+        sessions_selected = ingest_count,
         format = ?config.format,
         consolidation = ?config.consolidation,
         "starting ingestion"
@@ -262,6 +271,7 @@ pub async fn ingest_instance(
         .haystack_sessions
         .iter()
         .zip(instance.haystack_dates.iter())
+        .take(ingest_count)
         .enumerate()
     {
         debug!(
@@ -512,6 +522,26 @@ mod tests {
         let config = IngestConfig::default();
         assert_eq!(config.format, IngestFormat::Text);
         assert_eq!(config.consolidation, ConsolidationMode::End);
+        assert_eq!(config.session_limit, None);
+    }
+
+    #[test]
+    fn ingest_config_session_limit_roundtrip() {
+        let config = IngestConfig {
+            format: IngestFormat::Text,
+            consolidation: ConsolidationMode::End,
+            session_limit: Some(3),
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let back: IngestConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.session_limit, Some(3));
+    }
+
+    #[test]
+    fn ingest_config_missing_session_limit_deserializes_to_none() {
+        let json = r#"{"format":"text","consolidation":"end"}"#;
+        let config: IngestConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.session_limit, None);
     }
 
     // --- IngestResult / IngestStats / IngestTiming serde roundtrip ---
