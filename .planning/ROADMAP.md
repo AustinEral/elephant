@@ -17,6 +17,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 3: CLI and Artifact Infrastructure** - Binary, subcommands, profiles, three-artifact output, manifest, and config overlay (completed 2026-03-15)
 - [x] **Phase 4: Evaluation Path** - Reflect with temporal context, dual judge prompts, per-category accuracy scoring (completed 2026-03-15)
 - [x] **Phase 5: Concurrency, Resume, and View Tool** - Parallel execution, resume from ingest artifacts, and standalone view binary (completed 2026-03-15)
+- [ ] **Phase 6: Wire Temporal Context & Session Limit** - Forward question_date to reflect agent, wire session_limit through ingest pipeline (Gap Closure)
 
 ## Phase Details
 
@@ -97,10 +98,26 @@ Plans:
 - [x] 05-01-PLAN.md -- Semaphore-gated concurrency, pool sizing, SharedState with incremental flush, resume under concurrency
 - [x] 05-02-PLAN.md -- Standalone longmemeval-view binary with single-file and comparison modes
 
+### Phase 6: Wire Temporal Context & Session Limit
+**Goal**: Close audit gaps — forward question_date temporal context to reflect agent (DATA-06) and wire session_limit CLI flag through to ingest pipeline
+**Depends on**: Phase 4, Phase 5
+**Requirements**: DATA-06
+**Gap Closure:** Closes gaps from v1.0 milestone audit
+**Success Criteria** (what must be TRUE):
+  1. `ReflectQuery` includes a temporal context field carrying `question_date`
+  2. The QA loop extracts `question_date` from each instance and passes it to reflect
+  3. The reflect agent's prompt/query includes temporal context when available
+  4. `--session-limit N` actually limits the number of sessions ingested per instance
+  5. `IngestConfig` has a `session_limit` field wired from `RunConfig`
+**Plans**: 0 plans
+
+Plans:
+(none yet — run `/gsd:plan-phase 6`)
+
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
+Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
@@ -109,3 +126,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | 3. CLI and Artifact Infrastructure | 2/2 | Complete   | 2026-03-15 |
 | 4. Evaluation Path | 2/2 | Complete   | 2026-03-15 |
 | 5. Concurrency, Resume, and View Tool | 2/2 | Complete   | 2026-03-15 |
+| 6. Wire Temporal Context & Session Limit | 0/0 | Planned | — |
