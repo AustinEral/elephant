@@ -1445,6 +1445,7 @@ async fn main() {
                     bank_id: bank_id_str.parse().unwrap(),
                     question: instance.question.clone(),
                     budget_tokens: REFLECT_BUDGET_TOKENS,
+                    temporal_context: Some(instance.question_date.clone()),
                 }),
             )
             .await;

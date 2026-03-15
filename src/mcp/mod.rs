@@ -188,6 +188,7 @@ impl ElephantMcp {
             bank_id,
             question: params.query,
             budget_tokens,
+            temporal_context: None,
         };
 
         let result = self

@@ -2750,6 +2750,7 @@ async fn run_conversation(
                             bank_id,
                             question: question.clone(),
                             budget_tokens: REFLECT_BUDGET_TOKENS,
+                            temporal_context: None,
                         })
                         .await;
                     let elapsed = t0.elapsed().as_secs_f64();

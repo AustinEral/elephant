@@ -78,6 +78,9 @@ pub struct ReflectQuery {
     pub question: String,
     /// Maximum token budget for retrieved context.
     pub budget_tokens: usize,
+    /// Optional temporal context for time-sensitive questions (e.g. "2023-05-25").
+    #[serde(default)]
+    pub temporal_context: Option<String>,
 }
 
 // --- Extraction ---
@@ -423,10 +426,25 @@ mod tests {
             bank_id: BankId::new(),
             question: "why did we choose Postgres?".into(),
             budget_tokens: 4096,
+            temporal_context: Some("2023-05-25".into()),
         };
         let json = serde_json::to_string(&query).unwrap();
         let back: ReflectQuery = serde_json::from_str(&json).unwrap();
         assert_eq!(query, back);
+    }
+
+    #[test]
+    fn reflect_query_roundtrip_no_temporal() {
+        // Backward compat: JSON without temporal_context deserializes to None.
+        let bid = BankId::new();
+        let json = format!(
+            r#"{{"bank_id":"{}","question":"test?","budget_tokens":4096}}"#,
+            bid
+        );
+        let back: ReflectQuery = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.temporal_context, None);
+        assert_eq!(back.question, "test?");
+        assert_eq!(back.budget_tokens, 4096);
     }
 
     #[test]

@@ -219,7 +219,12 @@ impl DefaultReflectPipeline {
         let system_prompt = system_parts.join("\n\n");
 
         // Conversation messages for the agent loop
-        let mut messages: Vec<Message> = vec![Message::text("user", query.question.clone())];
+        let user_content = if let Some(ref tc) = query.temporal_context {
+            format!("[Current date: {tc}]\n\n{}", query.question)
+        } else {
+            query.question.clone()
+        };
+        let mut messages: Vec<Message> = vec![Message::text("user", user_content)];
 
         let mut seen_fact_ids: HashSet<FactId> = HashSet::new();
         let mut seen_source_ids: HashSet<SourceId> = HashSet::new();
@@ -921,6 +926,7 @@ mod tests {
                 bank_id: h.bank_id,
                 question: "How does Rust handle memory?".into(),
                 budget_tokens: 2000,
+                temporal_context: None,
             })
             .await
             .unwrap();
@@ -986,6 +992,7 @@ mod tests {
                 bank_id: h.bank_id,
                 question: "Why did fallback happen?".into(),
                 budget_tokens: 2000,
+                temporal_context: None,
             })
             .await
             .unwrap();
@@ -1088,6 +1095,7 @@ mod tests {
                 bank_id: h.bank_id,
                 question: "When was the project timeline finished?".into(),
                 budget_tokens: 2000,
+                temporal_context: None,
             })
             .await
             .unwrap();
@@ -1192,6 +1200,7 @@ mod tests {
                 bank_id: h.bank_id,
                 question: "When did Avery say the launch plan was shared?".into(),
                 budget_tokens: 2000,
+                temporal_context: None,
             })
             .await
             .unwrap();
@@ -1320,6 +1329,7 @@ mod tests {
                 bank_id: h.bank_id,
                 question: "Did both launch facts come from the same meeting?".into(),
                 budget_tokens: 2000,
+                temporal_context: None,
             })
             .await
             .unwrap();
@@ -1473,6 +1483,7 @@ mod tests {
                 bank_id: h.bank_id,
                 question: "Tell me about data".into(),
                 budget_tokens: 2000,
+                temporal_context: None,
             })
             .await
             .unwrap();
@@ -1543,6 +1554,7 @@ mod tests {
                 bank_id: h.bank_id,
                 question: "Is testing important?".into(),
                 budget_tokens: 2000,
+                temporal_context: None,
             })
             .await
             .unwrap();
@@ -1604,6 +1616,7 @@ mod tests {
                 bank_id: h.bank_id,
                 question: "What is the meaning of life?".into(),
                 budget_tokens: 2000,
+                temporal_context: None,
             })
             .await
             .unwrap();
@@ -1675,6 +1688,7 @@ mod tests {
                 bank_id: h.bank_id,
                 question: "Analyze something".into(),
                 budget_tokens: 2000,
+                temporal_context: None,
             })
             .await
             .unwrap();
@@ -1706,6 +1720,7 @@ mod tests {
                 bank_id: bogus_bank,
                 question: "anything".into(),
                 budget_tokens: 2000,
+                temporal_context: None,
             })
             .await;
 
@@ -1794,6 +1809,7 @@ mod tests {
                 bank_id: h.bank_id,
                 question: "What about data?".into(),
                 budget_tokens: 2000,
+                temporal_context: None,
             })
             .await
             .unwrap();
@@ -1801,5 +1817,27 @@ mod tests {
         assert_eq!(result.sources.len(), 2);
         assert!(result.sources.contains(&id1));
         assert!(result.sources.contains(&id2));
+    }
+
+    #[test]
+    fn temporal_context_in_user_message() {
+        // When temporal_context is Some, user message gets a [Current date: ...] prefix.
+        let tc = Some("2023-05-25".to_string());
+        let question = "What happened?";
+        let content = if let Some(ref tc) = tc {
+            format!("[Current date: {tc}]\n\n{question}")
+        } else {
+            question.to_string()
+        };
+        assert_eq!(content, "[Current date: 2023-05-25]\n\nWhat happened?");
+
+        // When temporal_context is None, user message is just the question.
+        let tc: Option<String> = None;
+        let content = if let Some(ref tc) = tc {
+            format!("[Current date: {tc}]\n\n{question}")
+        } else {
+            question.to_string()
+        };
+        assert_eq!(content, "What happened?");
     }
 }
