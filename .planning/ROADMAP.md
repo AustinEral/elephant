@@ -76,11 +76,11 @@ Plans:
   3. Summary artifact shows per-category accuracy across all 7 question types with question counts
   4. Overall accuracy is computed as correct / 500 (all questions in denominator, no exclusions)
   5. Judge model defaults to GPT-4o and is overridable via `--judge-model`
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 04-01: TBD
-- [ ] 04-02: TBD
+- [ ] 04-01-PLAN.md -- Extract common judge module, create LongMemEval judge prompts and prompt selection logic
+- [ ] 04-02-PLAN.md -- Wire QA evaluation into per-instance loop, accuracy computation, manifest updates
 
 ### Phase 5: Concurrency, Resume, and View Tool
 **Goal**: User can run instances in parallel, resume interrupted runs, and inspect results with a standalone view tool
@@ -107,5 +107,5 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | 1. Dataset Foundation | 2/2 | Complete    | 2026-03-15 |
 | 2. Ingestion Pipeline | 1/1 | Complete    | 2026-03-15 |
 | 3. CLI and Artifact Infrastructure | 2/2 | Complete   | 2026-03-15 |
-| 4. Evaluation Path | 0/? | Not started | - |
+| 4. Evaluation Path | 0/2 | Not started | - |
 | 5. Concurrency, Resume, and View Tool | 0/? | Not started | - |
