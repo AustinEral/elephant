@@ -150,6 +150,8 @@ pub struct ElephantRuntime {
 pub struct BuildRuntimeOptions {
     /// Optional metrics collector for stage-aware metering.
     pub metrics: Option<Arc<MetricsCollector>>,
+    /// Maximum Postgres pool connections. Defaults to 10 if not set.
+    pub max_pool_connections: Option<u32>,
 }
 
 fn make_llm(config: &LlmConfig) -> Result<Box<dyn LlmClient>> {
@@ -254,7 +256,11 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
     let reflect_model = env::var("REFLECT_LLM_MODEL").or_else(|_| env_required("LLM_MODEL"))?;
     let llm_base_url = env::var("LLM_BASE_URL").ok();
 
-    let pool = sqlx::PgPool::connect(&database_url).await?;
+    let max_conns = options.max_pool_connections.unwrap_or(10);
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(max_conns)
+        .connect(&database_url)
+        .await?;
     let store = Arc::new(PgMemoryStore::new(pool.clone()));
     store.migrate().await?;
 

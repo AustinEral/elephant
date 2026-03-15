@@ -28,7 +28,7 @@ pub struct Turn {
 }
 
 /// A single LongMemEval benchmark instance.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct LongMemEvalInstance {
     pub question_id: String,
     pub question_type: QuestionType,

@@ -7,7 +7,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
+
+use tokio::sync::{Mutex, Semaphore};
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -1020,6 +1023,71 @@ fn compute_accuracy(results: &[QuestionResult]) -> f64 {
     correct as f64 / results.len() as f64
 }
 
+// --- Shared state for incremental writes ---
+
+struct SharedState {
+    results: Vec<QuestionResult>,
+    banks: HashMap<String, String>,
+    output_path: PathBuf,
+    questions_path: PathBuf,
+    debug_path: PathBuf,
+    judge_label: String,
+    tag: Option<String>,
+    retain_model: String,
+    reflect_model: String,
+    embedding_model: String,
+    reranker_model: String,
+    consolidation_strategy: String,
+    manifest: BenchmarkManifest,
+    metrics: Arc<MetricsCollector>,
+    run_timestamp: String,
+    commit: Option<String>,
+    bench_start: Instant,
+    total_questions_expected: usize,
+}
+
+impl SharedState {
+    fn push_and_flush(&mut self, result: QuestionResult, debug: QuestionDebugRecord) {
+        append_jsonl(&self.questions_path, &result);
+        append_jsonl(&self.debug_path, &debug);
+        self.results.push(result);
+        self.flush();
+    }
+
+    fn record_bank(&mut self, question_id: String, bank_id: String) {
+        self.banks.insert(question_id, bank_id);
+        self.flush();
+    }
+
+    fn flush(&self) {
+        let output = BenchmarkOutput {
+            benchmark: "longmemeval".into(),
+            timestamp: self.run_timestamp.clone(),
+            commit: self.commit.clone(),
+            tag: self.tag.clone(),
+            retain_model: self.retain_model.clone(),
+            reflect_model: self.reflect_model.clone(),
+            embedding_model: self.embedding_model.clone(),
+            reranker_model: self.reranker_model.clone(),
+            judge_model: self.judge_label.clone(),
+            consolidation_strategy: self.consolidation_strategy.clone(),
+            total_questions: self.total_questions_expected,
+            accuracy: compute_accuracy(&self.results),
+            per_category: compute_per_category(&self.results),
+            banks: self.banks.clone(),
+            manifest: self.manifest.clone(),
+            artifacts: BenchmarkArtifacts {
+                questions_path: self.questions_path.display().to_string(),
+                debug_path: self.debug_path.display().to_string(),
+            },
+            stage_metrics: self.metrics.snapshot(),
+            total_time_s: self.bench_start.elapsed().as_secs_f64(),
+        };
+        let json = serde_json::to_string_pretty(&output).expect("serialize output");
+        fs::write(&self.output_path, json).expect("write summary");
+    }
+}
+
 // --- Main ---
 
 #[tokio::main]
@@ -1122,6 +1190,7 @@ async fn main() {
     let runtime = Arc::new(
         build_runtime_from_env(BuildRuntimeOptions {
             metrics: Some(metrics.clone()),
+            max_pool_connections: Some(std::cmp::min(config.instance_jobs as u32 * 3, 50)),
         })
         .await
         .unwrap_or_else(|e| {

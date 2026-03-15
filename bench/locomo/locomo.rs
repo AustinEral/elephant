@@ -3325,6 +3325,7 @@ async fn main() {
     let runtime = Arc::new(
         build_runtime_from_env(BuildRuntimeOptions {
             metrics: Some(metrics.clone()),
+            max_pool_connections: None,
         })
         .await
         .expect("failed to build Elephant runtime"),
