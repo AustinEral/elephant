@@ -3,6 +3,9 @@
 //! This runner executes Elephant in-process so benchmark artifacts can include
 //! stage-level usage, dataset evidence refs, and stable run provenance.
 
+#[path = "../common/mod.rs"]
+mod common;
+
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::env;
@@ -593,16 +596,11 @@ fn evidence_precision(expected: &[String], retrieved: &[String]) -> Option<f64> 
 }
 
 fn fnv1a64(data: &[u8]) -> u64 {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in data {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
+    common::fnv1a64(data)
 }
 
 fn fnv1a64_hex(data: &str) -> String {
-    format!("{:016x}", fnv1a64(data.as_bytes()))
+    common::fnv1a64_hex(data)
 }
 
 fn fmt_elapsed(seconds: f64) -> String {
@@ -760,15 +758,7 @@ fn judge_label(override_model: &Option<String>) -> String {
 // --- Result flushing ---
 
 fn sidecar_path(output_path: &Path, suffix: &str) -> PathBuf {
-    let parent = output_path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_default();
-    let stem = output_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("results");
-    parent.join(format!("{stem}.{suffix}.jsonl"))
+    common::sidecar_path(output_path, suffix)
 }
 
 fn relative_artifact_path(base: &Path, target: &Path) -> String {
@@ -785,12 +775,7 @@ fn relative_artifact_path(base: &Path, target: &Path) -> String {
 }
 
 fn append_jsonl<T: Serialize>(path: &Path, value: &T) {
-    if let Ok(line) = serde_json::to_string(value)
-        && let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path)
-    {
-        use std::io::Write;
-        let _ = writeln!(file, "{line}");
-    }
+    common::append_jsonl(path, value);
 }
 
 #[allow(clippy::too_many_arguments)]
