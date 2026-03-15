@@ -1,23 +1,24 @@
 # Elephant Benchmark Result Card
 
-## Run: series1-conv-26 (2026-03-10)
+## Run: series1 (2026-03-10)
 
 ### Status
 
 | Field | Value |
 |---|---|
-| Publication status | **Clean single-conversation reference run** |
-| Why not a headline claim | `conv-26` only, no rerun/variance note, not full LoCoMo |
-| Required action | Run the full Cat.1-4 benchmark on frozen config and add a rerun or judge-variance note |
+| Publication status | **Full 10-conversation benchmark** |
+| Series | series1 |
+| Artifacts | 10 per-conversation artifacts in `results/canonical/series1/` |
 
 ### Scope
 
 | Field | Value |
 |---|---|
 | Dataset | LoCoMo (ACL 2024) |
-| Conversations | `conv-26` only (1 of 10) |
-| Sessions ingested | 19 |
-| Questions scored | 152 |
+| Conversations | All 10 |
+| Sessions ingested | 272 |
+| Turns ingested | 5,882 |
+| Questions scored | 1,540 |
 | Categories | Cat.1-4 only |
 | Ingest mode | Session-level |
 | Consolidation | End-of-run |
@@ -40,51 +41,72 @@ Full protocol: [protocol.md](protocol.md)
 
 | Slice | Accuracy | n |
 |---|---|---|
-| Clean Cat.1-4 reference slice | **94.7%** | **152** |
+| Full Cat.1-4 | **91.2%** | **1,540** |
 
 Category breakdown:
 
 | Category | Accuracy | n |
 |---|---|---|
-| Single-hop | 93.8% | 32 |
-| Multi-hop | 94.6% | 37 |
-| Temporal | 84.6% | 13 |
-| Open-domain | **97.1%** | 70 |
+| Open-domain | 93.8% | 841 |
+| Multi-hop | 92.5% | 321 |
+| Single-hop | 90.4% | 282 |
+| Temporal | 66.7% | 96 |
+
+Per conversation:
+
+| Conversation | Accuracy | n |
+|---|---|---|
+| conv-41 | 96.1% | 152 |
+| conv-26 | 94.7% | 152 |
+| conv-47 | 92.7% | 150 |
+| conv-44 | 91.9% | 123 |
+| conv-50 | 91.8% | 158 |
+| conv-49 | 91.0% | 156 |
+| conv-48 | 90.6% | 191 |
+| conv-43 | 89.3% | 178 |
+| conv-30 | 88.9% | 81 |
+| conv-42 | 86.4% | 199 |
 
 ### Efficiency
 
 | Metric | Value |
 |---|---|
-| Total runtime | 135m 15s |
-| Ingest | 81m 38s |
-| Consolidation | 32m 03s |
-| QA | 21m 34s |
-| Avg QA time | 8.5s/question |
-| Token usage (total) | 4,998,181 |
-| Token usage (excluding judge) | 4,899,479 |
+| Total runtime | 1,590m |
+| Ingest | 973m |
+| Consolidation | 387m |
+| QA | 230m |
+| Avg QA time | 9.0s/question |
+| Total tokens | 52,531,350 |
 
 ### Variance
 
-Not yet measured. Elephant still needs either a clean rerun or a judge-only variance pass before this should be cited beyond internal reference use.
+Not yet measured. A judge-only variance pass or clean rerun would strengthen the result.
 
 ### Reproduction
 
 ```bash
+# Run individual conversations
 cargo run --release --bin locomo-bench -- \
   run \
   --profile full \
-  --config bench/locomo/configs/question-jobs-5.json \
   --conversation conv-26 \
+  --question-jobs 5 \
   --tag series1-conv-26
+
+# Repeat for each conversation, then merge
+cargo run --release --bin locomo-bench -- \
+  merge \
+  bench/locomo/results/canonical/series1/series1-conv-*.json \
+  --out bench/locomo/results/canonical/series1.json
 ```
 
-Artifact: `bench/locomo/results/local/series1-conv-26.json`
+Artifacts: `bench/locomo/results/canonical/series1/`
 Schema: [results-format.md](results-format.md)
 
 ### Caveats
 
-- **Single conversation only** — useful reference slice, not a full benchmark claim
-- **No variance data yet** — still single-run only
-- **Session ingest** — appropriate for current Elephant benchmarking, but turn-level evidence-trace metrics are weaker in this mode
+- **No variance data yet** — single-run only
+- **Session ingest** — turn-level evidence-trace metrics are weaker in this mode
 - **Same model for all stages** — extraction, reflection, consolidation, and judging all use Sonnet 4.6
 - **BLIP-2 image captions** — images replaced with captions per LoCoMo evaluation protocol
+- **Temporal category** — 66.7% is the weakest area, driven by date resolution gaps

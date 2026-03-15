@@ -2,7 +2,7 @@
 
 Evaluates long-term conversational memory using the [LoCoMo dataset](https://arxiv.org/abs/2402.17753) (ACL 2024).
 
-The checked-in public reference slice is `conv-26` on the current harness. Full-benchmark claims still require all 10 conversations plus a rerun or variance note.
+The checked-in canonical result is a full 10-conversation run (series1, 1,540 questions, Cat.1–4). Per-conversation artifacts live in `results/canonical/series1/`.
 
 Related docs:
 
@@ -148,7 +148,7 @@ By default:
 
 - `run` and `ingest` write to `bench/locomo/results/local/`
 - `merge` also writes to `bench/locomo/results/local/`
-- `qa <artifact>` writes back to the source artifact unless `--out` is set
+- `qa <artifact>` uses `--tag` for output path, or writes back to the source artifact if neither `--tag` nor `--out` is set
 
 Use `--out bench/locomo/results/canonical/<name>.json` when you intentionally want to promote a merged artifact into the canonical record.
 
@@ -172,7 +172,7 @@ Use `--out bench/locomo/results/canonical/<name>.json` when you intentionally wa
 | `--question-limit <n>` | Debug-only question slice |
 | `--force` | Allow overwriting an existing output path and sidecars |
 
-Fresh `run`, `ingest`, and `merge` outputs now refuse to overwrite existing summary/sidecar files unless you pass `--force`. `qa` still allows in-place updates when it writes back to its source artifact by default.
+Fresh `run`, `ingest`, and `merge` outputs now refuse to overwrite existing summary/sidecar files unless you pass `--force`. `qa` also refuses to overwrite when `--tag` resolves to an existing file; pass `--force` to override.
 
 ## Merge constraints
 
