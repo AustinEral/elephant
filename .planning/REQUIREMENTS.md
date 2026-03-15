@@ -36,17 +36,17 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### CLI & Infrastructure
 
-- [ ] **CLI-01**: `longmemeval-bench` binary with `run` subcommand (ingest + consolidate + QA)
-- [ ] **CLI-02**: `ingest` subcommand (ingest + consolidate only, no QA)
-- [ ] **CLI-03**: `qa` subcommand (score against existing banks from ingest artifact)
-- [ ] **CLI-04**: Profile system with `smoke` (small subset), `full-s` (all 500 on S dataset), `full-m` (all 500 on M dataset)
+- [x] **CLI-01**: `longmemeval-bench` binary with `run` subcommand (ingest + consolidate + QA)
+- [x] **CLI-02**: `ingest` subcommand (ingest + consolidate only, no QA)
+- [x] **CLI-03**: `qa` subcommand (score against existing banks from ingest artifact)
+- [x] **CLI-04**: Profile system with `smoke` (small subset), `full-s` (all 500 on S dataset), `full-m` (all 500 on M dataset)
 - [ ] **CLI-05**: `--instance-jobs N` concurrency control for parallel instance processing
-- [ ] **CLI-06**: `--config` JSON overlay on top of profile for local tuning
-- [ ] **CLI-07**: `--instance` flag to run specific question instances (repeatable)
+- [x] **CLI-06**: `--config` JSON overlay on top of profile for local tuning
+- [x] **CLI-07**: `--instance` flag to run specific question instances (repeatable)
 - [ ] **CLI-08**: Three-artifact output: summary JSON, question JSONL sidecar, debug JSONL sidecar
 - [ ] **CLI-09**: Manifest with full reproducibility contract (dataset fingerprint, prompt hashes, runtime config, git commit, CLI invocation)
 - [ ] **CLI-10**: Resume via `qa` subcommand reusing bank_ids from ingest artifact
-- [ ] **CLI-11**: Results default to `bench/longmemeval/results/local/`, promotable via `--out`
+- [x] **CLI-11**: Results default to `bench/longmemeval/results/local/`, promotable via `--out`
 
 ### View Tool
 
@@ -119,17 +119,17 @@ Which phases cover which requirements. Updated during roadmap creation.
 | EVAL-04 | Phase 4 | Pending |
 | EVAL-05 | Phase 4 | Pending |
 | EVAL-06 | Phase 4 | Pending |
-| CLI-01 | Phase 3 | Pending |
-| CLI-02 | Phase 3 | Pending |
-| CLI-03 | Phase 3 | Pending |
-| CLI-04 | Phase 3 | Pending |
+| CLI-01 | Phase 3 | Complete |
+| CLI-02 | Phase 3 | Complete |
+| CLI-03 | Phase 3 | Complete |
+| CLI-04 | Phase 3 | Complete |
 | CLI-05 | Phase 5 | Pending |
-| CLI-06 | Phase 3 | Pending |
-| CLI-07 | Phase 3 | Pending |
+| CLI-06 | Phase 3 | Complete |
+| CLI-07 | Phase 3 | Complete |
 | CLI-08 | Phase 3 | Pending |
 | CLI-09 | Phase 3 | Pending |
 | CLI-10 | Phase 5 | Pending |
-| CLI-11 | Phase 3 | Pending |
+| CLI-11 | Phase 3 | Complete |
 | VIEW-01 | Phase 5 | Pending |
 | VIEW-02 | Phase 5 | Pending |
 | VIEW-03 | Phase 5 | Pending |

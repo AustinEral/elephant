@@ -106,6 +106,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 |-------|----------------|--------|-----------|
 | 1. Dataset Foundation | 2/2 | Complete    | 2026-03-15 |
 | 2. Ingestion Pipeline | 0/1 | Not started | - |
-| 3. CLI and Artifact Infrastructure | 0/2 | Not started | - |
+| 3. CLI and Artifact Infrastructure | 1/2 | In Progress|  |
 | 4. Evaluation Path | 0/? | Not started | - |
 | 5. Concurrency, Resume, and View Tool | 0/? | Not started | - |
