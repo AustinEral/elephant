@@ -19,11 +19,11 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Ingestion
 
-- [ ] **INGEST-01**: Per-instance bank isolation — one bank created per question (500 banks for full run)
-- [ ] **INGEST-02**: Session-level ingestion with date prefix (e.g., `[Date: 2023-01-15] content`)
-- [ ] **INGEST-03**: Consolidation modes supported: end (default), per-session, off
-- [ ] **INGEST-04**: Sessions ingested sequentially per instance with timestamps from `haystack_dates`
-- [ ] **INGEST-05**: Postgres connection pool explicitly sized for concurrent bank operations
+- [x] **INGEST-01**: Per-instance bank isolation — one bank created per question (500 banks for full run)
+- [x] **INGEST-02**: Session-level ingestion with date prefix (e.g., `[Date: 2023-01-15] content`)
+- [x] **INGEST-03**: Consolidation modes supported: end (default), per-session, off
+- [x] **INGEST-04**: Sessions ingested sequentially per instance with timestamps from `haystack_dates`
+- [x] **INGEST-05**: Postgres connection pool explicitly sized for concurrent bank operations
 
 ### Evaluation
 
@@ -108,11 +108,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DATA-05 | Phase 1 | Complete |
 | DATA-06 | Phase 1 | Complete |
 | DATA-07 | Phase 1 | Complete |
-| INGEST-01 | Phase 2 | Pending |
-| INGEST-02 | Phase 2 | Pending |
-| INGEST-03 | Phase 2 | Pending |
-| INGEST-04 | Phase 2 | Pending |
-| INGEST-05 | Phase 2 | Pending |
+| INGEST-01 | Phase 2 | Complete |
+| INGEST-02 | Phase 2 | Complete |
+| INGEST-03 | Phase 2 | Complete |
+| INGEST-04 | Phase 2 | Complete |
+| INGEST-05 | Phase 2 | Complete |
 | EVAL-01 | Phase 4 | Pending |
 | EVAL-02 | Phase 4 | Pending |
 | EVAL-03 | Phase 4 | Pending |
