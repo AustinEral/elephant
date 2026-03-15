@@ -6,7 +6,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
+use std::sync::Arc;
+use std::time::Instant;
 
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 #[path = "../common/mod.rs"]
@@ -14,15 +17,14 @@ mod common;
 mod dataset;
 mod ingest;
 
-use common::io::sidecar_path;
-use ingest::{ConsolidationMode, IngestFormat};
+use common::io::{append_jsonl, sidecar_path};
+use dataset::load_dataset;
+use ingest::{ConsolidationMode, IngestConfig, IngestFormat};
 
-#[allow(unused_imports)]
-use elephant::metrics::{LlmStage, StageUsage};
-#[allow(unused_imports)]
+use elephant::metrics::{LlmStage, MetricsCollector, StageUsage, with_scoped_collector};
 use elephant::runtime::{
-    ElephantRuntime, RuntimePromptHashes as ElephantPromptHashes,
-    RuntimeTuning as ElephantRuntimeTuning,
+    BuildRuntimeOptions, ElephantRuntime, RuntimePromptHashes as ElephantPromptHashes,
+    RuntimeTuning as ElephantRuntimeTuning, build_runtime_from_env,
 };
 
 // --- CLI ---
@@ -955,38 +957,286 @@ fn compute_per_category(results: &[QuestionResult]) -> HashMap<String, CategoryR
 
 // --- Main ---
 
-fn main() {
+#[tokio::main]
+async fn main() {
+    let _ = dotenvy::dotenv();
+
     let invocation = parse_args();
     let command = invocation.command;
     let artifact_path = invocation.artifact_path.clone();
     let config = invocation.config;
     let output_path = default_output_path(command, &config, artifact_path.as_deref());
 
-    eprintln!("longmemeval-bench {}", command.as_str());
-    eprintln!("  profile:       {}", config.profile.as_str());
-    eprintln!("  dataset:       {}", config.dataset.display());
-    eprintln!("  output:        {}", output_path.display());
-    if let Some(ref tag) = config.tag {
-        eprintln!("  tag:           {tag}");
+    // Safety check
+    ensure_output_paths_are_safe(command, &output_path, artifact_path.as_deref(), config.allow_overwrite)
+        .unwrap_or_else(|e| {
+            eprintln!("{e}");
+            std::process::exit(1);
+        });
+
+    // Load artifact state for QA mode
+    let (existing_banks, source_artifact) = if let Some(ref path) = artifact_path {
+        let art = load_benchmark_output(path).unwrap_or_else(|e| {
+            eprintln!("{e}");
+            std::process::exit(1);
+        });
+        let sa = SourceArtifact {
+            path: path.display().to_string(),
+            fingerprint: format!("{:016x}", common::fingerprint::fnv1a64(&fs::read(path).unwrap_or_default())),
+            mode: art.manifest.mode.clone(),
+            tag: art.tag.clone(),
+            commit: art.commit.clone(),
+        };
+        (art.banks, Some(sa))
+    } else {
+        (HashMap::new(), None)
+    };
+
+    // Validate dataset exists early
+    if !config.dataset.exists() {
+        eprintln!(
+            "Dataset not found: {}\n\nDownload the LongMemEval dataset and place it at the expected path.\nSee: https://github.com/xiaowu0162/LongMemEval",
+            config.dataset.display()
+        );
+        std::process::exit(1);
     }
-    eprintln!("  ingest_format: {}", config.ingest_format.as_str());
-    eprintln!("  consolidation: {}", config.consolidation.as_str());
-    eprintln!("  instance_jobs: {}", config.instance_jobs);
+
+    // Load dataset
+    let (mut instances, dataset_fingerprint) =
+        load_dataset(&config.dataset).unwrap_or_else(|e| {
+            eprintln!("{e}");
+            std::process::exit(1);
+        });
+
+    // Filter by --instance
+    if !config.instances.is_empty() {
+        let selected: std::collections::HashSet<&str> =
+            config.instances.iter().map(String::as_str).collect();
+        let before = instances.len();
+        instances.retain(|inst| selected.contains(inst.question_id.as_str()));
+        let missing: Vec<&str> = selected
+            .iter()
+            .filter(|id| !instances.iter().any(|inst| inst.question_id == **id))
+            .copied()
+            .collect();
+        if !missing.is_empty() {
+            eprintln!(
+                "WARNING: {} instance(s) not found in dataset: {:?} (loaded {} of {} requested)",
+                missing.len(),
+                missing,
+                instances.len(),
+                before
+            );
+        }
+    }
+
+    // Apply instance_limit
+    if let Some(limit) = config.instance_limit {
+        instances.truncate(limit);
+    }
+
+    // QA mode: validate all selected instances have bank_ids
+    if matches!(command, BenchCommand::Qa) {
+        let missing: Vec<&str> = instances
+            .iter()
+            .filter(|inst| !existing_banks.contains_key(&inst.question_id))
+            .map(|inst| inst.question_id.as_str())
+            .collect();
+        if !missing.is_empty() {
+            eprintln!(
+                "QA mode: {} instance(s) have no bank_id in artifact: {:?}",
+                missing.len(),
+                missing
+            );
+            std::process::exit(1);
+        }
+    }
+
+    // Build runtime with MetricsCollector
+    let metrics = Arc::new(MetricsCollector::new());
+    let runtime = Arc::new(
+        build_runtime_from_env(BuildRuntimeOptions {
+            metrics: Some(metrics.clone()),
+        })
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("failed to build runtime: {e}");
+            std::process::exit(1);
+        }),
+    );
+
+    // Print config summary
+    eprintln!("longmemeval-bench {}", command.as_str());
+    eprintln!("  profile:        {}", config.profile.as_str());
+    eprintln!("  dataset:        {}", config.dataset.display());
+    eprintln!("  output:         {}", output_path.display());
+    if let Some(ref tag) = config.tag {
+        eprintln!("  tag:            {tag}");
+    }
+    eprintln!("  ingest_format:  {}", config.ingest_format.as_str());
+    eprintln!("  consolidation:  {}", config.consolidation.as_str());
+    eprintln!("  instance_jobs:  {}", config.instance_jobs);
     if let Some(limit) = config.session_limit {
-        eprintln!("  session_limit: {limit}");
+        eprintln!("  session_limit:  {limit}");
     }
     if let Some(limit) = config.instance_limit {
         eprintln!("  instance_limit: {limit}");
     }
     if !config.instances.is_empty() {
-        eprintln!("  instances:     {:?}", config.instances);
+        eprintln!("  instances:      {:?}", config.instances);
     }
+    eprintln!("  retain_model:   {}", runtime.info.retain_model);
+    eprintln!("  reflect_model:  {}", runtime.info.reflect_model);
+    eprintln!("  embedding_model: {}", runtime.info.embedding_model);
+    eprintln!("  reranker_model: {}", runtime.info.reranker_model);
     if let Some(ref judge) = config.judge_model {
-        eprintln!("  judge_model:   {judge}");
+        eprintln!("  judge_model:    {judge}");
+    }
+    eprintln!("  instances:      {}", instances.len());
+    eprintln!();
+
+    // Create output dirs, truncate sidecars
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent).ok();
+    }
+    let questions_path = sidecar_path(&output_path, "questions");
+    let debug_path = sidecar_path(&output_path, "debug");
+    let _ = fs::write(&questions_path, "");
+    let _ = fs::write(&debug_path, "");
+
+    // Capture full CLI string for manifest
+    let cli_command: String = env::args().collect::<Vec<_>>().join(" ");
+
+    // Build manifest
+    let manifest = BenchmarkManifest {
+        protocol_version: "2026-03-15-longmemeval-v1".into(),
+        profile: config.profile.as_str().into(),
+        mode: command.as_str().into(),
+        config_path: config.config_path.as_ref().map(|p| p.display().to_string()),
+        dataset_path: config.dataset.display().to_string(),
+        dataset_fingerprint: dataset_fingerprint.clone(),
+        command: cli_command,
+        selected_instances: if config.instances.is_empty() {
+            vec![]
+        } else {
+            config.instances.clone()
+        },
+        ingest_format: config.ingest_format.as_str().into(),
+        instance_concurrency: config.instance_jobs,
+        consolidation_strategy: config.consolidation.as_str().into(),
+        session_limit: config.session_limit,
+        instance_limit: config.instance_limit,
+        dirty_worktree: git_dirty_worktree(),
+        prompt_hashes: benchmark_prompt_hashes(&runtime),
+        runtime_config: benchmark_runtime_config(&runtime),
+        source_artifact,
+    };
+
+    // Per-instance loop
+    let mut banks = existing_banks;
+    let mut all_question_results = Vec::new();
+    let total_instances = instances.len();
+    let bench_start = Instant::now();
+
+    for (idx, instance) in instances.iter().enumerate() {
+        eprintln!("[{}/{}] {}", idx + 1, total_instances, instance.question_id);
+
+        // Ingest (skip if qa mode with existing bank)
+        let bank_id_str = if matches!(command, BenchCommand::Qa) {
+            banks.get(&instance.question_id).unwrap().clone()
+        } else {
+            let ingest_config = IngestConfig {
+                format: config.ingest_format,
+                consolidation: config.consolidation,
+            };
+            let result = with_scoped_collector(
+                metrics.clone(),
+                ingest::ingest_instance(instance, &runtime, &ingest_config),
+            )
+            .await
+            .unwrap_or_else(|e| {
+                eprintln!(
+                    "ERROR ingesting {}: {e}",
+                    instance.question_id
+                );
+                std::process::exit(1);
+            });
+            let bid = result.bank_id.to_string();
+            banks.insert(instance.question_id.clone(), bid.clone());
+            bid
+        };
+
+        // QA stub (Phase 4 will implement this)
+        let qr = QuestionResult {
+            question_id: instance.question_id.clone(),
+            category: instance.reporting_category().to_string(),
+            judge_correct: false,
+            judge_reasoning: String::new(),
+            hypothesis: String::new(),
+            ground_truth: instance.answer_string(),
+            bank_id: bank_id_str,
+            elapsed_s: 0.0,
+            status: if matches!(command, BenchCommand::Ingest) {
+                "ingest-only".into()
+            } else {
+                "qa-not-implemented".into()
+            },
+            error: None,
+            qa_stage_metrics: BTreeMap::new(),
+        };
+        append_jsonl(&questions_path, &qr);
+        all_question_results.push(qr);
+
+        let dr = QuestionDebugRecord {
+            question_id: instance.question_id.clone(),
+            question: instance.question.clone(),
+            reflect_trace: vec![],
+            final_done: None,
+            retrieved_context: vec![],
+        };
+        append_jsonl(&debug_path, &dr);
     }
 
+    // Compute per-category aggregates
+    let per_category = compute_per_category(&all_question_results);
+
+    // Write summary JSON
+    let output = BenchmarkOutput {
+        benchmark: "longmemeval".into(),
+        timestamp: Utc::now().to_rfc3339(),
+        commit: git_commit_sha(),
+        tag: config.tag.clone(),
+        retain_model: runtime.info.retain_model.clone(),
+        reflect_model: runtime.info.reflect_model.clone(),
+        embedding_model: runtime.info.embedding_model.clone(),
+        reranker_model: runtime.info.reranker_model.clone(),
+        judge_model: String::new(),
+        consolidation_strategy: config.consolidation.as_str().into(),
+        total_questions: all_question_results.len(),
+        accuracy: 0.0,
+        per_category,
+        banks,
+        manifest,
+        artifacts: BenchmarkArtifacts {
+            questions_path: questions_path.display().to_string(),
+            debug_path: debug_path.display().to_string(),
+        },
+        stage_metrics: metrics.snapshot(),
+        total_time_s: bench_start.elapsed().as_secs_f64(),
+    };
+    let json = serde_json::to_string_pretty(&output).expect("serialize output");
+    fs::write(&output_path, json).expect("write summary");
+
     eprintln!();
-    eprintln!("pipeline not yet wired (Plan 02)");
+    eprintln!("Summary:   {}", output_path.display());
+    eprintln!("Questions: {}", questions_path.display());
+    eprintln!("Debug:     {}", debug_path.display());
+    eprintln!("Time:      {:.1}s", bench_start.elapsed().as_secs_f64());
+
+    if matches!(command, BenchCommand::Run) {
+        eprintln!();
+        eprintln!("NOTE: QA scoring not yet implemented (Phase 4). Banks created, accuracy is 0.0.");
+    }
 }
 
 // --- Tests ---
