@@ -93,7 +93,10 @@ fn validate_extract_case(path: &Path) -> datatest_stable::Result<()> {
     );
     for (idx, assertion) in case.assertions.iter().enumerate() {
         assert!(
-            matches!(assertion.kind.as_str(), "fact_contains" | "fact_not_contains"),
+            matches!(
+                assertion.kind.as_str(),
+                "fact_contains" | "fact_not_contains"
+            ),
             "{}: assertions[{idx}].kind must be fact_contains or fact_not_contains",
             path.display()
         );

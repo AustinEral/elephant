@@ -21,7 +21,7 @@ use crate::storage::MemoryStore;
 use crate::types::llm::{CompletionRequest, Message, ToolChoice, ToolDef, ToolResult};
 use crate::types::{
     Fact, FactId, NetworkType, RecallQuery, ReflectDoneTrace, ReflectQuery, ReflectResult,
-    ReflectTraceStep, RetrievedFact, TurnId,
+    ReflectTraceStep, RetrievedFact, RetrievedSource, Source, SourceId, TurnId,
 };
 
 use disposition::verbalize_bank_profile;
@@ -40,12 +40,19 @@ pub struct DefaultReflectPipeline {
     store: Arc<dyn MemoryStore>,
     max_iterations: usize,
     max_output_tokens: Option<usize>,
+    source_lookup_limit: usize,
+    source_content_max_chars: Option<usize>,
+    enable_source_lookup: bool,
 }
 
 /// Reflect agent prompt template.
 pub const REFLECT_AGENT_PROMPT_TEMPLATE: &str = include_str!("../../prompts/reflect_agent.txt");
 /// Reflect agent temperature.
 pub const REFLECT_TEMPERATURE: f32 = 0.3;
+/// Default maximum number of sources returned per fact for source lookups.
+pub const DEFAULT_SOURCE_LOOKUP_LIMIT: usize = 3;
+/// Default lookup availability for reflect.
+pub const DEFAULT_ENABLE_SOURCE_LOOKUP: bool = true;
 
 impl DefaultReflectPipeline {
     /// Create a new reflect pipeline.
@@ -55,7 +62,16 @@ impl DefaultReflectPipeline {
         store: Arc<dyn MemoryStore>,
         max_iterations: usize,
     ) -> Self {
-        Self::new_with_limits(recall, llm, store, max_iterations, None)
+        Self::new_with_limits(
+            recall,
+            llm,
+            store,
+            max_iterations,
+            None,
+            DEFAULT_SOURCE_LOOKUP_LIMIT,
+            None,
+            DEFAULT_ENABLE_SOURCE_LOOKUP,
+        )
     }
 
     /// Create a new reflect pipeline with explicit completion limits.
@@ -65,6 +81,9 @@ impl DefaultReflectPipeline {
         store: Arc<dyn MemoryStore>,
         max_iterations: usize,
         max_output_tokens: Option<usize>,
+        source_lookup_limit: usize,
+        source_content_max_chars: Option<usize>,
+        enable_source_lookup: bool,
     ) -> Self {
         Self {
             recall,
@@ -72,6 +91,9 @@ impl DefaultReflectPipeline {
             store,
             max_iterations,
             max_output_tokens,
+            source_lookup_limit: source_lookup_limit.max(1),
+            source_content_max_chars,
+            enable_source_lookup,
         }
     }
 }
@@ -86,6 +108,20 @@ struct SearchArgs {
     reason: String,
 }
 
+/// Arguments for provenance lookup by fact id.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct LookupSourcesArgs {
+    /// Fact ID whose linked sources should be returned.
+    fact_id: String,
+    /// Optional per-fact cap, clamped to the pipeline maximum.
+    #[serde(default)]
+    limit: Option<usize>,
+    /// Why you need the provenance lookup.
+    #[allow(dead_code)]
+    reason: String,
+}
+
 /// Arguments for the `done` tool call — also used for fallback synthesis.
 #[derive(Debug, Deserialize, JsonSchema)]
 struct DoneArgs {
@@ -96,8 +132,8 @@ struct DoneArgs {
     source_ids: Vec<String>,
 }
 
-fn tool_defs() -> Vec<ToolDef> {
-    vec![
+fn tool_defs(enable_source_lookup: bool) -> Vec<ToolDef> {
+    let mut tools = vec![
         ToolDef::from_schema::<SearchArgs>(
             "search_observations",
             "Search consolidated observations (high-level summaries). Use first for the big picture.",
@@ -106,8 +142,52 @@ fn tool_defs() -> Vec<ToolDef> {
             "recall",
             "Search raw memories (facts and experiences). Ground truth data. Use to verify or fill gaps.",
         ),
-        ToolDef::from_schema::<DoneArgs>("done", "Return the final answer with source citations."),
-    ]
+    ];
+    if enable_source_lookup {
+        tools.push(ToolDef::from_schema::<LookupSourcesArgs>(
+            "lookup_sources",
+            "Look up exact extraction inputs for one known fact ID. Use when original source text or source timing would help answer.",
+        ));
+    }
+    tools.push(ToolDef::from_schema::<DoneArgs>(
+        "done",
+        "Return the final answer with source citations.",
+    ));
+    tools
+}
+
+fn tool_defs_for_iteration(
+    enable_source_lookup: bool,
+    iteration: usize,
+    last_iteration: usize,
+) -> (Vec<ToolDef>, ToolChoice) {
+    if iteration == last_iteration {
+        return (
+            vec![ToolDef::from_schema::<DoneArgs>(
+                "done",
+                "Return the final answer with source citations.",
+            )],
+            ToolChoice::Specific("done".into()),
+        );
+    }
+
+    match iteration {
+        0 => (
+            vec![ToolDef::from_schema::<SearchArgs>(
+                "search_observations",
+                "Search consolidated observations (high-level summaries). Use first for the big picture.",
+            )],
+            ToolChoice::Specific("search_observations".into()),
+        ),
+        1 => (
+            vec![ToolDef::from_schema::<SearchArgs>(
+                "recall",
+                "Search raw memories (facts and experiences). Ground truth data. Use to verify or fill gaps.",
+            )],
+            ToolChoice::Specific("recall".into()),
+        ),
+        _ => (tool_defs(enable_source_lookup), ToolChoice::Required),
+    }
 }
 
 #[async_trait]
@@ -142,50 +222,38 @@ impl DefaultReflectPipeline {
         let mut messages: Vec<Message> = vec![Message::text("user", query.question.clone())];
 
         let mut seen_fact_ids: HashSet<FactId> = HashSet::new();
+        let mut seen_source_ids: HashSet<SourceId> = HashSet::new();
         let mut retrieved_context: Vec<RetrievedFact> = Vec::new();
+        let mut retrieved_sources: Vec<RetrievedSource> = Vec::new();
         let mut trace: Vec<ReflectTraceStep> = Vec::new();
         let mut support_cache: HashMap<FactId, Fact> = HashMap::new();
 
-        let tools = tool_defs();
-
         let last_iteration = self.max_iterations - 1;
-        let done_only = vec![ToolDef::from_schema::<DoneArgs>(
-            "done",
-            "Return the final answer with source citations.",
-        )];
 
         for iteration in 0..self.max_iterations {
             let forced_tool = match iteration {
                 _ if iteration == last_iteration => "done",
                 0 => "search_observations",
                 1 => "recall",
-                _ => "auto",
+                _ => "required",
             };
             debug!(iteration, forced_tool, "reflect_iter_start");
 
             // Forced tool sequence:
             //   0           → search_observations
             //   1           → recall
-            //   2..last-1   → auto (all tools)
+            //   2..last-1   → required (all tools)
             //   last        → done only, required
-            let (iter_tools, tool_choice) = if iteration == last_iteration {
-                (&done_only, Some(ToolChoice::Specific("done".into())))
-            } else {
-                let choice = match iteration {
-                    0 => Some(ToolChoice::Specific("search_observations".into())),
-                    1 => Some(ToolChoice::Specific("recall".into())),
-                    _ => Some(ToolChoice::Auto),
-                };
-                (&tools, choice)
-            };
+            let (iter_tools, tool_choice) =
+                tool_defs_for_iteration(self.enable_source_lookup, iteration, last_iteration);
 
             let request = CompletionRequest {
                 messages: messages.clone(),
                 temperature: Some(REFLECT_TEMPERATURE),
                 max_tokens: self.max_output_tokens,
                 system: Some(system_prompt.clone()),
-                tools: Some(iter_tools.clone()),
-                tool_choice,
+                tools: Some(iter_tools),
+                tool_choice: Some(tool_choice),
                 ..Default::default()
             };
 
@@ -291,7 +359,9 @@ impl DefaultReflectPipeline {
                             tool_name: tc.name.clone(),
                             query: args.query.clone(),
                             returned_fact_ids,
+                            requested_fact_ids: vec![],
                             new_fact_ids,
+                            returned_source_ids: vec![],
                             facts_returned: result.facts.len(),
                             total_tokens: result.total_tokens,
                             latency_ms: recall_ms,
@@ -304,6 +374,85 @@ impl DefaultReflectPipeline {
                         tool_results.push(ToolResult {
                             tool_call_id: tc.id.clone(),
                             content: new_facts,
+                        });
+                    }
+                    "lookup_sources" => {
+                        let args: LookupSourcesArgs = match serde_json::from_value(
+                            tc.arguments.clone(),
+                        ) {
+                            Ok(args) => args,
+                            Err(err) => {
+                                debug!(
+                                    tool_name = tc.name.as_str(),
+                                    error = %err,
+                                    "invalid_lookup_sources_args"
+                                );
+                                tool_results.push(ToolResult {
+                                    tool_call_id: tc.id.clone(),
+                                    content: "Invalid lookup_sources arguments. Provide exactly one fact_id.".into(),
+                                });
+                                continue;
+                            }
+                        };
+
+                        let requested_fact_ids = Self::parse_requested_fact_id(&args.fact_id)
+                            .into_iter()
+                            .collect::<Vec<_>>();
+                        let per_fact_limit = self
+                            .effective_source_limit(args.limit)
+                            .min(self.source_lookup_limit);
+
+                        let lookup_start = Instant::now();
+                        let lookups = self
+                            .store
+                            .lookup_sources(&requested_fact_ids, per_fact_limit)
+                            .await?;
+                        let lookup_ms = lookup_start.elapsed().as_millis() as u64;
+                        let returned_fact_ids = lookups
+                            .iter()
+                            .map(|lookup| lookup.fact_id)
+                            .collect::<Vec<_>>();
+                        let sources_matched = lookups
+                            .iter()
+                            .map(|lookup| lookup.sources.len())
+                            .sum::<usize>();
+                        let (formatted, surfaced_sources) =
+                            self.format_source_lookups(&requested_fact_ids, &lookups);
+                        let unique_sources_returned = surfaced_sources.len();
+                        let mut returned_source_ids = Vec::new();
+                        for source in surfaced_sources {
+                            returned_source_ids.push(source.id);
+                            if seen_source_ids.insert(source.id) {
+                                retrieved_sources.push(source);
+                            }
+                        }
+
+                        debug!(
+                            tool_name = tc.name.as_str(),
+                            requested_fact_ids = requested_fact_ids.len(),
+                            facts_with_sources = returned_fact_ids.len(),
+                            sources_matched,
+                            unique_sources_returned,
+                            lookup_ms,
+                            "tool_call"
+                        );
+
+                        trace.push(ReflectTraceStep {
+                            iteration,
+                            tool_name: tc.name.clone(),
+                            query: args.fact_id.clone(),
+                            returned_fact_ids,
+                            requested_fact_ids,
+                            new_fact_ids: vec![],
+                            returned_source_ids,
+                            facts_returned: unique_sources_returned,
+                            total_tokens: Self::estimate_text_tokens(&formatted),
+                            latency_ms: lookup_ms,
+                        });
+
+                        tool_results.push(ToolResult {
+                            tool_call_id: tc.id.clone(),
+                            content: formatted,
                         });
                     }
                     "done" => {
@@ -322,6 +471,7 @@ impl DefaultReflectPipeline {
                             args,
                             &seen_fact_ids,
                             retrieved_context.clone(),
+                            retrieved_sources.clone(),
                             trace,
                             final_done,
                         );
@@ -364,6 +514,117 @@ impl DefaultReflectPipeline {
 }
 
 impl DefaultReflectPipeline {
+    fn effective_source_limit(&self, requested: Option<usize>) -> usize {
+        requested
+            .unwrap_or(self.source_lookup_limit)
+            .max(1)
+            .min(self.source_lookup_limit)
+    }
+
+    fn parse_requested_fact_id(raw_id: &str) -> Option<FactId> {
+        raw_id.parse::<FactId>().ok()
+    }
+
+    fn format_source_lookups(
+        &self,
+        requested_fact_ids: &[FactId],
+        lookups: &[crate::types::FactSourceLookup],
+    ) -> (String, Vec<RetrievedSource>) {
+        if requested_fact_ids.is_empty() {
+            return (
+                "No valid fact IDs were provided for source lookup.".into(),
+                vec![],
+            );
+        }
+
+        let mut grouped = HashMap::new();
+        for lookup in lookups {
+            grouped.insert(lookup.fact_id, &lookup.sources);
+        }
+
+        let mut output = String::new();
+        let mut surfaced_sources = Vec::new();
+        let mut source_fact_ids: HashMap<SourceId, Vec<FactId>> = HashMap::new();
+        let mut source_order = Vec::new();
+        let mut missing_fact_ids = Vec::new();
+        for fact_id in requested_fact_ids {
+            match grouped.get(fact_id) {
+                Some(sources) if !sources.is_empty() => {
+                    for source in *sources {
+                        if let Some(fact_ids) = source_fact_ids.get_mut(&source.id) {
+                            if !fact_ids.contains(fact_id) {
+                                fact_ids.push(*fact_id);
+                            }
+                            continue;
+                        }
+
+                        let (content, truncated) = self.render_source_content(source);
+                        source_fact_ids.insert(source.id, vec![*fact_id]);
+                        source_order.push(source.id);
+                        surfaced_sources.push(RetrievedSource {
+                            id: source.id,
+                            fact_id: *fact_id,
+                            timestamp: source.timestamp,
+                            content,
+                            truncated,
+                        });
+                    }
+                }
+                _ => {
+                    missing_fact_ids.push(*fact_id);
+                }
+            }
+        }
+
+        for source_id in source_order {
+            if let Some(source) = surfaced_sources
+                .iter()
+                .find(|source| source.id == source_id)
+            {
+                let fact_ids = source_fact_ids
+                    .get(&source_id)
+                    .expect("source fact ids should exist");
+                let linked = fact_ids
+                    .iter()
+                    .map(|fact_id| format!("[FACT {fact_id}]"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let _ = writeln!(output, "[SOURCE {}]", source.id);
+                let _ = writeln!(output, "Linked fact: {linked}");
+                let _ = writeln!(output, "{}", source.content);
+                let _ = writeln!(output, "[END SOURCE]");
+            }
+        }
+
+        for fact_id in missing_fact_ids {
+            let _ = writeln!(output, "[FACT {fact_id}]");
+            let _ = writeln!(output, "No linked sources found.");
+        }
+
+        (output.trim_end().to_string(), surfaced_sources)
+    }
+
+    fn render_source_content(&self, source: &Source) -> (String, bool) {
+        let base = source.rendered_input.as_deref().unwrap_or(&source.content);
+        match self.source_content_max_chars {
+            Some(limit) => {
+                let total_chars = base.chars().count();
+                if total_chars > limit {
+                    let mut content = base.chars().take(limit).collect::<String>();
+                    content.push_str("...");
+                    (content, true)
+                } else {
+                    (base.to_string(), false)
+                }
+            }
+            None => (base.to_string(), false),
+        }
+    }
+
+    fn estimate_text_tokens(text: &str) -> usize {
+        text.split_whitespace().count()
+    }
+
     fn parse_done_call(
         iteration: usize,
         stop_reason: Option<&str>,
@@ -462,6 +723,7 @@ impl DefaultReflectPipeline {
         args: DoneArgs,
         seen_fact_ids: &HashSet<FactId>,
         retrieved_context: Vec<RetrievedFact>,
+        retrieved_sources: Vec<RetrievedSource>,
         trace: Vec<ReflectTraceStep>,
         final_done: ReflectDoneTrace,
     ) -> Result<ReflectResult> {
@@ -479,6 +741,7 @@ impl DefaultReflectPipeline {
             new_opinions: vec![],
             confidence: 0.85,
             retrieved_context,
+            retrieved_sources,
             trace,
             final_done: Some(final_done),
         })
@@ -517,7 +780,7 @@ mod tests {
     use crate::storage::mock::MockMemoryStore;
     use crate::types::llm::CompletionResponse;
     use crate::types::*;
-    use chrono::Utc;
+    use chrono::{TimeZone, Utc};
 
     fn make_fact_with_embedding(
         bank: BankId,
@@ -836,6 +1099,296 @@ mod tests {
             .expect("observation should be in retrieved context");
         assert_eq!(observation_entry.evidence_ids, vec![raw_fact_id]);
         assert_eq!(observation_entry.support_turn_ids, vec![turn_id]);
+    }
+
+    #[tokio::test]
+    async fn reflect_can_lookup_sources_for_retrieved_facts() {
+        let h = TestHarness::new().await;
+        let emb = h.embeddings.embed(&["launch plan"]).await.unwrap();
+
+        let fact = make_fact_with_embedding(
+            h.bank_id,
+            "Avery shared the launch plan with the team",
+            NetworkType::World,
+            emb[0].clone(),
+        );
+        let fact_id = fact.id;
+        h.store.insert_facts(&[fact]).await.unwrap();
+
+        let source = Source {
+            id: SourceId::new(),
+            bank_id: h.bank_id,
+            content: "Avery shared the launch plan with the team during the July review meeting."
+                .into(),
+            context: Some("Timelines and launch planning came up in the earlier discussion.".into()),
+            speaker: Some("Avery".into()),
+            rendered_input: Some(
+                "Speaker: Avery\n\n## Preceding Context\n\nTimelines and launch planning came up in the earlier discussion.\n\n---\n\n## Content to Extract From\n\nAvery shared the launch plan with the team during the July review meeting.\n\nTimestamp: 2024-07-23T18:46:00+00:00".into(),
+            ),
+            timestamp: Utc.with_ymd_and_hms(2024, 7, 23, 18, 46, 0).unwrap(),
+            created_at: Utc.with_ymd_and_hms(2024, 7, 23, 18, 46, 1).unwrap(),
+        };
+        h.store.insert_source(&source).await.unwrap();
+        h.store
+            .link_facts_to_source(&[fact_id], source.id)
+            .await
+            .unwrap();
+
+        h.llm.push_response_full(CompletionResponse {
+            content: String::new(),
+            input_tokens: 10,
+            output_tokens: 20,
+            stop_reason: Some("tool_use".into()),
+            tool_calls: vec![crate::types::llm::ToolCall {
+                id: "call_1".into(),
+                name: "search_observations".into(),
+                arguments: serde_json::json!({"query": "launch plan", "reason": "overview"}),
+            }],
+        });
+        h.llm.push_response_full(CompletionResponse {
+            content: String::new(),
+            input_tokens: 10,
+            output_tokens: 20,
+            stop_reason: Some("tool_use".into()),
+            tool_calls: vec![crate::types::llm::ToolCall {
+                id: "call_2".into(),
+                name: "recall".into(),
+                arguments: serde_json::json!({"query": "Avery launch plan", "reason": "details"}),
+            }],
+        });
+        h.llm.push_response_full(CompletionResponse {
+            content: String::new(),
+            input_tokens: 10,
+            output_tokens: 20,
+            stop_reason: Some("tool_use".into()),
+            tool_calls: vec![crate::types::llm::ToolCall {
+                id: "call_3".into(),
+                name: "lookup_sources".into(),
+                arguments: serde_json::json!({
+                    "fact_id": fact_id.to_string(),
+                    "limit": 1,
+                    "reason": "Find when the memory was originally said"
+                }),
+            }],
+        });
+        h.llm.push_response_full(CompletionResponse {
+            content: String::new(),
+            input_tokens: 10,
+            output_tokens: 20,
+            stop_reason: Some("tool_use".into()),
+            tool_calls: vec![crate::types::llm::ToolCall {
+                id: "call_4".into(),
+                name: "done".into(),
+                arguments: serde_json::json!({
+                    "response": format!("Avery said it on July 23, 2024 [{}].", fact_id),
+                    "source_ids": [fact_id.to_string()]
+                }),
+            }],
+        });
+
+        let pipeline = h.build_pipeline();
+        let result = pipeline
+            .reflect(&ReflectQuery {
+                bank_id: h.bank_id,
+                question: "When did Avery say the launch plan was shared?".into(),
+                budget_tokens: 2000,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.trace.len(), 3);
+        assert_eq!(result.trace[2].tool_name, "lookup_sources");
+        assert_eq!(result.trace[2].requested_fact_ids, vec![fact_id]);
+        assert_eq!(result.trace[2].returned_fact_ids, vec![fact_id]);
+        assert_eq!(result.trace[2].returned_source_ids, vec![source.id]);
+        assert_eq!(result.trace[2].facts_returned, 1);
+        assert_eq!(result.retrieved_sources.len(), 1);
+        assert_eq!(result.retrieved_sources[0].id, source.id);
+        assert_eq!(result.retrieved_sources[0].fact_id, fact_id);
+        assert_eq!(result.retrieved_sources[0].timestamp, source.timestamp);
+        assert_eq!(
+            result.retrieved_sources[0].content,
+            source.rendered_input.clone().unwrap()
+        );
+        assert!(!result.retrieved_sources[0].truncated);
+        assert!(result.response.contains("July 23, 2024"));
+        assert_eq!(result.sources, vec![fact_id]);
+    }
+
+    #[tokio::test]
+    async fn reflect_lookup_sources_only_queries_one_fact() {
+        let h = TestHarness::new().await;
+        let emb = h
+            .embeddings
+            .embed(&["launch plan", "launch review"])
+            .await
+            .unwrap();
+
+        let fact_a = make_fact_with_embedding(
+            h.bank_id,
+            "Avery shared the launch plan with the team",
+            NetworkType::World,
+            emb[0].clone(),
+        );
+        let fact_b = make_fact_with_embedding(
+            h.bank_id,
+            "The launch review happened during the July meeting",
+            NetworkType::World,
+            emb[1].clone(),
+        );
+        let fact_a_id = fact_a.id;
+        let fact_b_id = fact_b.id;
+        h.store.insert_facts(&[fact_a, fact_b]).await.unwrap();
+
+        let source = Source {
+            id: SourceId::new(),
+            bank_id: h.bank_id,
+            content: "Avery shared the launch plan with the team during the July review meeting."
+                .into(),
+            context: Some("Timelines and launch planning came up in the earlier discussion.".into()),
+            speaker: Some("Avery".into()),
+            rendered_input: Some(
+                "Speaker: Avery\n\n## Preceding Context\n\nTimelines and launch planning came up in the earlier discussion.\n\n---\n\n## Content to Extract From\n\nAvery shared the launch plan with the team during the July review meeting.\n\nTimestamp: 2024-07-23T18:46:00+00:00".into(),
+            ),
+            timestamp: Utc.with_ymd_and_hms(2024, 7, 23, 18, 46, 0).unwrap(),
+            created_at: Utc.with_ymd_and_hms(2024, 7, 23, 18, 46, 1).unwrap(),
+        };
+        h.store.insert_source(&source).await.unwrap();
+        h.store
+            .link_facts_to_source(&[fact_a_id, fact_b_id], source.id)
+            .await
+            .unwrap();
+
+        h.llm.push_response_full(CompletionResponse {
+            content: String::new(),
+            input_tokens: 10,
+            output_tokens: 20,
+            stop_reason: Some("tool_use".into()),
+            tool_calls: vec![crate::types::llm::ToolCall {
+                id: "call_1".into(),
+                name: "search_observations".into(),
+                arguments: serde_json::json!({"query": "launch plan", "reason": "overview"}),
+            }],
+        });
+        h.llm.push_response_full(CompletionResponse {
+            content: String::new(),
+            input_tokens: 10,
+            output_tokens: 20,
+            stop_reason: Some("tool_use".into()),
+            tool_calls: vec![crate::types::llm::ToolCall {
+                id: "call_2".into(),
+                name: "recall".into(),
+                arguments: serde_json::json!({"query": "Avery July review", "reason": "details"}),
+            }],
+        });
+        h.llm.push_response_full(CompletionResponse {
+            content: String::new(),
+            input_tokens: 10,
+            output_tokens: 20,
+            stop_reason: Some("tool_use".into()),
+            tool_calls: vec![crate::types::llm::ToolCall {
+                id: "call_3".into(),
+                name: "lookup_sources".into(),
+                arguments: serde_json::json!({
+                    "fact_id": fact_a_id.to_string(),
+                    "limit": 3,
+                    "reason": "Verify the source context for the first fact"
+                }),
+            }],
+        });
+        h.llm.push_response_full(CompletionResponse {
+            content: String::new(),
+            input_tokens: 10,
+            output_tokens: 20,
+            stop_reason: Some("tool_use".into()),
+            tool_calls: vec![crate::types::llm::ToolCall {
+                id: "call_4".into(),
+                name: "done".into(),
+                arguments: serde_json::json!({
+                    "response": format!(
+                        "Both facts came from the July 23, 2024 review meeting [{}][{}].",
+                        fact_a_id, fact_b_id
+                    ),
+                    "source_ids": [fact_a_id.to_string(), fact_b_id.to_string()]
+                }),
+            }],
+        });
+
+        let pipeline = h.build_pipeline();
+        let result = pipeline
+            .reflect(&ReflectQuery {
+                bank_id: h.bank_id,
+                question: "Did both launch facts come from the same meeting?".into(),
+                budget_tokens: 2000,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.trace.len(), 3);
+        assert_eq!(result.trace[2].tool_name, "lookup_sources");
+        assert_eq!(result.trace[2].query, fact_a_id.to_string());
+        assert_eq!(result.trace[2].requested_fact_ids, vec![fact_a_id]);
+        assert_eq!(result.trace[2].returned_fact_ids, vec![fact_a_id]);
+        assert_eq!(result.trace[2].returned_source_ids, vec![source.id]);
+        assert_eq!(result.trace[2].facts_returned, 1);
+        assert_eq!(result.retrieved_sources.len(), 1);
+        assert_eq!(result.retrieved_sources[0].id, source.id);
+        assert_eq!(result.retrieved_sources[0].fact_id, fact_a_id);
+    }
+
+    #[test]
+    fn tool_defs_omit_lookup_sources_when_disabled() {
+        let enabled = tool_defs(true);
+        let disabled = tool_defs(false);
+
+        assert!(enabled.iter().any(|tool| tool.name == "lookup_sources"));
+        assert!(!disabled.iter().any(|tool| tool.name == "lookup_sources"));
+        assert!(disabled.iter().any(|tool| tool.name == "done"));
+    }
+
+    #[test]
+    fn reflect_forced_iterations_only_expose_the_expected_tool() {
+        let last_iteration = 7;
+
+        let (tools, choice) = tool_defs_for_iteration(true, 0, last_iteration);
+        assert_eq!(
+            tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["search_observations"]
+        );
+        assert_eq!(choice, ToolChoice::Specific("search_observations".into()));
+
+        let (tools, choice) = tool_defs_for_iteration(true, 1, last_iteration);
+        assert_eq!(
+            tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["recall"]
+        );
+        assert_eq!(choice, ToolChoice::Specific("recall".into()));
+
+        let (tools, choice) = tool_defs_for_iteration(true, 2, last_iteration);
+        assert_eq!(
+            tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["search_observations", "recall", "lookup_sources", "done"]
+        );
+        assert_eq!(choice, ToolChoice::Required);
+
+        let (tools, choice) = tool_defs_for_iteration(false, last_iteration, last_iteration);
+        assert_eq!(
+            tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["done"]
+        );
+        assert_eq!(choice, ToolChoice::Specific("done".into()));
     }
 
     #[tokio::test]

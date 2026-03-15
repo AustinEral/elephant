@@ -13,6 +13,11 @@ use crate::types::{CompletionRequest, ExtractedFact, ExtractionInput, Message};
 pub trait FactExtractor: Send + Sync {
     /// Extract facts from a single chunk of text.
     async fn extract(&self, input: &ExtractionInput) -> Result<Vec<ExtractedFact>>;
+
+    /// Render the extractor user message for provenance/debugging.
+    fn render_user_message(&self, input: &ExtractionInput) -> String {
+        render_extraction_user_message(input)
+    }
 }
 
 /// Fact extractor powered by an LLM.
@@ -33,6 +38,14 @@ impl LlmFactExtractor {
         Self { llm }
     }
 
+    /// Render the exact system prompt and user message sent to the extractor LLM.
+    pub fn render_prompt(input: &ExtractionInput) -> (String, String) {
+        (
+            Self::build_system_prompt(input),
+            render_extraction_user_message(input),
+        )
+    }
+
     fn build_system_prompt(input: &ExtractionInput) -> String {
         let mut prompt = EXTRACT_PROMPT_TEMPLATE.to_string();
 
@@ -43,34 +56,34 @@ impl LlmFactExtractor {
 
         prompt
     }
+}
 
-    fn build_user_message(input: &ExtractionInput) -> String {
-        let mut msg = String::new();
+/// Render the extractor user message from a structured extraction input.
+pub fn render_extraction_user_message(input: &ExtractionInput) -> String {
+    let mut msg = String::new();
 
-        if let Some(ref speaker) = input.speaker {
-            msg.push_str(&format!("Speaker: {speaker}\n\n"));
-        }
-
-        if let Some(ref ctx) = input.context {
-            msg.push_str("## Preceding Context\n\n");
-            msg.push_str(ctx);
-            msg.push_str("\n\n---\n\n");
-        }
-
-        msg.push_str("## Content to Extract From\n\n");
-        msg.push_str(&input.content);
-        msg.push_str("\n\nTimestamp: ");
-        msg.push_str(&input.timestamp.to_rfc3339());
-
-        msg
+    if let Some(ref speaker) = input.speaker {
+        msg.push_str(&format!("Speaker: {speaker}\n\n"));
     }
+
+    if let Some(ref ctx) = input.context {
+        msg.push_str("## Preceding Context\n\n");
+        msg.push_str(ctx);
+        msg.push_str("\n\n---\n\n");
+    }
+
+    msg.push_str("## Content to Extract From\n\n");
+    msg.push_str(&input.content);
+    msg.push_str("\n\nTimestamp: ");
+    msg.push_str(&input.timestamp.to_rfc3339());
+
+    msg
 }
 
 #[async_trait]
 impl FactExtractor for LlmFactExtractor {
     async fn extract(&self, input: &ExtractionInput) -> Result<Vec<ExtractedFact>> {
-        let system = Self::build_system_prompt(input);
-        let user_msg = Self::build_user_message(input);
+        let (system, user_msg) = Self::render_prompt(input);
 
         let request = CompletionRequest {
             model: String::new(),

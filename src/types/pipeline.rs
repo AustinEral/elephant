@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::entity::EntityType;
 use super::fact::{Fact, FactType, RetrievalSource, ScoredFact};
-use super::id::{BankId, EntityId, FactId, TurnId};
+use super::id::{BankId, EntityId, FactId, SourceId, TurnId};
 use super::network::NetworkType;
 use super::temporal::TemporalRange;
 
@@ -217,6 +217,22 @@ pub struct RetrievedFact {
     pub support_turn_ids: Vec<TurnId>,
 }
 
+/// A source surfaced to reflect through `lookup_sources`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RetrievedSource {
+    /// Source ID.
+    pub id: SourceId,
+    /// Fact ID this source was requested for.
+    pub fact_id: FactId,
+    /// Source timestamp.
+    pub timestamp: DateTime<Utc>,
+    /// Source content shown to the model.
+    pub content: String,
+    /// Whether the content was truncated before being shown.
+    #[serde(default)]
+    pub truncated: bool,
+}
+
 /// One reflect tool invocation recorded during the agent loop.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ReflectTraceStep {
@@ -229,9 +245,15 @@ pub struct ReflectTraceStep {
     /// Fact ids returned by the tool in ranked order.
     #[serde(default)]
     pub returned_fact_ids: Vec<FactId>,
+    /// Fact ids explicitly requested by the tool, when applicable.
+    #[serde(default)]
+    pub requested_fact_ids: Vec<FactId>,
     /// Newly added fact ids after deduplication.
     #[serde(default)]
     pub new_fact_ids: Vec<FactId>,
+    /// Source ids returned by the tool, when applicable.
+    #[serde(default)]
+    pub returned_source_ids: Vec<SourceId>,
     /// Number of facts returned before deduplication.
     pub facts_returned: usize,
     /// Total token estimate of the returned facts.
@@ -280,6 +302,9 @@ pub struct ReflectResult {
     /// All facts retrieved during the reflect agent loop, in ranked order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub retrieved_context: Vec<RetrievedFact>,
+    /// All sources surfaced through `lookup_sources`, in first-seen order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retrieved_sources: Vec<RetrievedSource>,
     /// Tool/query trace for the reflect agent loop.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trace: Vec<ReflectTraceStep>,

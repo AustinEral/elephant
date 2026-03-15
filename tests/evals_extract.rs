@@ -160,7 +160,8 @@ async fn extract_facts(
 
 fn contains_match(facts: &[String], needle: &str) -> bool {
     let needle = needle.to_lowercase();
-    facts.iter()
+    facts
+        .iter()
         .any(|fact| fact.to_lowercase().contains(&needle))
 }
 
@@ -191,7 +192,7 @@ fn extract_case_live(path: &Path) -> datatest_stable::Result<()> {
                     "{}: unsupported assertion kind {other}",
                     case.id
                 ))
-                .into())
+                .into());
             }
         };
 

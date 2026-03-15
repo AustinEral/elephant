@@ -223,7 +223,9 @@ If merged source runs differed only in provenance-style fields, the merged manif
       "tool_name": "recall",
       "query": "sunrise",
       "returned_fact_ids": ["01KK54YT6PV3KG9GRYNV65TV0K"],
+      "requested_fact_ids": [],
       "new_fact_ids": ["01KK54YT6PV3KG9GRYNV65TV0K"],
+      "returned_source_ids": [],
       "facts_returned": 1,
       "total_tokens": 34,
       "latency_ms": 55
@@ -241,6 +243,15 @@ If merged source runs differed only in provenance-style fields, the merged manif
       "retrieval_sources": ["semantic", "keyword"],
       "support_turn_ids": ["01KKA..."],
       "support_turn_refs": ["D1:3"]
+    }
+  ],
+  "retrieved_sources": [
+    {
+      "id": "01KK...",
+      "fact_id": "01KK54YT6PV3KG9GRYNV65TV0K",
+      "timestamp": "2023-05-21T19:48:00Z",
+      "content": "Date: 7:48 pm on 21 May, 2023\n\nJohn: ...",
+      "truncated": false
     }
   ]
 }
@@ -332,6 +343,7 @@ The debug sidecar carries the heavy provenance payload:
 
 - `reflect_trace`: tool/query history for the reflect loop
 - `retrieved_context`: retrieved facts with direct and transitive turn provenance
+- `retrieved_sources`: source records surfaced through `lookup_sources`, including the exact extraction input shown back to reflect
 
 ## Compatibility notes
 
