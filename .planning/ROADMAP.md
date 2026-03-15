@@ -34,7 +34,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 Plans:
 - [x] 01-01-PLAN.md -- Extract bench/common/ shared infrastructure, create LongMemEval types/loading/validation with unit tests
-- [ ] 01-02-PLAN.md -- Integration tests for real dataset file loading (S and M datasets)
+- [x] 01-02-PLAN.md -- Integration tests for real dataset file loading (S and M datasets)
 
 ### Phase 2: Ingestion Pipeline
 **Goal**: User can ingest a LongMemEval instance's full conversation history into an isolated bank with correct timestamps and consolidation
@@ -45,10 +45,10 @@ Plans:
   2. Sessions are ingested sequentially with `[Date: YYYY-MM-DD]` prefix from `haystack_dates`
   3. Consolidation runs in the configured mode (end, per-session, or off) after ingestion completes
   4. Postgres connection pool is explicitly sized to handle concurrent bank operations without exhaustion
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 02-01: TBD
+- [ ] 02-01-PLAN.md -- Types, formatters, date parsing, and ingest_instance orchestration function
 
 ### Phase 3: CLI and Artifact Infrastructure
 **Goal**: User can run the harness via CLI with subcommands, profiles, and get reproducible three-artifact output
@@ -105,7 +105,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Dataset Foundation | 2/2 | Complete    | 2026-03-15 |
-| 2. Ingestion Pipeline | 0/? | Not started | - |
+| 2. Ingestion Pipeline | 0/1 | Not started | - |
 | 3. CLI and Artifact Infrastructure | 0/? | Not started | - |
 | 4. Evaluation Path | 0/? | Not started | - |
 | 5. Concurrency, Resume, and View Tool | 0/? | Not started | - |
