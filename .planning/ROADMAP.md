@@ -60,11 +60,11 @@ Plans:
   3. `longmemeval-bench qa` scores against existing banks from an ingest artifact
   4. Profile selection (`smoke`, `full-s`, `full-m`) controls dataset, instance subset, and consolidation mode
   5. Output artifacts (summary JSON, question JSONL, debug JSONL) land in `bench/longmemeval/results/local/` by default
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 03-01: TBD
-- [ ] 03-02: TBD
+- [ ] 03-01-PLAN.md -- CLI types, parsing, config resolution, profile system with unit tests
+- [ ] 03-02-PLAN.md -- Artifact types, manifest, pipeline orchestration, main()
 
 ### Phase 4: Evaluation Path
 **Goal**: User can score all 500 questions including abstention, with per-category accuracy breakdown and configurable judge
@@ -106,6 +106,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 |-------|----------------|--------|-----------|
 | 1. Dataset Foundation | 2/2 | Complete    | 2026-03-15 |
 | 2. Ingestion Pipeline | 0/1 | Not started | - |
-| 3. CLI and Artifact Infrastructure | 0/? | Not started | - |
+| 3. CLI and Artifact Infrastructure | 0/2 | Not started | - |
 | 4. Evaluation Path | 0/? | Not started | - |
 | 5. Concurrency, Resume, and View Tool | 0/? | Not started | - |
