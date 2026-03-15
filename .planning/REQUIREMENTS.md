@@ -23,7 +23,7 @@ Requirements for initial release. Each maps to roadmap phases.
 - [x] **INGEST-02**: Session-level ingestion with date prefix (e.g., `[Date: 2023-01-15] content`)
 - [x] **INGEST-03**: Consolidation modes supported: end (default), per-session, off
 - [x] **INGEST-04**: Sessions ingested sequentially per instance with timestamps from `haystack_dates`
-- [ ] **INGEST-05**: Postgres connection pool explicitly sized for concurrent bank operations
+- [x] **INGEST-05**: Postgres connection pool explicitly sized for concurrent bank operations
 
 ### Evaluation
 
@@ -40,12 +40,12 @@ Requirements for initial release. Each maps to roadmap phases.
 - [x] **CLI-02**: `ingest` subcommand (ingest + consolidate only, no QA)
 - [x] **CLI-03**: `qa` subcommand (score against existing banks from ingest artifact)
 - [x] **CLI-04**: Profile system with `smoke` (small subset), `full-s` (all 500 on S dataset), `full-m` (all 500 on M dataset)
-- [ ] **CLI-05**: `--instance-jobs N` concurrency control for parallel instance processing
+- [x] **CLI-05**: `--instance-jobs N` concurrency control for parallel instance processing
 - [x] **CLI-06**: `--config` JSON overlay on top of profile for local tuning
 - [x] **CLI-07**: `--instance` flag to run specific question instances (repeatable)
 - [x] **CLI-08**: Three-artifact output: summary JSON, question JSONL sidecar, debug JSONL sidecar
 - [x] **CLI-09**: Manifest with full reproducibility contract (dataset fingerprint, prompt hashes, runtime config, git commit, CLI invocation)
-- [ ] **CLI-10**: Resume via `qa` subcommand reusing bank_ids from ingest artifact
+- [x] **CLI-10**: Resume via `qa` subcommand reusing bank_ids from ingest artifact
 - [x] **CLI-11**: Results default to `bench/longmemeval/results/local/`, promotable via `--out`
 
 ### View Tool
@@ -112,7 +112,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | INGEST-02 | Phase 2 | Complete |
 | INGEST-03 | Phase 2 | Complete |
 | INGEST-04 | Phase 2 | Complete |
-| INGEST-05 | Phase 5 | Pending |
+| INGEST-05 | Phase 5 | Complete |
 | EVAL-01 | Phase 4 | Complete |
 | EVAL-02 | Phase 4 | Complete |
 | EVAL-03 | Phase 4 | Complete |
@@ -123,12 +123,12 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CLI-02 | Phase 3 | Complete |
 | CLI-03 | Phase 3 | Complete |
 | CLI-04 | Phase 3 | Complete |
-| CLI-05 | Phase 5 | Pending |
+| CLI-05 | Phase 5 | Complete |
 | CLI-06 | Phase 3 | Complete |
 | CLI-07 | Phase 3 | Complete |
 | CLI-08 | Phase 3 | Complete |
 | CLI-09 | Phase 3 | Complete |
-| CLI-10 | Phase 5 | Pending |
+| CLI-10 | Phase 5 | Complete |
 | CLI-11 | Phase 3 | Complete |
 | VIEW-01 | Phase 5 | Complete |
 | VIEW-02 | Phase 5 | Complete |

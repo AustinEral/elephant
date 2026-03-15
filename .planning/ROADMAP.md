@@ -16,7 +16,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 2: Ingestion Pipeline** - Per-instance bank creation, session ingestion with timestamps, and consolidation (completed 2026-03-15)
 - [x] **Phase 3: CLI and Artifact Infrastructure** - Binary, subcommands, profiles, three-artifact output, manifest, and config overlay (completed 2026-03-15)
 - [x] **Phase 4: Evaluation Path** - Reflect with temporal context, dual judge prompts, per-category accuracy scoring (completed 2026-03-15)
-- [ ] **Phase 5: Concurrency, Resume, and View Tool** - Parallel execution, resume from ingest artifacts, and standalone view binary
+- [x] **Phase 5: Concurrency, Resume, and View Tool** - Parallel execution, resume from ingest artifacts, and standalone view binary (completed 2026-03-15)
 
 ## Phase Details
 
@@ -94,8 +94,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 05-01-PLAN.md -- Semaphore-gated concurrency, pool sizing, SharedState with incremental flush, resume under concurrency
-- [ ] 05-02-PLAN.md -- Standalone longmemeval-view binary with single-file and comparison modes
+- [x] 05-01-PLAN.md -- Semaphore-gated concurrency, pool sizing, SharedState with incremental flush, resume under concurrency
+- [x] 05-02-PLAN.md -- Standalone longmemeval-view binary with single-file and comparison modes
 
 ## Progress
 
@@ -108,4 +108,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | 2. Ingestion Pipeline | 1/1 | Complete    | 2026-03-15 |
 | 3. CLI and Artifact Infrastructure | 2/2 | Complete   | 2026-03-15 |
 | 4. Evaluation Path | 2/2 | Complete   | 2026-03-15 |
-| 5. Concurrency, Resume, and View Tool | 1/2 | In Progress|  |
+| 5. Concurrency, Resume, and View Tool | 2/2 | Complete   | 2026-03-15 |
