@@ -23,7 +23,7 @@ Requirements for initial release. Each maps to roadmap phases.
 - [x] **INGEST-02**: Session-level ingestion with date prefix (e.g., `[Date: 2023-01-15] content`)
 - [x] **INGEST-03**: Consolidation modes supported: end (default), per-session, off
 - [x] **INGEST-04**: Sessions ingested sequentially per instance with timestamps from `haystack_dates`
-- [x] **INGEST-05**: Postgres connection pool explicitly sized for concurrent bank operations
+- [ ] **INGEST-05**: Postgres connection pool explicitly sized for concurrent bank operations
 
 ### Evaluation
 
@@ -112,7 +112,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | INGEST-02 | Phase 2 | Complete |
 | INGEST-03 | Phase 2 | Complete |
 | INGEST-04 | Phase 2 | Complete |
-| INGEST-05 | Phase 2 | Complete |
+| INGEST-05 | Phase 5 | Pending |
 | EVAL-01 | Phase 4 | Pending |
 | EVAL-02 | Phase 4 | Pending |
 | EVAL-03 | Phase 4 | Pending |
