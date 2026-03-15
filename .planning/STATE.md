@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: completed
-stopped_at: Completed 05-01-PLAN.md (all plans complete)
-last_updated: "2026-03-15T22:52:02.653Z"
-last_activity: 2026-03-15 -- Completed plan 05-01 (concurrent instance processing)
+status: in-progress
+stopped_at: Completed 06-01-PLAN.md
+last_updated: "2026-03-15T23:22:52Z"
+last_activity: 2026-03-15 -- Completed plan 06-01 (wire temporal context & session limit)
 progress:
-  total_phases: 5
-  completed_phases: 5
-  total_plans: 9
-  completed_plans: 9
+  total_phases: 6
+  completed_phases: 6
+  total_plans: 10
+  completed_plans: 10
   percent: 100
 ---
 
@@ -21,23 +21,23 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-15)
 
 **Core value:** Produce publication-quality LongMemEval benchmark results backing Elephant's claims as a serious competitor to other agentic memory systems
-**Current focus:** Phase 5: Concurrency, Resume & View Tool
+**Current focus:** Phase 6: Wire Temporal Context & Session Limit
 
 ## Current Position
 
-Phase: 5 of 5 (Concurrency, Resume & View Tool) -- COMPLETE
-Plan: 2 of 2 in current phase -- COMPLETE
+Phase: 6 of 6 (Wire Temporal Context & Session Limit) -- COMPLETE
+Plan: 1 of 1 in current phase -- COMPLETE
 Status: Complete
-Last activity: 2026-03-15 -- Completed plan 05-01 (concurrent instance processing)
+Last activity: 2026-03-15 -- Completed plan 06-01 (wire temporal context & session limit)
 
 Progress: [##########] 100%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 9
-- Average duration: 3.4 min
-- Total execution time: 0.52 hours
+- Total plans completed: 10
+- Average duration: 3.6 min
+- Total execution time: 0.60 hours
 
 **By Phase:**
 
@@ -48,6 +48,7 @@ Progress: [##########] 100%
 | 03-cli-artifact-infrastructure | 2 | 7 min | 3.5 min |
 | 04-evaluation-path | 2 | 9 min | 4.5 min |
 | 05-concurrency-resume-and-view-tool | 2 | 7 min | 3.5 min |
+| 06-wire-temporal-context-session-limit | 1 | 5 min | 5 min |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -87,6 +88,8 @@ Recent decisions affecting current work:
 - Added Clone derive to LongMemEvalInstance for tokio::spawn ownership
 - Pool sizing formula: min(instance_jobs * 3, 50), default 10 when unset
 - Judge client already Arc<dyn LlmClient> from build_judge_client -- no conversion needed
+- Pass raw question_date string as temporal_context (preserves time-of-day precision)
+- Reflect user message prefixed with [Current date: ...] to distinguish from ingested [Date: ...] prefixes
 
 ### Pending Todos
 
@@ -98,6 +101,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-15T22:46:00Z
-Stopped at: Completed 05-01-PLAN.md (all plans complete)
-Resume file: .planning/phases/05-concurrency-resume-and-view-tool/05-CONTEXT.md
+Last session: 2026-03-15T23:22:52Z
+Stopped at: Completed 06-01-PLAN.md
+Resume file: .planning/phases/06-wire-temporal-context-session-limit/06-01-SUMMARY.md
