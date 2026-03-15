@@ -118,9 +118,9 @@ flowchart TB
 
 ## Benchmarks
 
-[LoCoMo](bench/locomo/README.md) — long-context conversational memory benchmark (ACL 2024).
+### [LoCoMo](bench/locomo/README.md)
 
-Full 10-conversation benchmark (series1), 1,540 questions across categories 1–4:
+Long-context conversational memory (ACL 2024). Full 10-conversation benchmark (series1), 1,540 questions across categories 1–4:
 
 | Category | Accuracy | n |
 |:--|:-:|--:|
@@ -132,7 +132,14 @@ Full 10-conversation benchmark (series1), 1,540 questions across categories 1–
 
 <sub>Sonnet 4.6 · bge-small-en-v1.5 local embeddings · <a href="bench/locomo/protocol.md">protocol</a> · <a href="bench/locomo/result-card.md">result card</a></sub>
 
+### [LongMemEval](bench/longmemeval/README.md)
+
+Long-term memory evaluation (Wu et al., 2024). 500 questions testing five core abilities — information extraction, multi-session reasoning, knowledge updates, temporal reasoning, and abstention — each with its own conversation history.
+
+<sub>Results pending first full run · <a href="bench/longmemeval/README.md">setup & usage</a></sub>
+
 ## References
 
 - [Hindsight](https://arxiv.org/abs/2512.12818) — the memory architecture Elephant implements
-- [LoCoMo](https://arxiv.org/abs/2402.17753) — the benchmark dataset
+- [LoCoMo](https://arxiv.org/abs/2402.17753) — the LoCoMo benchmark dataset
+- [LongMemEval](https://arxiv.org/abs/2410.10813) — the LongMemEval benchmark dataset
