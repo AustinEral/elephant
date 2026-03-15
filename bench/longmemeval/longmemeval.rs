@@ -27,6 +27,62 @@ use elephant::runtime::{
     RuntimeTuning as ElephantRuntimeTuning, build_runtime_from_env,
 };
 
+// --- Judge prompts ---
+
+const JUDGE_FACTUAL: &str = include_str!("prompts/judge_factual.txt");
+const JUDGE_TEMPORAL: &str = include_str!("prompts/judge_temporal.txt");
+const JUDGE_KNOWLEDGE_UPDATE: &str = include_str!("prompts/judge_knowledge_update.txt");
+const JUDGE_PREFERENCE: &str = include_str!("prompts/judge_preference.txt");
+const JUDGE_ABSTENTION: &str = include_str!("prompts/judge_abstention.txt");
+
+const REFLECT_BUDGET_TOKENS: usize = 4096;
+
+/// Select the appropriate judge prompt template for a given question instance.
+fn select_judge_prompt(instance: &dataset::LongMemEvalInstance) -> &'static str {
+    if instance.is_abstention() {
+        return JUDGE_ABSTENTION;
+    }
+    match instance.question_type {
+        dataset::QuestionType::SingleSessionUser
+        | dataset::QuestionType::SingleSessionAssistant
+        | dataset::QuestionType::MultiSession => JUDGE_FACTUAL,
+        dataset::QuestionType::TemporalReasoning => JUDGE_TEMPORAL,
+        dataset::QuestionType::KnowledgeUpdate => JUDGE_KNOWLEDGE_UPDATE,
+        dataset::QuestionType::SingleSessionPreference => JUDGE_PREFERENCE,
+    }
+}
+
+/// Render a judge prompt template by replacing placeholders.
+fn render_judge_prompt(template: &str, question: &str, answer: &str, response: &str) -> String {
+    template
+        .replace("{question}", question)
+        .replace("{answer}", answer)
+        .replace("{response}", response)
+}
+
+/// Compute a deterministic hash over the full set of judge prompt templates.
+fn judge_prompt_hash() -> String {
+    let mut combined = String::new();
+    // Sorted alphabetically by prompt name
+    combined.push_str(JUDGE_ABSTENTION);
+    combined.push_str(JUDGE_FACTUAL);
+    combined.push_str(JUDGE_KNOWLEDGE_UPDATE);
+    combined.push_str(JUDGE_PREFERENCE);
+    combined.push_str(JUDGE_TEMPORAL);
+    common::fnv1a64_hex(&combined)
+}
+
+/// Resolve the judge model from config + env, defaulting to gpt-4o per EVAL-01.
+fn resolve_judge_model(config: &RunConfig) -> Option<String> {
+    if config.judge_model.is_some() {
+        return config.judge_model.clone();
+    }
+    if env::var("JUDGE_MODEL").is_ok() {
+        return None; // let common::judge use the env var
+    }
+    Some("gpt-4o".into())
+}
+
 // --- CLI ---
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -922,7 +978,7 @@ fn run_config_from_artifact(artifact: &BenchmarkOutput) -> Result<RunConfig, Str
 
 fn benchmark_prompt_hashes(runtime: &ElephantRuntime) -> BenchmarkPromptHashes {
     BenchmarkPromptHashes {
-        judge: String::new(),
+        judge: judge_prompt_hash(),
         elephant: runtime.info.prompt_hashes.clone(),
     }
 }
@@ -2325,5 +2381,131 @@ mod tests {
         assert!((cats["multi-session"].accuracy - 0.5).abs() < f64::EPSILON);
         assert_eq!(cats["temporal-reasoning"].count, 1);
         assert!((cats["temporal-reasoning"].accuracy - 1.0).abs() < f64::EPSILON);
+    }
+
+    // --- Judge prompt selection ---
+
+    fn make_instance(
+        question_id: &str,
+        question_type: dataset::QuestionType,
+    ) -> dataset::LongMemEvalInstance {
+        dataset::LongMemEvalInstance {
+            question_id: question_id.into(),
+            question_type,
+            question: "What?".into(),
+            answer: serde_json::json!("yes"),
+            question_date: "2023/05/25 (Thu) 14:30".into(),
+            haystack_dates: vec!["2023/05/20 (Mon) 10:15".into()],
+            haystack_session_ids: vec!["s1".into()],
+            haystack_sessions: vec![vec![dataset::Turn {
+                role: "user".into(),
+                content: "Hi".into(),
+            }]],
+            answer_session_ids: vec!["s1".into()],
+        }
+    }
+
+    #[test]
+    fn select_judge_prompt_factual() {
+        let inst = make_instance("ssu_1", dataset::QuestionType::SingleSessionUser);
+        assert_eq!(select_judge_prompt(&inst), JUDGE_FACTUAL);
+    }
+
+    #[test]
+    fn select_judge_prompt_ssa() {
+        let inst = make_instance("ssa_1", dataset::QuestionType::SingleSessionAssistant);
+        assert_eq!(select_judge_prompt(&inst), JUDGE_FACTUAL);
+    }
+
+    #[test]
+    fn select_judge_prompt_multi_session() {
+        let inst = make_instance("ms_1", dataset::QuestionType::MultiSession);
+        assert_eq!(select_judge_prompt(&inst), JUDGE_FACTUAL);
+    }
+
+    #[test]
+    fn select_judge_prompt_temporal() {
+        let inst = make_instance("tr_1", dataset::QuestionType::TemporalReasoning);
+        assert_eq!(select_judge_prompt(&inst), JUDGE_TEMPORAL);
+    }
+
+    #[test]
+    fn select_judge_prompt_knowledge_update() {
+        let inst = make_instance("ku_1", dataset::QuestionType::KnowledgeUpdate);
+        assert_eq!(select_judge_prompt(&inst), JUDGE_KNOWLEDGE_UPDATE);
+    }
+
+    #[test]
+    fn select_judge_prompt_preference() {
+        let inst = make_instance("ssp_1", dataset::QuestionType::SingleSessionPreference);
+        assert_eq!(select_judge_prompt(&inst), JUDGE_PREFERENCE);
+    }
+
+    #[test]
+    fn select_judge_prompt_abstention() {
+        let inst = make_instance("ssu_1_abs", dataset::QuestionType::SingleSessionUser);
+        assert_eq!(select_judge_prompt(&inst), JUDGE_ABSTENTION);
+    }
+
+    #[test]
+    fn render_judge_prompt_replaces_placeholders() {
+        let rendered = render_judge_prompt(
+            JUDGE_FACTUAL,
+            "What color?",
+            "blue",
+            "The color is blue.",
+        );
+        assert!(rendered.contains("What color?"));
+        assert!(rendered.contains("blue"));
+        assert!(rendered.contains("The color is blue."));
+        assert!(!rendered.contains("{question}"));
+        assert!(!rendered.contains("{answer}"));
+        assert!(!rendered.contains("{response}"));
+    }
+
+    #[test]
+    fn judge_prompt_hash_deterministic() {
+        let h1 = judge_prompt_hash();
+        let h2 = judge_prompt_hash();
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 16);
+    }
+
+    #[test]
+    fn resolve_judge_model_with_config_override() {
+        let config = RunConfig {
+            judge_model: Some("claude-3".into()),
+            ..Default::default()
+        };
+        assert_eq!(resolve_judge_model(&config), Some("claude-3".into()));
+    }
+
+    #[test]
+    fn resolve_judge_model_default_gpt4o() {
+        // Ensure JUDGE_MODEL is not set for this test
+        let _guard = env_guard("JUDGE_MODEL");
+        let config = RunConfig::default();
+        assert_eq!(resolve_judge_model(&config), Some("gpt-4o".into()));
+    }
+
+    /// RAII guard that removes an env var for the test scope and restores it after.
+    struct EnvGuard {
+        key: &'static str,
+        original: Option<String>,
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(val) => unsafe { env::set_var(self.key, val) },
+                None => unsafe { env::remove_var(self.key) },
+            }
+        }
+    }
+
+    fn env_guard(key: &'static str) -> EnvGuard {
+        let original = env::var(key).ok();
+        unsafe { env::remove_var(key) };
+        EnvGuard { key, original }
     }
 }

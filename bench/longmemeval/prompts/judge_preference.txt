@@ -1,0 +1,11 @@
+I will give you a question, a rubric for desired personalized response, and a response from a model. Please answer yes if the response satisfies the desired response. Otherwise, answer no. The model does not need to reflect all the points in the rubric. The response is correct as long as it recalls and utilizes the user's personal information correctly.
+
+Question: {question}
+
+Rubric: {answer}
+
+Model Response: {response}
+
+First, provide a short (one sentence) explanation of your reasoning, then finish with your verdict.
+
+Return response in JSON format with keys: "reasoning" and "label" (CORRECT or WRONG).

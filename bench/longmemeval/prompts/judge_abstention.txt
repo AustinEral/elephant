@@ -1,0 +1,11 @@
+I will give you an unanswerable question, an explanation, and a response from a model. Please answer yes if the model correctly identifies the question as unanswerable. The model could say that the information is incomplete, or some other information is given but the asked information is not.
+
+Question: {question}
+
+Explanation: {answer}
+
+Model Response: {response}
+
+First, provide a short (one sentence) explanation of your reasoning, then finish with your verdict.
+
+Return response in JSON format with keys: "reasoning" and "label" (CORRECT or WRONG).

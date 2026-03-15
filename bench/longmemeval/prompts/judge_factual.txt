@@ -1,0 +1,11 @@
+I will give you a question, a correct answer, and a response from a model. Please answer yes if the response contains the correct answer. Otherwise, answer no. If the response is equivalent to the correct answer or contains all the intermediate steps to get the correct answer, you should also answer yes. If the response only contains a subset of the information required by the answer, answer no.
+
+Question: {question}
+
+Correct Answer: {answer}
+
+Model Response: {response}
+
+First, provide a short (one sentence) explanation of your reasoning, then finish with your verdict.
+
+Return response in JSON format with keys: "reasoning" and "label" (CORRECT or WRONG).
