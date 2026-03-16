@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, warn};
+use tracing::warn;
 
 use elephant::error::Result;
 use elephant::metrics::{LlmStage, StageUsage};
@@ -255,13 +255,9 @@ pub async fn ingest_instance(
         .session_limit
         .map(|n| n.min(total_sessions))
         .unwrap_or(total_sessions);
-    info!(
-        question_id = %instance.question_id,
-        sessions = total_sessions,
-        sessions_selected = ingest_count,
-        format = ?config.format,
-        consolidation = ?config.consolidation,
-        "starting ingestion"
+    eprintln!(
+        "  {} bank {} | ingesting {ingest_count}/{total_sessions} sessions...",
+        instance.question_id, bank.id,
     );
 
     // 2. Ingest sessions sequentially
@@ -274,12 +270,7 @@ pub async fn ingest_instance(
         .take(ingest_count)
         .enumerate()
     {
-        debug!(
-            question_id = %instance.question_id,
-            session = idx + 1,
-            total = total_sessions,
-            "ingesting session"
-        );
+        let session_start = Instant::now();
 
         let content = match config.format {
             IngestFormat::Text => format_session_text(session, date_str),
@@ -309,14 +300,20 @@ pub async fn ingest_instance(
                 stats.links_created += resp.links_created;
                 stats.opinions_reinforced += resp.opinions_reinforced;
                 stats.opinions_weakened += resp.opinions_weakened;
+                eprintln!(
+                    "  {} ingest [{}/{}] {} facts | {:.1}s | total {:.1}s",
+                    instance.question_id,
+                    idx + 1,
+                    ingest_count,
+                    resp.facts_stored,
+                    session_start.elapsed().as_secs_f64(),
+                    ingest_start.elapsed().as_secs_f64(),
+                );
             }
             Err(e) => {
-                warn!(
-                    question_id = %instance.question_id,
-                    session = idx + 1,
-                    total = total_sessions,
-                    error = %e,
-                    "session ingestion failed"
+                eprintln!(
+                    "  {} ingest [{}/{}] FAILED: {e}",
+                    instance.question_id, idx + 1, ingest_count,
                 );
                 stats.session_failures += 1;
             }
@@ -346,17 +343,27 @@ pub async fn ingest_instance(
     // 3. End-of-ingestion consolidation
     let mut consolidation_time_s = 0.0;
     if config.consolidation.enabled() && !config.consolidation.per_session() {
+        eprintln!(
+            "  {} consolidating {} facts...",
+            instance.question_id, stats.facts_stored,
+        );
         let t0 = Instant::now();
         match runtime.consolidator.consolidate(bank.id).await {
             Ok(cr) => {
                 stats.observations_created += cr.observations_created;
                 stats.observations_updated += cr.observations_updated;
+                eprintln!(
+                    "  {} consolidation done | {} created, {} updated | {:.1}s",
+                    instance.question_id,
+                    cr.observations_created,
+                    cr.observations_updated,
+                    t0.elapsed().as_secs_f64(),
+                );
             }
             Err(e) => {
-                warn!(
-                    question_id = %instance.question_id,
-                    error = %e,
-                    "end-of-ingestion consolidation failed"
+                eprintln!(
+                    "  {} consolidation FAILED: {e}",
+                    instance.question_id,
                 );
             }
         }
@@ -365,14 +372,9 @@ pub async fn ingest_instance(
 
     let total_time_s = total_start.elapsed().as_secs_f64();
 
-    info!(
-        question_id = %instance.question_id,
-        bank_id = %bank.id,
-        sessions = stats.sessions_ingested,
-        facts = stats.facts_stored,
-        failures = stats.session_failures,
-        duration_s = format!("{total_time_s:.1}"),
-        "ingestion complete"
+    eprintln!(
+        "  {} ingestion complete | {} sessions, {} facts | {:.1}s",
+        instance.question_id, stats.sessions_ingested, stats.facts_stored, total_time_s,
     );
 
     Ok(IngestResult {

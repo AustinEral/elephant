@@ -1439,6 +1439,7 @@ async fn main() {
             }
 
             let qa_start = Instant::now();
+            eprintln!("  {} reflecting...", instance.question_id);
 
             // 1. Call reflect with scoped metrics
             let reflect_result = with_scoped_collector(
@@ -1499,6 +1500,7 @@ async fn main() {
                 };
 
             // 3. Judge (skip if reflect failed / empty hypothesis)
+            eprintln!("  {} judging...", instance.question_id);
             let (judge_correct, judge_reasoning, status, error) = if hypothesis.is_empty() {
                 (false, error.clone().unwrap_or_default(), status, error)
             } else {
