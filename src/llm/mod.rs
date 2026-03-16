@@ -44,7 +44,10 @@ pub async fn complete_structured<T: DeserializeOwned>(
             // Slow path: extract JSON from surrounding text
             let json_str = extract_json(&response.content).map_err(|e| {
                 tracing::warn!(
-                    response_content = &response.content[..response.content.len().min(500)],
+                    content_len = response.content.len(),
+                    output_tokens = response.output_tokens,
+                    stop_reason = ?response.stop_reason,
+                    content_preview = &response.content[..response.content.len().min(200)],
                     "failed to extract JSON from LLM response"
                 );
                 e

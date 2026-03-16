@@ -1607,6 +1607,11 @@ fn merge_artifacts(
 async fn main() {
     let _ = dotenvy::dotenv();
 
+    // Initialize tracing so library warn!/info! calls are visible
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+
     let invocation = parse_args();
     let command = invocation.command;
     let artifact_path = invocation.artifact_path.clone();
