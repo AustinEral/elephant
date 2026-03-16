@@ -2159,6 +2159,7 @@ mod tests {
         assert_eq!(BenchCommand::Run.as_str(), "run");
         assert_eq!(BenchCommand::Ingest.as_str(), "ingest");
         assert_eq!(BenchCommand::Qa.as_str(), "qa");
+        assert_eq!(BenchCommand::Merge.as_str(), "merge");
     }
 
     // --- RunProfile ---
@@ -3426,5 +3427,307 @@ mod tests {
         let results: Vec<QuestionResult> = vec![];
         let acc = compute_accuracy(&results);
         assert!((acc - 0.0).abs() < f64::EPSILON);
+    }
+
+    // --- Merge CLI parsing ---
+
+    #[test]
+    fn parse_merge_subcommand() {
+        let raw = vec![s("bin"), s("merge"), s("a.json"), s("b.json")];
+        let parsed = parse_cli_overrides(&raw).unwrap();
+        assert_eq!(parsed.command, BenchCommand::Merge);
+        assert_eq!(parsed.merge_artifacts.len(), 2);
+        assert_eq!(parsed.merge_artifacts[0], PathBuf::from("a.json"));
+        assert_eq!(parsed.merge_artifacts[1], PathBuf::from("b.json"));
+    }
+
+    #[test]
+    fn parse_merge_with_tag() {
+        let raw = vec![
+            s("bin"),
+            s("merge"),
+            s("a.json"),
+            s("b.json"),
+            s("--tag"),
+            s("combined"),
+        ];
+        let parsed = parse_cli_overrides(&raw).unwrap();
+        assert_eq!(parsed.command, BenchCommand::Merge);
+        assert_eq!(parsed.overrides.tag, Some("combined".into()));
+        assert_eq!(parsed.merge_artifacts.len(), 2);
+    }
+
+    #[test]
+    fn parse_merge_with_out() {
+        let raw = vec![
+            s("bin"),
+            s("merge"),
+            s("a.json"),
+            s("b.json"),
+            s("--out"),
+            s("out.json"),
+        ];
+        let parsed = parse_cli_overrides(&raw).unwrap();
+        assert_eq!(parsed.command, BenchCommand::Merge);
+        assert_eq!(
+            parsed.overrides.output,
+            Some(PathBuf::from("out.json"))
+        );
+    }
+
+    #[test]
+    fn parse_merge_requires_two_inputs() {
+        let raw = vec![s("bin"), s("merge"), s("a.json")];
+        let err = parse_cli_overrides(&raw).unwrap_err();
+        assert!(err.contains("at least two"));
+    }
+
+    #[test]
+    fn parse_merge_rejects_profile() {
+        let raw = vec![
+            s("bin"),
+            s("merge"),
+            s("a.json"),
+            s("b.json"),
+            s("--profile"),
+            s("smoke"),
+        ];
+        let parsed = parse_cli_overrides(&raw).unwrap();
+        let err = validate_merge_overrides(&parsed.overrides).unwrap_err();
+        assert!(err.contains("--profile"));
+    }
+
+    #[test]
+    fn parse_merge_rejects_instance_jobs() {
+        let raw = vec![
+            s("bin"),
+            s("merge"),
+            s("a.json"),
+            s("b.json"),
+            s("--instance-jobs"),
+            s("4"),
+        ];
+        let parsed = parse_cli_overrides(&raw).unwrap();
+        let err = validate_merge_overrides(&parsed.overrides).unwrap_err();
+        assert!(err.contains("--instance-jobs"));
+    }
+
+    #[test]
+    fn default_output_merge_with_tag() {
+        let config = RunConfig {
+            tag: Some("foo".into()),
+            ..RunConfig::default()
+        };
+        assert_eq!(
+            default_output_path(BenchCommand::Merge, &config, None),
+            PathBuf::from("bench/longmemeval/results/local/foo.json")
+        );
+    }
+
+    #[test]
+    fn default_output_merge_no_tag() {
+        let config = RunConfig::default();
+        assert_eq!(
+            default_output_path(BenchCommand::Merge, &config, None),
+            PathBuf::from("bench/longmemeval/results/local/merged.json")
+        );
+    }
+
+    // --- Merge logic tests ---
+
+    fn make_test_artifact(
+        dir: &Path,
+        tag: &str,
+        questions: &[QuestionResult],
+        debug_records: &[QuestionDebugRecord],
+    ) -> PathBuf {
+        let artifact_path = dir.join(format!("{tag}.json"));
+        let questions_rel = format!("{tag}.questions.jsonl");
+        let debug_rel = format!("{tag}.debug.jsonl");
+        let questions_path = dir.join(&questions_rel);
+        let debug_path = dir.join(&debug_rel);
+
+        let mut banks = HashMap::new();
+        for q in questions {
+            banks.insert(q.question_id.clone(), q.bank_id.clone());
+        }
+
+        let output = BenchmarkOutput {
+            benchmark: "longmemeval".into(),
+            timestamp: "2026-03-15T00:00:00Z".into(),
+            commit: Some("abc123".into()),
+            tag: Some(tag.into()),
+            retain_model: "model-r".into(),
+            reflect_model: "model-f".into(),
+            embedding_model: "model-e".into(),
+            reranker_model: "model-k".into(),
+            judge_model: "gpt-4o".into(),
+            consolidation_strategy: "end".into(),
+            total_questions: questions.len(),
+            accuracy: compute_accuracy(questions),
+            per_category: compute_per_category(questions),
+            banks,
+            manifest: BenchmarkManifest {
+                protocol_version: "2026-03-15-longmemeval-v1".into(),
+                profile: "smoke".into(),
+                mode: "run".into(),
+                config_path: None,
+                dataset_path: "data/test.json".into(),
+                dataset_fingerprint: "test-fingerprint".into(),
+                command: "longmemeval-bench run".into(),
+                selected_instances: vec![],
+                ingest_format: "text".into(),
+                instance_concurrency: 1,
+                consolidation_strategy: "end".into(),
+                session_limit: None,
+                instance_limit: None,
+                dirty_worktree: Some(false),
+                prompt_hashes: BenchmarkPromptHashes::default(),
+                runtime_config: BenchmarkRuntimeConfig::default(),
+                source_artifact: None,
+                source_artifacts: Vec::new(),
+            },
+            artifacts: BenchmarkArtifacts {
+                questions_path: questions_rel,
+                debug_path: debug_rel,
+            },
+            stage_metrics: BTreeMap::new(),
+            total_time_s: 10.0,
+        };
+
+        let json = serde_json::to_string_pretty(&output).unwrap();
+        fs::write(&artifact_path, json).unwrap();
+        write_jsonl_records(&questions_path, questions).unwrap();
+        write_jsonl_records(&debug_path, debug_records).unwrap();
+
+        artifact_path
+    }
+
+    fn make_test_qr(question_id: &str, correct: bool) -> QuestionResult {
+        QuestionResult {
+            question_id: question_id.into(),
+            category: "multi-session".into(),
+            judge_correct: correct,
+            judge_reasoning: String::new(),
+            hypothesis: "answer".into(),
+            ground_truth: "truth".into(),
+            bank_id: format!("bank-{question_id}"),
+            elapsed_s: 1.0,
+            status: "ok".into(),
+            error: None,
+            qa_stage_metrics: BTreeMap::new(),
+        }
+    }
+
+    fn make_test_debug(question_id: &str) -> QuestionDebugRecord {
+        QuestionDebugRecord {
+            question_id: question_id.into(),
+            question: format!("question for {question_id}"),
+            reflect_trace: vec![],
+            final_done: None,
+            retrieved_context: vec![],
+        }
+    }
+
+    #[test]
+    fn merge_combines_disjoint_subset_artifacts() {
+        let dir = env::temp_dir().join(format!(
+            "longmemeval-merge-disjoint-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+
+        let q1 = make_test_qr("q1", true);
+        let q2 = make_test_qr("q2", false);
+        let q3 = make_test_qr("q3", true);
+        let d1 = make_test_debug("q1");
+        let d2 = make_test_debug("q2");
+        let d3 = make_test_debug("q3");
+
+        let art_a = make_test_artifact(&dir, "a", &[q1], &[d1]);
+        let art_b = make_test_artifact(&dir, "b", &[q2, q3], &[d2, d3]);
+
+        let out = dir.join("merged.json");
+        merge_artifacts(&[art_a, art_b], &out, Some("merged".into())).unwrap();
+
+        let merged = load_benchmark_output(&out).unwrap();
+        assert_eq!(merged.total_questions, 3);
+        assert_eq!(merged.manifest.mode, "merge");
+        assert_eq!(merged.manifest.source_artifacts.len(), 2);
+        assert_eq!(merged.tag, Some("merged".into()));
+
+        // Accuracy: 2 correct out of 3
+        assert!((merged.accuracy - 2.0 / 3.0).abs() < 0.01);
+
+        // Check sidecars
+        let merged_q: Vec<QuestionResult> =
+            read_jsonl_records(&sidecar_path(&out, "questions")).unwrap();
+        assert_eq!(merged_q.len(), 3);
+        // Sorted by question_id
+        assert_eq!(merged_q[0].question_id, "q1");
+        assert_eq!(merged_q[1].question_id, "q2");
+        assert_eq!(merged_q[2].question_id, "q3");
+
+        let merged_d: Vec<QuestionDebugRecord> =
+            read_jsonl_records(&sidecar_path(&out, "debug")).unwrap();
+        assert_eq!(merged_d.len(), 3);
+
+        // Banks merged
+        assert_eq!(merged.banks.len(), 3);
+        assert_eq!(merged.banks.get("q1").unwrap(), "bank-q1");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn merge_rejects_overlapping_questions() {
+        let dir = env::temp_dir().join(format!(
+            "longmemeval-merge-overlap-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+
+        let q1 = make_test_qr("q1", true);
+        let q1b = make_test_qr("q1", false);
+        let d1 = make_test_debug("q1");
+        let d1b = make_test_debug("q1");
+
+        let art_a = make_test_artifact(&dir, "a", &[q1], &[d1]);
+        let art_b = make_test_artifact(&dir, "b", &[q1b], &[d1b]);
+
+        let out = dir.join("merged.json");
+        let err = merge_artifacts(&[art_a, art_b], &out, None).unwrap_err();
+        assert!(
+            err.contains("duplicate question") || err.contains("duplicate bank"),
+            "expected overlap error, got: {err}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn merge_output_must_differ_from_inputs_without_force() {
+        let dir = env::temp_dir().join(format!(
+            "longmemeval-merge-safety-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let input_a = dir.join("a.json");
+        fs::write(&input_a, "{}").unwrap();
+
+        let err = ensure_output_paths_are_safe(
+            BenchCommand::Merge,
+            &input_a,
+            None,
+            &[input_a.clone(), dir.join("b.json")],
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("merge input"),
+            "expected merge input error, got: {err}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
     }
 }
