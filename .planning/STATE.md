@@ -5,7 +5,7 @@ milestone_name: LongMemEval Benchmark Integration
 status: milestone_complete
 stopped_at: v1.0 milestone shipped
 last_updated: "2026-03-15T23:50:00Z"
-last_activity: 2026-03-15 -- v1.0 milestone completed and archived
+last_activity: 2026-03-16 -- Completed quick task 260315-tn1: add merge subcommand to longmemeval-bench
 progress:
   total_phases: 6
   completed_phases: 6
@@ -62,7 +62,13 @@ None.
 
 None.
 
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260315-tn1 | add merge subcommand to longmemeval-bench | 2026-03-16 | 6ef2a30 | [260315-tn1-add-merge-subcommand-to-longmemeval-benc](./quick/260315-tn1-add-merge-subcommand-to-longmemeval-benc/) |
+
 ## Session Continuity
 
-Last session: 2026-03-15
-Stopped at: v1.0 milestone archived
+Last session: 2026-03-16
+Stopped at: Completed quick task 260315-tn1: add merge subcommand to longmemeval-bench
