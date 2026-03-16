@@ -21,7 +21,7 @@ impl IntoResponse for Error {
             Error::InvalidDisposition(_) | Error::InvalidId(_) | Error::Serialization(_) => {
                 StatusCode::BAD_REQUEST
             }
-            Error::Llm(_) | Error::LlmNoJson | Error::Embedding(_) | Error::Reranker(_) | Error::ServerError(_) => {
+            Error::Llm(_) | Error::LlmNoJson | Error::LlmRefusal | Error::Embedding(_) | Error::Reranker(_) | Error::ServerError(_) => {
                 StatusCode::BAD_GATEWAY
             }
             Error::RateLimit(_) => StatusCode::TOO_MANY_REQUESTS,

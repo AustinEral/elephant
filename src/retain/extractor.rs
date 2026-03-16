@@ -85,15 +85,6 @@ impl FactExtractor for LlmFactExtractor {
     async fn extract(&self, input: &ExtractionInput) -> Result<Vec<ExtractedFact>> {
         let (system, user_msg) = Self::render_prompt(input);
 
-        let request = CompletionRequest {
-            model: String::new(),
-            system: Some(system.clone()),
-            messages: vec![Message::text("user", user_msg.clone())],
-            temperature: Some(EXTRACT_TEMPERATURE),
-            max_tokens: Some(EXTRACT_MAX_TOKENS),
-            ..Default::default()
-        };
-
         let mut last_err = None;
         for attempt in 0..3 {
             let req = CompletionRequest {
@@ -106,9 +97,9 @@ impl FactExtractor for LlmFactExtractor {
             };
             match crate::llm::complete_structured::<Vec<ExtractedFact>>(&*self.llm, req).await {
                 Ok(facts) => return Ok(facts),
-                Err(crate::error::Error::LlmNoJson) => {
-                    tracing::warn!(attempt = attempt + 1, "extraction returned non-JSON, retrying");
-                    last_err = Some(crate::error::Error::LlmNoJson);
+                Err(e @ (crate::error::Error::LlmNoJson | crate::error::Error::LlmRefusal)) => {
+                    tracing::warn!(attempt = attempt + 1, error = %e, "extraction failed, retrying");
+                    last_err = Some(e);
                 }
                 Err(e) => return Err(e),
             }

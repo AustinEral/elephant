@@ -31,6 +31,10 @@ pub enum Error {
     #[error("llm error: no JSON found in response")]
     LlmNoJson,
 
+    /// The LLM refused to respond (safety filter).
+    #[error("llm error: model refused to respond")]
+    LlmRefusal,
+
     /// The LLM provider returned a rate-limit response (HTTP 429).
     #[error("rate limited: {0}")]
     RateLimit(String),

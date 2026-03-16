@@ -39,7 +39,7 @@ pub async fn complete_structured<T: DeserializeOwned>(
     let response = client.complete(request).await?;
     // Handle refusals — model declined to respond
     if response.stop_reason.as_deref() == Some("refusal") {
-        return Err(Error::Llm("model refused to respond".into()));
+        return Err(Error::LlmRefusal);
     }
     // Handle empty responses
     if response.content.is_empty() {
