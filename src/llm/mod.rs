@@ -42,7 +42,13 @@ pub async fn complete_structured<T: DeserializeOwned>(
         Ok(v) => v,
         Err(_) => {
             // Slow path: extract JSON from surrounding text
-            let json_str = extract_json(&response.content)?;
+            let json_str = extract_json(&response.content).map_err(|e| {
+                tracing::warn!(
+                    response_content = &response.content[..response.content.len().min(500)],
+                    "failed to extract JSON from LLM response"
+                );
+                e
+            })?;
             serde_json::from_str(&json_str)
                 .map_err(|e| Error::Llm(format!("JSON parse error: {e}")))?
         }

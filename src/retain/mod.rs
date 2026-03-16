@@ -302,7 +302,7 @@ impl DefaultRetainPipeline {
                     id: FactId::new(),
                     bank_id: input.bank_id,
                     content: ef.content.clone(),
-                    fact_type: ef.fact_type,
+                    fact_type: ef.fact_type.normalize(),
                     network: ef.network,
                     entity_ids,
                     temporal_range: ef.temporal_range.clone(),

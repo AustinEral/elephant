@@ -42,6 +42,11 @@ pub struct Fact {
 }
 
 /// Source classification for a fact.
+///
+/// LLMs sometimes put `"opinion"` or `"observation"` here (those belong in
+/// the `network` field, not `fact_type`). We accept them gracefully rather
+/// than failing the entire extraction batch. Use [`FactType::normalize()`]
+/// to map them to the canonical two variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FactType {
@@ -49,6 +54,20 @@ pub enum FactType {
     World,
     /// User experiences and interactions.
     Experience,
+    /// LLM emitted "opinion" — normalize to Experience.
+    Opinion,
+    /// LLM emitted "observation" — normalize to Experience.
+    Observation,
+}
+
+impl FactType {
+    /// Map LLM-emitted variants to canonical storage types.
+    pub fn normalize(self) -> Self {
+        match self {
+            Self::Opinion | Self::Observation => Self::Experience,
+            other => other,
+        }
+    }
 }
 
 /// A fact with its retrieval score and provenance.
