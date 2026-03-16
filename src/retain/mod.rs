@@ -112,85 +112,20 @@ impl DefaultRetainPipeline {
         Ok(kept)
     }
 
-    /// Run opinion reinforcement: check new facts against existing opinions.
+    /// Opinion reinforcement — disabled pending redesign (see #12).
+    ///
+    /// The previous implementation checked every new fact against every existing
+    /// opinion via cosine similarity + LLM classification, consuming ~40% of
+    /// ingest runtime while producing no measurable accuracy benefit (all
+    /// confidences saturated to 1.0). Ablation on conv-26 and conv-30 confirmed
+    /// no accuracy loss from disabling it.
     async fn reinforce_opinions(
         &self,
-        new_facts: &[Fact],
-        bank_id: crate::types::BankId,
-        store: &dyn MemoryStore,
+        _new_facts: &[Fact],
+        _bank_id: crate::types::BankId,
+        _store: &dyn MemoryStore,
     ) -> Result<(usize, usize)> {
-        let opinions = store
-            .get_facts_by_bank(
-                bank_id,
-                FactFilter {
-                    network: Some(vec![NetworkType::Opinion]),
-                    ..Default::default()
-                },
-            )
-            .await?;
-
-        if opinions.is_empty() || new_facts.is_empty() {
-            return Ok((0, 0));
-        }
-
-        let mut reinforced = 0usize;
-        let mut weakened = 0usize;
-
-        // Embed new facts for comparison
-        let new_texts: Vec<&str> = new_facts.iter().map(|f| f.content.as_str()).collect();
-        let new_embeddings = self.embeddings.embed(&new_texts).await?;
-
-        for mut opinion in opinions {
-            let Some(ref opinion_emb) = opinion.embedding else {
-                continue;
-            };
-
-            for (i, new_emb) in new_embeddings.iter().enumerate() {
-                let sim = cosine_similarity(opinion_emb, new_emb);
-                if sim < 0.7 {
-                    continue;
-                }
-
-                // High similarity — ask LLM if this supports or contradicts
-                let prompt = OPINION_REINFORCEMENT_PROMPT_TEMPLATE
-                    .replace("{opinion}", &opinion.content)
-                    .replace("{new_fact}", &new_facts[i].content);
-
-                let request = CompletionRequest {
-                    model: String::new(),
-                    system: Some(OPINION_REINFORCEMENT_SYSTEM_PROMPT.into()),
-                    messages: vec![Message::text("user", prompt)],
-                    temperature: Some(OPINION_REINFORCEMENT_TEMPERATURE),
-                    max_tokens: Some(OPINION_REINFORCEMENT_MAX_TOKENS),
-                    ..Default::default()
-                };
-
-                let response = self.llm.complete(request).await?;
-                let answer = response.content.trim().to_lowercase();
-
-                if answer.starts_with("support") {
-                    // Reinforce: increase confidence
-                    let current = opinion.confidence.unwrap_or(0.5);
-                    opinion.confidence = Some((current + 0.1).min(1.0));
-                    opinion.evidence_ids.push(new_facts[i].id);
-                    opinion.updated_at = Utc::now();
-                    store.update_fact(&opinion).await?;
-                    reinforced += 1;
-                    break; // One reinforcement per opinion per retain
-                } else if answer.starts_with("contradict") {
-                    // Weaken: decrease confidence
-                    let current = opinion.confidence.unwrap_or(0.5);
-                    opinion.confidence = Some((current - 0.1).max(0.0));
-                    opinion.evidence_ids.push(new_facts[i].id);
-                    opinion.updated_at = Utc::now();
-                    store.update_fact(&opinion).await?;
-                    weakened += 1;
-                    break;
-                }
-            }
-        }
-
-        Ok((reinforced, weakened))
+        Ok((0, 0))
     }
 
     async fn retain_inner(&self, input: &RetainInput) -> Result<RetainOutput> {
