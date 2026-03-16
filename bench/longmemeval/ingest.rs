@@ -4,13 +4,16 @@ use std::time::Instant;
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 use tracing::warn;
 
+use elephant::consolidation::{ConsolidationProgress, observation};
 use elephant::error::Result;
 use elephant::metrics::{LlmStage, StageUsage};
 use elephant::runtime::ElephantRuntime;
 use elephant::types::id::BankId;
-use elephant::types::{Disposition, MemoryBank, RetainInput};
+use elephant::types::network::NetworkType;
+use elephant::types::{Disposition, FactFilter, MemoryBank, RetainInput};
 
 use super::dataset::{LongMemEvalInstance, Turn};
 
@@ -343,13 +346,59 @@ pub async fn ingest_instance(
     // 3. End-of-ingestion consolidation
     let mut consolidation_time_s = 0.0;
     if config.consolidation.enabled() && !config.consolidation.per_session() {
+        let total_facts = runtime
+            .store
+            .get_facts_by_bank(
+                bank.id,
+                FactFilter {
+                    network: Some(vec![NetworkType::World, NetworkType::Experience]),
+                    unconsolidated_only: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .map(|f| f.len())
+            .unwrap_or(0);
+        let total_batches = if total_facts == 0 {
+            0
+        } else {
+            total_facts.div_ceil(observation::batch_size())
+        };
         eprintln!(
-            "  {} consolidating {} facts...",
-            instance.question_id, stats.facts_stored,
+            "  {} consolidating {} facts in {} batches...",
+            instance.question_id, total_facts, total_batches,
         );
         let t0 = Instant::now();
-        match runtime.consolidator.consolidate(bank.id).await {
-            Ok(cr) => {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let consolidator = runtime.consolidator.clone();
+        let consolidate_bank_id = bank.id;
+        let task = tokio::spawn(async move {
+            consolidator
+                .consolidate_with_progress(consolidate_bank_id, Some(tx))
+                .await
+        });
+
+        let qid = &instance.question_id;
+        while let Some(p) = rx.recv().await {
+            if p.batch_index == 1
+                || p.batch_index == p.total_batches
+                || p.batch_index % 10 == 0
+            {
+                eprintln!(
+                    "  {} consolidate [{}/{}] | {} facts | {} created | {} updated | {:.1}s",
+                    qid,
+                    p.batch_index,
+                    p.total_batches,
+                    p.batch_facts,
+                    p.observations_created,
+                    p.observations_updated,
+                    t0.elapsed().as_secs_f64(),
+                );
+            }
+        }
+
+        match task.await {
+            Ok(Ok(cr)) => {
                 stats.observations_created += cr.observations_created;
                 stats.observations_updated += cr.observations_updated;
                 eprintln!(
@@ -360,11 +409,11 @@ pub async fn ingest_instance(
                     t0.elapsed().as_secs_f64(),
                 );
             }
+            Ok(Err(e)) => {
+                eprintln!("  {} consolidation FAILED: {e}", instance.question_id);
+            }
             Err(e) => {
-                eprintln!(
-                    "  {} consolidation FAILED: {e}",
-                    instance.question_id,
-                );
+                eprintln!("  {} consolidation task FAILED: {e}", instance.question_id);
             }
         }
         consolidation_time_s = t0.elapsed().as_secs_f64();
