@@ -223,6 +223,7 @@ struct RunConfig {
     instances: Vec<String>,
     session_limit: Option<usize>,
     instance_limit: Option<usize>,
+    instance_offset: usize,
     ingest_format: IngestFormat,
     consolidation: ConsolidationMode,
     instance_jobs: usize,
@@ -241,6 +242,7 @@ impl Default for RunConfig {
             instances: Vec::new(),
             session_limit: None,
             instance_limit: None,
+            instance_offset: 0,
             ingest_format: IngestFormat::Text,
             consolidation: ConsolidationMode::End,
             instance_jobs: 1,
@@ -263,6 +265,7 @@ struct CliOverrides {
     instances: Vec<String>,
     session_limit: Option<usize>,
     instance_limit: Option<usize>,
+    instance_offset: Option<usize>,
     ingest_format: Option<IngestFormat>,
     consolidation: Option<ConsolidationMode>,
     instance_jobs: Option<usize>,
@@ -289,6 +292,9 @@ impl CliOverrides {
         }
         if let Some(limit) = self.instance_limit {
             config.instance_limit = Some(limit);
+        }
+        if let Some(offset) = self.instance_offset {
+            config.instance_offset = offset;
         }
         if let Some(format) = self.ingest_format {
             config.ingest_format = format;
@@ -435,6 +441,10 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
             "--instance-limit" => {
                 i += 1;
                 overrides.instance_limit = Some(parse_usize_arg(raw.get(i), "--instance-limit")?);
+            }
+            "--instance-offset" => {
+                i += 1;
+                overrides.instance_offset = Some(parse_usize_arg(raw.get(i), "--instance-offset")?);
             }
             "--ingest-format" => {
                 i += 1;
@@ -607,6 +617,9 @@ fn validate_qa_overrides(overrides: &CliOverrides) -> Result<(), String> {
     if overrides.instance_limit.is_some() {
         unsupported.push("--instance-limit");
     }
+    if overrides.instance_offset.is_some() {
+        unsupported.push("--instance-offset");
+    }
     if overrides.ingest_format.is_some() {
         unsupported.push("--ingest-format");
     }
@@ -643,6 +656,9 @@ fn validate_merge_overrides(overrides: &CliOverrides) -> Result<(), String> {
     }
     if overrides.instance_limit.is_some() {
         unsupported.push("--instance-limit");
+    }
+    if overrides.instance_offset.is_some() {
+        unsupported.push("--instance-offset");
     }
     if overrides.ingest_format.is_some() {
         unsupported.push("--ingest-format");
@@ -759,6 +775,9 @@ fn print_help() {
     );
     eprintln!(
         "  --instance-limit <N>            Limit number of instances (`run`/`ingest` only)"
+    );
+    eprintln!(
+        "  --instance-offset <N>           Skip first N instances (`run`/`ingest` only)"
     );
 }
 
@@ -1067,6 +1086,7 @@ fn run_config_from_artifact(artifact: &BenchmarkOutput) -> Result<RunConfig, Str
         instances: artifact.manifest.selected_instances.clone(),
         session_limit: artifact.manifest.session_limit,
         instance_limit: artifact.manifest.instance_limit,
+        instance_offset: 0,
         ingest_format,
         consolidation,
         instance_jobs: artifact.manifest.instance_concurrency.max(1),
@@ -1671,7 +1691,10 @@ async fn main() {
         }
     }
 
-    // Apply instance_limit
+    // Apply instance_offset then instance_limit
+    if config.instance_offset > 0 {
+        instances = instances.into_iter().skip(config.instance_offset).collect();
+    }
     if let Some(limit) = config.instance_limit {
         instances.truncate(limit);
     }
@@ -1723,6 +1746,9 @@ async fn main() {
     }
     if let Some(limit) = config.instance_limit {
         eprintln!("  instance_limit: {limit}");
+    }
+    if config.instance_offset > 0 {
+        eprintln!("  instance_offset: {}", config.instance_offset);
     }
     if !config.instances.is_empty() {
         eprintln!("  instances:      {:?}", config.instances);
