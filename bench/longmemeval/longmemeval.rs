@@ -1350,19 +1350,64 @@ async fn main() {
                     consolidation,
                     session_limit,
                 };
+                // Create bank and record ID in artifact immediately, before
+                // ingest+consolidation. This makes runs resumable via `qa` even
+                // if killed mid-consolidation.
+                let bank = elephant::types::MemoryBank {
+                    id: elephant::types::id::BankId::new(),
+                    name: format!("longmemeval-{}", instance.question_id),
+                    mission: "Long-term conversational memory benchmark".into(),
+                    directives: vec![],
+                    disposition: elephant::types::Disposition::default(),
+                    embedding_model: runtime.embeddings.model_name().to_string(),
+                    embedding_dimensions: runtime.embeddings.dimensions() as u16,
+                };
+                if let Err(e) = runtime.store.create_bank(&bank).await {
+                    let err_msg = format!("failed to create bank: {e}");
+                    eprintln!("ERROR {}: {err_msg}", instance.question_id);
+                    let qr = QuestionResult {
+                        question_id: instance.question_id.clone(),
+                        category: instance.reporting_category().to_string(),
+                        judge_correct: false,
+                        judge_reasoning: String::new(),
+                        hypothesis: String::new(),
+                        ground_truth: instance.answer_string(),
+                        bank_id: String::new(),
+                        elapsed_s: instance_start.elapsed().as_secs_f64(),
+                        status: "bank_error".into(),
+                        error: Some(err_msg.clone()),
+                        qa_stage_metrics: BTreeMap::new(),
+                    };
+                    let dr = QuestionDebugRecord {
+                        question_id: instance.question_id.clone(),
+                        question: instance.question.clone(),
+                        reflect_trace: vec![],
+                        final_done: None,
+                        retrieved_context: vec![],
+                    };
+                    shared.lock().await.push_and_flush(qr, dr);
+                    let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                    eprintln!(
+                        "[{done}/{total_instances}] {} err bank {:.1}s",
+                        instance.question_id,
+                        instance_start.elapsed().as_secs_f64(),
+                    );
+                    return Err(err_msg);
+                }
+                let bid = bank.id.to_string();
+                shared
+                    .lock()
+                    .await
+                    .record_bank(instance.question_id.clone(), bid.clone());
+
                 let result = with_scoped_collector(
                     metrics.clone(),
-                    ingest::ingest_instance(&instance, &runtime, &ingest_config),
+                    ingest::ingest_instance(&instance, &runtime, &ingest_config, Some(bank.id)),
                 )
                 .await;
                 match result {
                     Ok(r) => {
-                        let bid = r.bank_id.to_string();
-                        shared
-                            .lock()
-                            .await
-                            .record_bank(instance.question_id.clone(), bid.clone());
-                        bid
+                        r.bank_id.to_string()
                     }
                     Err(e) => {
                         let err_msg = format!("{e}");

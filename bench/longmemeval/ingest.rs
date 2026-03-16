@@ -237,21 +237,27 @@ pub async fn ingest_instance(
     instance: &LongMemEvalInstance,
     runtime: &ElephantRuntime,
     config: &IngestConfig,
+    existing_bank_id: Option<BankId>,
 ) -> Result<IngestResult> {
     let total_start = Instant::now();
     let mut stats = IngestStats::default();
 
-    // 1. Create bank
-    let bank = MemoryBank {
-        id: BankId::new(),
-        name: format!("longmemeval-{}", instance.question_id),
-        mission: "Long-term conversational memory benchmark".into(),
-        directives: vec![],
-        disposition: Disposition::default(),
-        embedding_model: runtime.embeddings.model_name().to_string(),
-        embedding_dimensions: runtime.embeddings.dimensions() as u16,
+    // 1. Create or reuse bank
+    let bank_id = if let Some(id) = existing_bank_id {
+        id
+    } else {
+        let bank = MemoryBank {
+            id: BankId::new(),
+            name: format!("longmemeval-{}", instance.question_id),
+            mission: "Long-term conversational memory benchmark".into(),
+            directives: vec![],
+            disposition: Disposition::default(),
+            embedding_model: runtime.embeddings.model_name().to_string(),
+            embedding_dimensions: runtime.embeddings.dimensions() as u16,
+        };
+        runtime.store.create_bank(&bank).await?;
+        bank.id
     };
-    runtime.store.create_bank(&bank).await?;
 
     let total_sessions = instance.haystack_sessions.len();
     let ingest_count = config
@@ -260,7 +266,7 @@ pub async fn ingest_instance(
         .unwrap_or(total_sessions);
     eprintln!(
         "  {} bank {} | ingesting {ingest_count}/{total_sessions} sessions...",
-        instance.question_id, bank.id,
+        instance.question_id, bank_id,
     );
 
     // 2. Ingest sessions sequentially
@@ -286,7 +292,7 @@ pub async fn ingest_instance(
         match runtime
             .retain
             .retain(&RetainInput {
-                bank_id: bank.id,
+                bank_id,
                 content,
                 timestamp,
                 turn_id: None,
@@ -324,7 +330,7 @@ pub async fn ingest_instance(
 
         // Per-session consolidation
         if config.consolidation.per_session() {
-            match runtime.consolidator.consolidate(bank.id).await {
+            match runtime.consolidator.consolidate(bank_id).await {
                 Ok(cr) => {
                     stats.observations_created += cr.observations_created;
                     stats.observations_updated += cr.observations_updated;
@@ -349,7 +355,7 @@ pub async fn ingest_instance(
         let total_facts = runtime
             .store
             .get_facts_by_bank(
-                bank.id,
+                bank_id,
                 FactFilter {
                     network: Some(vec![NetworkType::World, NetworkType::Experience]),
                     unconsolidated_only: true,
@@ -371,7 +377,7 @@ pub async fn ingest_instance(
         let t0 = Instant::now();
         let (tx, mut rx) = mpsc::unbounded_channel();
         let consolidator = runtime.consolidator.clone();
-        let consolidate_bank_id = bank.id;
+        let consolidate_bank_id = bank_id;
         let task = tokio::spawn(async move {
             consolidator
                 .consolidate_with_progress(consolidate_bank_id, Some(tx))
@@ -428,7 +434,7 @@ pub async fn ingest_instance(
 
     Ok(IngestResult {
         question_id: instance.question_id.clone(),
-        bank_id: bank.id,
+        bank_id,
         stage_metrics: BTreeMap::new(),
         stats,
         timing: IngestTiming {
