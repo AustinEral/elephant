@@ -94,22 +94,26 @@ impl FactExtractor for LlmFactExtractor {
             ..Default::default()
         };
 
-        match crate::llm::complete_structured::<Vec<ExtractedFact>>(&*self.llm, request).await {
-            Ok(facts) => Ok(facts),
-            Err(crate::error::Error::LlmNoJson) => {
-                tracing::warn!("extraction returned non-JSON, retrying once");
-                let retry = CompletionRequest {
-                    model: String::new(),
-                    system: Some(system),
-                    messages: vec![Message::text("user", user_msg)],
-                    temperature: Some(EXTRACT_TEMPERATURE),
-                    max_tokens: Some(EXTRACT_MAX_TOKENS),
-                    ..Default::default()
-                };
-                crate::llm::complete_structured::<Vec<ExtractedFact>>(&*self.llm, retry).await
+        let mut last_err = None;
+        for attempt in 0..3 {
+            let req = CompletionRequest {
+                model: String::new(),
+                system: Some(system.clone()),
+                messages: vec![Message::text("user", user_msg.clone())],
+                temperature: Some(EXTRACT_TEMPERATURE),
+                max_tokens: Some(EXTRACT_MAX_TOKENS),
+                ..Default::default()
+            };
+            match crate::llm::complete_structured::<Vec<ExtractedFact>>(&*self.llm, req).await {
+                Ok(facts) => return Ok(facts),
+                Err(crate::error::Error::LlmNoJson) => {
+                    tracing::warn!(attempt = attempt + 1, "extraction returned non-JSON, retrying");
+                    last_err = Some(crate::error::Error::LlmNoJson);
+                }
+                Err(e) => return Err(e),
             }
-            Err(e) => Err(e),
         }
+        Err(last_err.unwrap())
     }
 }
 
