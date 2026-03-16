@@ -41,6 +41,10 @@ pub async fn complete_structured<T: DeserializeOwned>(
     if response.stop_reason.as_deref() == Some("refusal") {
         return Err(Error::Llm("model refused to respond".into()));
     }
+    // Handle empty responses
+    if response.content.is_empty() {
+        return Err(Error::Llm("model returned empty response".into()));
+    }
     // Fast path: parse via Value (tolerates duplicate keys)
     let value: serde_json::Value = match serde_json::from_str(&response.content) {
         Ok(v) => v,
@@ -99,7 +103,7 @@ pub fn extract_json(text: &str) -> Result<String> {
         (Some(o), None) => o,
         (None, Some(a)) => a,
         (None, None) => {
-            return Err(Error::Llm("no JSON found in response".into()));
+            return Err(Error::LlmNoJson);
         }
     };
 
