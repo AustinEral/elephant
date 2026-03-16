@@ -94,7 +94,14 @@ impl FactExtractor for LlmFactExtractor {
             ..Default::default()
         };
 
-        crate::llm::complete_structured::<Vec<ExtractedFact>>(&*self.llm, request).await
+        match crate::llm::complete_structured::<Vec<ExtractedFact>>(&*self.llm, request).await {
+            Ok(facts) => Ok(facts),
+            Err(crate::error::Error::Llm(msg)) if msg.contains("refused") => {
+                tracing::warn!("extraction refused by model — treating as empty");
+                Ok(vec![])
+            }
+            Err(e) => Err(e),
+        }
     }
 }
 

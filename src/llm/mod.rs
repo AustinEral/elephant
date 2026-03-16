@@ -37,6 +37,10 @@ pub async fn complete_structured<T: DeserializeOwned>(
     request: CompletionRequest,
 ) -> Result<T> {
     let response = client.complete(request).await?;
+    // Handle refusals — model declined to respond
+    if response.stop_reason.as_deref() == Some("refusal") {
+        return Err(Error::Llm("model refused to respond".into()));
+    }
     // Fast path: parse via Value (tolerates duplicate keys)
     let value: serde_json::Value = match serde_json::from_str(&response.content) {
         Ok(v) => v,
