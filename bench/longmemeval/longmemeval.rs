@@ -21,7 +21,7 @@ mod common;
 mod dataset;
 mod ingest;
 
-use common::io::{append_jsonl, sidecar_path};
+use common::io::{append_jsonl, atomic_write_json, sidecar_path};
 use dataset::load_dataset;
 use ingest::{ConsolidationMode, IngestConfig, IngestFormat};
 
@@ -229,6 +229,7 @@ struct RunConfig {
     instance_jobs: usize,
     judge_model: Option<String>,
     allow_overwrite: bool,
+    resume: bool,
 }
 
 impl Default for RunConfig {
@@ -248,6 +249,7 @@ impl Default for RunConfig {
             instance_jobs: 1,
             judge_model: None,
             allow_overwrite: false,
+            resume: false,
         }
     }
 }
@@ -271,6 +273,7 @@ struct CliOverrides {
     instance_jobs: Option<usize>,
     judge_model: Option<String>,
     allow_overwrite: bool,
+    resume: bool,
 }
 
 impl CliOverrides {
@@ -310,6 +313,9 @@ impl CliOverrides {
         }
         if self.allow_overwrite {
             config.allow_overwrite = true;
+        }
+        if self.resume {
+            config.resume = true;
         }
         if let Some(path) = self.config_path {
             config.config_path = Some(path);
@@ -477,6 +483,9 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
             "--force" => {
                 overrides.allow_overwrite = true;
             }
+            "--resume" => {
+                overrides.resume = true;
+            }
             value if matches!(command, BenchCommand::Merge) && !value.starts_with('-') => {
                 merge_artifacts.push(PathBuf::from(value));
             }
@@ -557,6 +566,10 @@ fn load_json_config(path: &Path) -> Result<FileRunConfig, String> {
 }
 
 fn resolve_fresh_config(overrides: CliOverrides) -> Result<RunConfig, String> {
+    if overrides.resume && overrides.allow_overwrite {
+        return Err("--resume and --force are mutually exclusive".into());
+    }
+
     let profile = overrides.profile.unwrap_or_default();
     let mut config = RunConfig {
         profile,
@@ -626,6 +639,9 @@ fn validate_qa_overrides(overrides: &CliOverrides) -> Result<(), String> {
     if overrides.consolidation.is_some() {
         unsupported.push("--consolidation");
     }
+    if overrides.resume {
+        unsupported.push("--resume");
+    }
 
     if unsupported.is_empty() {
         Ok(())
@@ -671,6 +687,9 @@ fn validate_merge_overrides(overrides: &CliOverrides) -> Result<(), String> {
     }
     if overrides.judge_model.is_some() {
         unsupported.push("--judge-model");
+    }
+    if overrides.resume {
+        unsupported.push("--resume");
     }
 
     if unsupported.is_empty() {
@@ -768,6 +787,9 @@ fn print_help() {
     eprintln!("  --instance-jobs <N>             Parallel instances");
     eprintln!("  --judge-model <MODEL>           Override judge model");
     eprintln!("  --force                         Allow overwriting existing output files");
+    eprintln!(
+        "  --resume                        Resume from existing artifact (mutually exclusive with --force)"
+    );
     eprintln!();
     eprintln!("Debug slice options:");
     eprintln!(
@@ -782,6 +804,15 @@ fn print_help() {
 }
 
 // --- Artifact types ---
+
+/// Per-instance completion status for crash-resilient resume.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct InstanceStatus {
+    bank_id: String,
+    ingest_complete: bool,
+    consolidation_complete: bool,
+    qa_complete: bool,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct BenchmarkOutput {
@@ -810,6 +841,8 @@ struct BenchmarkOutput {
     manifest: BenchmarkManifest,
     #[serde(default)]
     artifacts: BenchmarkArtifacts,
+    #[serde(default)]
+    instance_status: HashMap<String, InstanceStatus>,
     #[serde(default)]
     stage_metrics: BTreeMap<LlmStage, StageUsage>,
     #[serde(default)]
@@ -1096,6 +1129,7 @@ fn run_config_from_artifact(artifact: &BenchmarkOutput) -> Result<RunConfig, Str
             Some(artifact.judge_model.clone())
         },
         allow_overwrite: false,
+        resume: false,
     })
 }
 
@@ -1147,6 +1181,7 @@ fn compute_accuracy(results: &[QuestionResult]) -> f64 {
 struct SharedState {
     results: Vec<QuestionResult>,
     banks: HashMap<String, String>,
+    instance_status: HashMap<String, InstanceStatus>,
     output_path: PathBuf,
     questions_path: PathBuf,
     debug_path: PathBuf,
@@ -1173,13 +1208,21 @@ impl SharedState {
         self.flush();
     }
 
-    fn record_bank(&mut self, question_id: String, bank_id: String) {
-        self.banks.insert(question_id, bank_id);
+    fn update_instance_status(&mut self, question_id: &str, status: InstanceStatus) {
+        self.banks
+            .insert(question_id.to_string(), status.bank_id.clone());
+        self.instance_status
+            .insert(question_id.to_string(), status);
         self.flush();
     }
 
     fn flush(&self) {
-        let output = BenchmarkOutput {
+        let output = self.build_output();
+        atomic_write_json(&self.output_path, &output);
+    }
+
+    fn build_output(&self) -> BenchmarkOutput {
+        BenchmarkOutput {
             benchmark: "longmemeval".into(),
             timestamp: self.run_timestamp.clone(),
             commit: self.commit.clone(),
@@ -1194,6 +1237,7 @@ impl SharedState {
             accuracy: compute_accuracy(&self.results),
             per_category: compute_per_category(&self.results),
             banks: self.banks.clone(),
+            instance_status: self.instance_status.clone(),
             manifest: self.manifest.clone(),
             artifacts: BenchmarkArtifacts {
                 questions_path: self.questions_path.display().to_string(),
@@ -1201,9 +1245,7 @@ impl SharedState {
             },
             stage_metrics: self.metrics.snapshot(),
             total_time_s: self.bench_start.elapsed().as_secs_f64(),
-        };
-        let json = serde_json::to_string_pretty(&output).expect("serialize output");
-        fs::write(&self.output_path, json).expect("write summary");
+        }
     }
 }
 
@@ -1564,6 +1606,16 @@ fn merge_artifacts(
     let accuracy = compute_accuracy(&merged_results);
     let per_category = compute_per_category(&merged_results);
 
+    // Merge instance_status from all bundles
+    let mut merged_instance_status: HashMap<String, InstanceStatus> = HashMap::new();
+    for bundle in &bundles {
+        for (qid, status) in &bundle.output.instance_status {
+            merged_instance_status
+                .entry(qid.clone())
+                .or_insert_with(|| status.clone());
+        }
+    }
+
     let output = BenchmarkOutput {
         benchmark: base.output.benchmark.clone(),
         timestamp: Utc::now().to_rfc3339(),
@@ -1579,6 +1631,7 @@ fn merge_artifacts(
         accuracy,
         per_category,
         banks,
+        instance_status: merged_instance_status,
         manifest,
         artifacts: BenchmarkArtifacts {
             questions_path: questions_path.display().to_string(),
@@ -1623,13 +1676,24 @@ async fn main() {
     let config = invocation.config;
     let output_path = default_output_path(command, &config, artifact_path.as_deref());
 
-    // Safety check
+    // Resume validation
+    if config.resume {
+        if !output_path.exists() {
+            eprintln!(
+                "--resume requires existing artifact at {}",
+                output_path.display()
+            );
+            std::process::exit(1);
+        }
+    }
+
+    // Safety check (--resume implies overwrite is OK for the summary)
     if let Err(err) = ensure_output_paths_are_safe(
         command,
         &output_path,
         artifact_path.as_deref(),
         &merge_inputs,
-        config.allow_overwrite,
+        config.allow_overwrite || config.resume,
     ) {
         eprintln!("{err}");
         std::process::exit(1);
@@ -1779,33 +1843,115 @@ async fn main() {
     let questions_path = sidecar_path(&output_path, "questions");
     let debug_path = sidecar_path(&output_path, "debug");
 
-    // Resume support: load already-completed instances from existing artifact
+    // Resume support: load instance_status and completed results from existing artifact
     let mut completed_results: Vec<QuestionResult> = Vec::new();
-    let mut completed_ids: HashSet<String> = HashSet::new();
-    if config.allow_overwrite && output_path.exists() {
-        // Load existing summary to get bank IDs
+    let mut completed_debug: Vec<QuestionDebugRecord> = Vec::new();
+    let mut resume_instance_status: HashMap<String, InstanceStatus> = HashMap::new();
+    let is_resume = config.resume || (config.allow_overwrite && output_path.exists());
+
+    if is_resume && output_path.exists() {
+        // Load existing summary to get bank IDs and instance_status
         if let Ok(bytes) = fs::read(&output_path) {
             if let Ok(existing) = serde_json::from_slice::<BenchmarkOutput>(&bytes) {
                 for (qid, bid) in &existing.banks {
                     existing_banks.entry(qid.clone()).or_insert_with(|| bid.clone());
                 }
+                resume_instance_status = existing.instance_status;
             }
         }
-        // Load completed questions from sidecar
+        // Load completed question results from sidecar (needed for skip classification)
         if questions_path.exists() {
             if let Ok(records) = read_jsonl_records::<QuestionResult>(&questions_path) {
-                for r in &records {
-                    if r.status != "bank_error" && r.status != "ingest_error" {
-                        completed_ids.insert(r.question_id.clone());
-                    }
-                }
-                eprintln!(
-                    "  resume: {} instances already completed, {} to go",
-                    completed_ids.len(),
-                    instances.len().saturating_sub(completed_ids.len()),
-                );
                 completed_results = records;
             }
+        }
+        if debug_path.exists() {
+            if let Ok(records) = read_jsonl_records::<QuestionDebugRecord>(&debug_path) {
+                completed_debug = records;
+            }
+        }
+
+        // Classify instances and build resume plan
+        let mut skip_count = 0usize;
+        let mut re_ingest_count = 0usize;
+        let mut re_consolidate_count = 0usize;
+        let mut re_qa_count = 0usize;
+        let mut fresh_count = 0usize;
+
+        for inst in &instances {
+            let qid = &inst.question_id;
+            match resume_instance_status.get(qid) {
+                Some(status) if status.qa_complete => {
+                    // Check if sidecar has "ok" status
+                    let sidecar_ok = completed_results
+                        .iter()
+                        .any(|r| r.question_id.as_str() == qid.as_str() && r.status == "ok");
+                    if sidecar_ok {
+                        skip_count += 1;
+                    } else {
+                        re_qa_count += 1;
+                    }
+                }
+                Some(status) if status.ingest_complete && status.consolidation_complete => {
+                    re_qa_count += 1;
+                }
+                Some(status) if status.ingest_complete => {
+                    re_consolidate_count += 1;
+                }
+                Some(_) => {
+                    re_ingest_count += 1;
+                }
+                None => {
+                    fresh_count += 1;
+                }
+            }
+        }
+
+        eprintln!(
+            "  resume: {} skip, {} fresh, {} re-ingest, {} re-consolidate, {} re-qa",
+            skip_count, fresh_count, re_ingest_count, re_consolidate_count, re_qa_count,
+        );
+
+        // Rewrite sidecars: keep only records for instances we're skipping
+        let skip_ids: HashSet<String> = instances
+            .iter()
+            .filter(|inst| {
+                resume_instance_status
+                    .get(&inst.question_id)
+                    .is_some_and(|s| {
+                        s.qa_complete
+                            && completed_results
+                                .iter()
+                                .any(|r| r.question_id == inst.question_id && r.status == "ok")
+                    })
+            })
+            .map(|inst| inst.question_id.clone())
+            .collect();
+
+        let kept_results: Vec<QuestionResult> = completed_results
+            .into_iter()
+            .filter(|r| skip_ids.contains(&r.question_id))
+            .collect();
+        let kept_debug: Vec<QuestionDebugRecord> = completed_debug
+            .into_iter()
+            .filter(|r| skip_ids.contains(&r.question_id))
+            .collect();
+
+        // Rewrite sidecars with only kept records
+        let _ = fs::write(&questions_path, "");
+        let _ = fs::write(&debug_path, "");
+        for r in &kept_results {
+            append_jsonl(&questions_path, r);
+        }
+        for r in &kept_debug {
+            append_jsonl(&debug_path, r);
+        }
+
+        completed_results = kept_results;
+
+        if skip_count == instances.len() {
+            eprintln!("All instances complete, nothing to do.");
+            return;
         }
     } else {
         // Fresh run: truncate sidecars
@@ -1864,15 +2010,26 @@ async fn main() {
     let run_timestamp = Utc::now().to_rfc3339();
     let commit = git_commit_sha();
 
-    // Filter out already-completed instances
-    if !completed_ids.is_empty() {
-        instances.retain(|inst| !completed_ids.contains(&inst.question_id));
+    // Filter out fully-completed instances (skip_ids from resume classification)
+    if is_resume {
+        let skip_ids: HashSet<&str> = resume_instance_status
+            .iter()
+            .filter(|(qid, s)| {
+                s.qa_complete
+                    && completed_results
+                        .iter()
+                        .any(|r| r.question_id.as_str() == qid.as_str() && r.status == "ok")
+            })
+            .map(|(qid, _)| qid.as_str())
+            .collect();
+        instances.retain(|inst| !skip_ids.contains(inst.question_id.as_str()));
     }
     let total_instances = instances.len();
 
     let shared = Arc::new(Mutex::new(SharedState {
         results: completed_results,
         banks: existing_banks,
+        instance_status: resume_instance_status.clone(),
         output_path: output_path.clone(),
         questions_path: questions_path.clone(),
         debug_path: debug_path.clone(),
@@ -1897,6 +2054,8 @@ async fn main() {
     let consolidation = config.consolidation;
     let session_limit = config.session_limit;
 
+    let resume_statuses = Arc::new(resume_instance_status);
+
     let mut handles = Vec::new();
     for instance in instances {
         let sem = semaphore.clone();
@@ -1905,6 +2064,7 @@ async fn main() {
         let metrics = metrics.clone();
         let shared = shared.clone();
         let completed = completed.clone();
+        let resume_statuses = resume_statuses.clone();
 
         handles.push(tokio::spawn(async move {
             let _permit = sem
@@ -1913,30 +2073,47 @@ async fn main() {
                 .map_err(|e| format!("semaphore closed: {e}"))?;
 
             let instance_start = Instant::now();
+            let qid = instance.question_id.clone();
+            let prior_status = resume_statuses.get(&qid).cloned();
 
-            // Ingest (skip if qa mode with existing bank)
-            let bank_id_str = if matches!(command, BenchCommand::Qa) {
-                shared
+            // --- Step 1: Determine bank_id ---
+            let bank_id_str: String;
+
+            if matches!(command, BenchCommand::Qa) {
+                // QA mode: use existing bank
+                bank_id_str = shared
                     .lock()
                     .await
                     .banks
-                    .get(&instance.question_id)
+                    .get(&qid)
                     .cloned()
-                    .ok_or_else(|| {
-                        format!("no bank_id for {} in QA mode", instance.question_id)
-                    })?
+                    .ok_or_else(|| format!("no bank_id for {qid} in QA mode"))?;
+            } else if let Some(ref status) = prior_status
+                && status.ingest_complete
+            {
+                // Resume: ingest already done, reuse bank
+                bank_id_str = status.bank_id.clone();
             } else {
-                let ingest_config = IngestConfig {
-                    format: ingest_format,
-                    consolidation,
-                    session_limit,
-                };
-                // Create bank and record ID in artifact immediately, before
-                // ingest+consolidation. This makes runs resumable via `qa` even
-                // if killed mid-consolidation.
+                // Need to ingest (fresh or re-ingest after partial)
+
+                // If prior status exists but ingest not complete, delete partial bank
+                if let Some(ref status) = prior_status
+                    && !status.bank_id.is_empty()
+                {
+                    let bid: elephant::types::id::BankId = status
+                        .bank_id
+                        .parse()
+                        .map_err(|e| format!("bad bank_id: {e}"))?;
+                    eprintln!("  {qid} deleting partial bank {}", status.bank_id);
+                    if let Err(e) = runtime.store.delete_bank(bid).await {
+                        eprintln!("  {qid} delete_bank failed (continuing): {e}");
+                    }
+                }
+
+                // Create bank
                 let bank = elephant::types::MemoryBank {
                     id: elephant::types::id::BankId::new(),
-                    name: format!("longmemeval-{}", instance.question_id),
+                    name: format!("longmemeval-{qid}"),
                     mission: "Long-term conversational memory benchmark".into(),
                     directives: vec![],
                     disposition: elephant::types::Disposition::default(),
@@ -1945,9 +2122,9 @@ async fn main() {
                 };
                 if let Err(e) = runtime.store.create_bank(&bank).await {
                     let err_msg = format!("failed to create bank: {e}");
-                    eprintln!("ERROR {}: {err_msg}", instance.question_id);
+                    eprintln!("ERROR {qid}: {err_msg}");
                     let qr = QuestionResult {
-                        question_id: instance.question_id.clone(),
+                        question_id: qid.clone(),
                         category: instance.reporting_category().to_string(),
                         judge_correct: false,
                         judge_reasoning: String::new(),
@@ -1960,7 +2137,7 @@ async fn main() {
                         qa_stage_metrics: BTreeMap::new(),
                     };
                     let dr = QuestionDebugRecord {
-                        question_id: instance.question_id.clone(),
+                        question_id: qid.clone(),
                         question: instance.question.clone(),
                         reflect_trace: vec![],
                         final_done: None,
@@ -1969,36 +2146,42 @@ async fn main() {
                     shared.lock().await.push_and_flush(qr, dr);
                     let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
                     eprintln!(
-                        "[{done}/{total_instances}] {} err bank {:.1}s",
-                        instance.question_id,
+                        "[{done}/{total_instances}] {qid} err bank {:.1}s",
                         instance_start.elapsed().as_secs_f64(),
                     );
                     return Err(err_msg);
                 }
-                let bid = bank.id.to_string();
-                shared
-                    .lock()
-                    .await
-                    .record_bank(instance.question_id.clone(), bid.clone());
+                bank_id_str = bank.id.to_string();
 
+                // Record initial status (ingest not yet complete)
+                shared.lock().await.update_instance_status(
+                    &qid,
+                    InstanceStatus {
+                        bank_id: bank_id_str.clone(),
+                        ingest_complete: false,
+                        consolidation_complete: false,
+                        qa_complete: false,
+                    },
+                );
+
+                // Ingest sessions (without consolidation — we consolidate separately)
+                let ingest_config = IngestConfig {
+                    format: ingest_format,
+                    consolidation: ConsolidationMode::Off,
+                    session_limit,
+                };
                 let result = with_scoped_collector(
                     metrics.clone(),
                     ingest::ingest_instance(&instance, &runtime, &ingest_config, Some(bank.id)),
                 )
                 .await;
                 match result {
-                    Ok(r) => {
-                        r.bank_id.to_string()
-                    }
+                    Ok(_) => {}
                     Err(e) => {
                         let err_msg = format!("{e}");
-                        eprintln!(
-                            "ERROR ingesting {}: {err_msg}",
-                            instance.question_id
-                        );
-                        // Record a failed result instead of aborting
+                        eprintln!("ERROR ingesting {qid}: {err_msg}");
                         let qr = QuestionResult {
-                            question_id: instance.question_id.clone(),
+                            question_id: qid.clone(),
                             category: instance.reporting_category().to_string(),
                             judge_correct: false,
                             judge_reasoning: String::new(),
@@ -2011,7 +2194,7 @@ async fn main() {
                             qa_stage_metrics: BTreeMap::new(),
                         };
                         let dr = QuestionDebugRecord {
-                            question_id: instance.question_id.clone(),
+                            question_id: qid.clone(),
                             question: instance.question.clone(),
                             reflect_trace: vec![],
                             final_done: None,
@@ -2020,54 +2203,121 @@ async fn main() {
                         shared.lock().await.push_and_flush(qr, dr);
                         let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
                         eprintln!(
-                            "[{done}/{total_instances}] {} err ingest {:.1}s",
-                            instance.question_id,
+                            "[{done}/{total_instances}] {qid} err ingest {:.1}s",
                             instance_start.elapsed().as_secs_f64(),
                         );
                         return Err(err_msg);
                     }
                 }
-            };
+
+                // Mark ingest complete
+                shared.lock().await.update_instance_status(
+                    &qid,
+                    InstanceStatus {
+                        bank_id: bank_id_str.clone(),
+                        ingest_complete: true,
+                        consolidation_complete: false,
+                        qa_complete: false,
+                    },
+                );
+            }
+
+            // --- Step 2: Consolidation ---
+            let need_consolidation = prior_status
+                .as_ref()
+                .map(|s| !s.consolidation_complete)
+                .unwrap_or(true);
+
+            if need_consolidation
+                && consolidation.enabled()
+                && !matches!(command, BenchCommand::Qa)
+            {
+                let bid: elephant::types::id::BankId = bank_id_str
+                    .parse()
+                    .map_err(|e| format!("bad bank_id: {e}"))?;
+                eprintln!("  {qid} consolidating...");
+                match runtime.consolidator.consolidate(bid).await {
+                    Ok(cr) => {
+                        eprintln!(
+                            "  {qid} consolidation done | {} created, {} updated",
+                            cr.observations_created, cr.observations_updated,
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("  {qid} consolidation FAILED: {e}");
+                    }
+                }
+                // Mark consolidation complete
+                shared.lock().await.update_instance_status(
+                    &qid,
+                    InstanceStatus {
+                        bank_id: bank_id_str.clone(),
+                        ingest_complete: true,
+                        consolidation_complete: true,
+                        qa_complete: false,
+                    },
+                );
+            } else if !matches!(command, BenchCommand::Qa) {
+                // Consolidation off or already done — mark complete
+                shared.lock().await.update_instance_status(
+                    &qid,
+                    InstanceStatus {
+                        bank_id: bank_id_str.clone(),
+                        ingest_complete: true,
+                        consolidation_complete: true,
+                        qa_complete: false,
+                    },
+                );
+            }
 
             let ingest_elapsed = instance_start.elapsed().as_secs_f64();
 
-            // QA evaluation
+            // --- Step 3: QA ---
             if matches!(command, BenchCommand::Ingest) {
-                // Ingest-only: write stub result, no reflect/judge
                 let qr = QuestionResult {
-                    question_id: instance.question_id.clone(),
+                    question_id: qid.clone(),
                     category: instance.reporting_category().to_string(),
                     judge_correct: false,
                     judge_reasoning: String::new(),
                     hypothesis: String::new(),
                     ground_truth: instance.answer_string(),
-                    bank_id: bank_id_str,
+                    bank_id: bank_id_str.clone(),
                     elapsed_s: 0.0,
                     status: "ingest-only".into(),
                     error: None,
                     qa_stage_metrics: BTreeMap::new(),
                 };
                 let dr = QuestionDebugRecord {
-                    question_id: instance.question_id.clone(),
+                    question_id: qid.clone(),
                     question: instance.question.clone(),
                     reflect_trace: vec![],
                     final_done: None,
                     retrieved_context: vec![],
                 };
-                shared.lock().await.push_and_flush(qr, dr);
+                {
+                    let mut s = shared.lock().await;
+                    s.update_instance_status(
+                        &qid,
+                        InstanceStatus {
+                            bank_id: bank_id_str,
+                            ingest_complete: true,
+                            consolidation_complete: true,
+                            qa_complete: true,
+                        },
+                    );
+                    s.push_and_flush(qr, dr);
+                }
                 let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
                 eprintln!(
-                    "[{done}/{total_instances}] {} ok ingest {:.1}s",
-                    instance.question_id,
+                    "[{done}/{total_instances}] {qid} ok ingest {:.1}s",
                     ingest_elapsed,
                 );
                 return Ok(());
             }
 
             let qa_start = Instant::now();
-            eprintln!("  {} reflecting...", instance.question_id);
+            eprintln!("  {qid} reflecting...");
 
-            // 1. Call reflect with scoped metrics
             let reflect_result = with_scoped_collector(
                 metrics.clone(),
                 runtime.reflect.reflect(&ReflectQuery {
@@ -2079,7 +2329,6 @@ async fn main() {
             )
             .await;
 
-            // 2. Process reflect result
             let (hypothesis, retrieved_context, reflect_trace, final_done, status, error) =
                 match reflect_result {
                     Ok(resp) => {
@@ -2113,7 +2362,7 @@ async fn main() {
                     }
                     Err(e) => {
                         let err_msg = format!("{e}");
-                        eprintln!("  reflect error ({}): {err_msg}", instance.question_id);
+                        eprintln!("  reflect error ({qid}): {err_msg}");
                         (
                             String::new(),
                             vec![],
@@ -2125,8 +2374,7 @@ async fn main() {
                     }
                 };
 
-            // 3. Judge (skip if reflect failed / empty hypothesis)
-            eprintln!("  {} judging...", instance.question_id);
+            eprintln!("  {qid} judging...");
             let (judge_correct, judge_reasoning, status, error) = if hypothesis.is_empty() {
                 (false, error.clone().unwrap_or_default(), status, error)
             } else {
@@ -2140,7 +2388,7 @@ async fn main() {
                 match common::judge::llm_judge(judge.as_ref().unwrap().as_ref(), &rendered).await {
                     Ok((correct, reasoning)) => (correct, reasoning, "ok".into(), None),
                     Err(e) => {
-                        eprintln!("  judge error ({}): {e}", instance.question_id);
+                        eprintln!("  judge error ({qid}): {e}");
                         (false, e.clone(), "judge_error".into(), Some(e))
                     }
                 }
@@ -2149,31 +2397,42 @@ async fn main() {
             let qa_elapsed = qa_start.elapsed().as_secs_f64();
 
             let qr = QuestionResult {
-                question_id: instance.question_id.clone(),
+                question_id: qid.clone(),
                 category: instance.reporting_category().to_string(),
                 judge_correct,
                 judge_reasoning,
                 hypothesis,
                 ground_truth: instance.answer_string(),
-                bank_id: bank_id_str,
+                bank_id: bank_id_str.clone(),
                 elapsed_s: qa_elapsed,
                 status,
                 error,
                 qa_stage_metrics: BTreeMap::new(),
             };
             let dr = QuestionDebugRecord {
-                question_id: instance.question_id.clone(),
+                question_id: qid.clone(),
                 question: instance.question.clone(),
                 reflect_trace,
                 final_done,
                 retrieved_context,
             };
-            shared.lock().await.push_and_flush(qr, dr);
+            {
+                let mut s = shared.lock().await;
+                s.update_instance_status(
+                    &qid,
+                    InstanceStatus {
+                        bank_id: bank_id_str,
+                        ingest_complete: true,
+                        consolidation_complete: true,
+                        qa_complete: true,
+                    },
+                );
+                s.push_and_flush(qr, dr);
+            }
 
             let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
             eprintln!(
-                "[{done}/{total_instances}] {} {} ingest {:.1}s qa {:.1}s",
-                instance.question_id,
+                "[{done}/{total_instances}] {qid} {} ingest {:.1}s qa {:.1}s",
                 if judge_correct { "ok" } else { "err" },
                 ingest_elapsed,
                 qa_elapsed,
@@ -2311,6 +2570,7 @@ mod tests {
             accuracy: 0.0,
             per_category: HashMap::new(),
             banks: HashMap::new(),
+            instance_status: HashMap::new(),
             manifest: BenchmarkManifest {
                 profile: "smoke".into(),
                 dataset_path: "data/test.json".into(),
@@ -2419,6 +2679,24 @@ mod tests {
         let raw = vec![s("bin"), s("run"), s("--force")];
         let inv = parse_args_from(&raw).unwrap().unwrap();
         assert!(inv.config.allow_overwrite);
+    }
+
+    #[test]
+    fn parse_resume() {
+        let raw = vec![s("bin"), s("run"), s("--resume")];
+        let inv = parse_args_from(&raw).unwrap().unwrap();
+        assert!(inv.config.resume);
+        assert!(!inv.config.allow_overwrite);
+    }
+
+    #[test]
+    fn parse_resume_and_force_mutually_exclusive() {
+        let raw = vec![s("bin"), s("run"), s("--resume"), s("--force")];
+        let result = parse_args_from(&raw);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("mutually exclusive"));
     }
 
     #[test]
@@ -2946,6 +3224,7 @@ mod tests {
             accuracy: 0.0,
             per_category,
             banks,
+            instance_status: HashMap::new(),
             manifest: BenchmarkManifest::default(),
             artifacts: BenchmarkArtifacts::default(),
             stage_metrics: BTreeMap::new(),
@@ -3074,6 +3353,103 @@ mod tests {
         assert_eq!(back.tag, Some("prev".into()));
     }
 
+    #[test]
+    fn instance_status_serde_roundtrip() {
+        let status = InstanceStatus {
+            bank_id: "some-bank-id".into(),
+            ingest_complete: true,
+            consolidation_complete: true,
+            qa_complete: false,
+        };
+        let json = serde_json::to_string(&status).unwrap();
+        let back: InstanceStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.bank_id, "some-bank-id");
+        assert!(back.ingest_complete);
+        assert!(back.consolidation_complete);
+        assert!(!back.qa_complete);
+    }
+
+    #[test]
+    fn instance_status_default_is_empty() {
+        let status = InstanceStatus::default();
+        assert!(status.bank_id.is_empty());
+        assert!(!status.ingest_complete);
+        assert!(!status.consolidation_complete);
+        assert!(!status.qa_complete);
+    }
+
+    #[test]
+    fn benchmark_output_with_instance_status_roundtrip() {
+        let mut instance_status = HashMap::new();
+        instance_status.insert(
+            "q1".into(),
+            InstanceStatus {
+                bank_id: "bank-1".into(),
+                ingest_complete: true,
+                consolidation_complete: true,
+                qa_complete: true,
+            },
+        );
+        instance_status.insert(
+            "q2".into(),
+            InstanceStatus {
+                bank_id: "bank-2".into(),
+                ingest_complete: true,
+                consolidation_complete: false,
+                qa_complete: false,
+            },
+        );
+
+        let output = BenchmarkOutput {
+            benchmark: "longmemeval".into(),
+            timestamp: "2026-03-16T00:00:00Z".into(),
+            commit: None,
+            tag: None,
+            retain_model: "m1".into(),
+            reflect_model: "m2".into(),
+            embedding_model: "m3".into(),
+            reranker_model: "m4".into(),
+            judge_model: String::new(),
+            consolidation_strategy: "end".into(),
+            total_questions: 2,
+            accuracy: 0.0,
+            per_category: HashMap::new(),
+            banks: HashMap::new(),
+            instance_status,
+            manifest: BenchmarkManifest::default(),
+            artifacts: BenchmarkArtifacts::default(),
+            stage_metrics: BTreeMap::new(),
+            total_time_s: 0.0,
+        };
+
+        let json = serde_json::to_string_pretty(&output).unwrap();
+        let back: BenchmarkOutput = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.instance_status.len(), 2);
+        assert!(back.instance_status["q1"].qa_complete);
+        assert!(!back.instance_status["q2"].consolidation_complete);
+    }
+
+    #[test]
+    fn benchmark_output_without_instance_status_deserializes() {
+        // Old artifacts without instance_status should still deserialize
+        let json = r#"{
+            "benchmark": "longmemeval",
+            "timestamp": "2026-03-16T00:00:00Z",
+            "retain_model": "m1",
+            "reflect_model": "m2",
+            "embedding_model": "m3",
+            "reranker_model": "m4",
+            "judge_model": "",
+            "consolidation_strategy": "end",
+            "total_questions": 0,
+            "accuracy": 0.0,
+            "per_category": {},
+            "banks": {}
+        }"#;
+        let output: BenchmarkOutput = serde_json::from_str(json).unwrap();
+        assert!(output.instance_status.is_empty());
+    }
+
     // --- ensure_output_paths_are_safe ---
 
     #[test]
@@ -3179,6 +3555,7 @@ mod tests {
             accuracy: 0.0,
             per_category: HashMap::new(),
             banks: HashMap::new(),
+            instance_status: HashMap::new(),
             manifest: BenchmarkManifest {
                 profile: "smoke".into(),
                 mode: "ingest".into(),
@@ -3221,6 +3598,7 @@ mod tests {
             accuracy: 0.0,
             per_category: HashMap::new(),
             banks: HashMap::new(),
+            instance_status: HashMap::new(),
             manifest: BenchmarkManifest {
                 profile: "smoke".into(),
                 mode: "ingest".into(),
@@ -3639,6 +4017,7 @@ mod tests {
             accuracy: compute_accuracy(questions),
             per_category: compute_per_category(questions),
             banks,
+            instance_status: HashMap::new(),
             manifest: BenchmarkManifest {
                 protocol_version: "2026-03-15-longmemeval-v1".into(),
                 profile: "smoke".into(),

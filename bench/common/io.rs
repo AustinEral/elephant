@@ -18,6 +18,28 @@ pub fn sidecar_path(output_path: &Path, suffix: &str) -> PathBuf {
     parent.join(format!("{stem}.{suffix}.jsonl"))
 }
 
+/// Atomically write a JSON value to a file (write-to-tmp then rename).
+pub fn atomic_write_json<T: Serialize>(path: &Path, value: &T) {
+    let json = match serde_json::to_string_pretty(value) {
+        Ok(j) => j,
+        Err(e) => {
+            eprintln!("atomic_write_json: serialize failed: {e}");
+            return;
+        }
+    };
+    let tmp = path.with_extension("tmp");
+    if fs::write(&tmp, &json).is_ok() {
+        if fs::rename(&tmp, path).is_err() {
+            // rename failed (cross-device?), fall back to direct write
+            let _ = fs::write(path, &json);
+            let _ = fs::remove_file(&tmp);
+        }
+    } else {
+        // tmp write failed, fall back to direct write
+        let _ = fs::write(path, &json);
+    }
+}
+
 /// Append a single JSON-serialized line to a JSONL file, creating the file if needed.
 pub fn append_jsonl<T: Serialize>(path: &Path, value: &T) {
     if let Ok(line) = serde_json::to_string(value)

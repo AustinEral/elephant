@@ -738,6 +738,44 @@ async fn mark_consolidated_impl(
     Ok(())
 }
 
+async fn delete_bank_impl(conn: &mut PgConnection, id: BankId) -> Result<()> {
+    // Delete in dependency order within a single connection
+    sqlx::query(
+        "DELETE FROM graph_links WHERE source_id IN (SELECT id FROM facts WHERE bank_id = $1)
+            OR target_id IN (SELECT id FROM facts WHERE bank_id = $1)",
+    )
+    .bind(id)
+    .execute(&mut *conn)
+    .await?;
+
+    sqlx::query("DELETE FROM fact_sources WHERE fact_id IN (SELECT id FROM facts WHERE bank_id = $1)")
+        .bind(id)
+        .execute(&mut *conn)
+        .await?;
+
+    sqlx::query("DELETE FROM sources WHERE bank_id = $1")
+        .bind(id)
+        .execute(&mut *conn)
+        .await?;
+
+    sqlx::query("DELETE FROM facts WHERE bank_id = $1")
+        .bind(id)
+        .execute(&mut *conn)
+        .await?;
+
+    sqlx::query("DELETE FROM entities WHERE bank_id = $1")
+        .bind(id)
+        .execute(&mut *conn)
+        .await?;
+
+    sqlx::query("DELETE FROM memory_banks WHERE id = $1")
+        .bind(id)
+        .execute(&mut *conn)
+        .await?;
+
+    Ok(())
+}
+
 async fn list_banks_impl(conn: &mut PgConnection) -> Result<Vec<MemoryBank>> {
     let rows = sqlx::query(
         "SELECT id, name, mission, directives, skepticism, literalism, empathy, bias_strength, embedding_model, embedding_dims
@@ -878,6 +916,13 @@ impl MemoryStore for PgMemoryStore {
     async fn list_banks(&self) -> Result<Vec<MemoryBank>> {
         let mut conn = self.pool.acquire().await?;
         list_banks_impl(&mut conn).await
+    }
+
+    async fn delete_bank(&self, id: BankId) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        delete_bank_impl(&mut tx, id).await?;
+        tx.commit().await?;
+        Ok(())
     }
 }
 
@@ -1091,5 +1136,13 @@ impl MemoryStore for PgTransactionHandle {
             .as_mut()
             .ok_or_else(|| Error::Internal("transaction already consumed".into()))?;
         list_banks_impl(txn).await
+    }
+
+    async fn delete_bank(&self, id: BankId) -> Result<()> {
+        let mut guard = txn_conn!(self);
+        let txn = guard
+            .as_mut()
+            .ok_or_else(|| Error::Internal("transaction already consumed".into()))?;
+        delete_bank_impl(txn, id).await
     }
 }

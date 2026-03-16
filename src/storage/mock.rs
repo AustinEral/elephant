@@ -331,6 +331,31 @@ impl MemoryStore for MockMemoryStore {
         }
         Ok(())
     }
+
+    async fn delete_bank(&self, id: BankId) -> Result<()> {
+        self.facts.lock().unwrap().retain(|f| f.bank_id != id);
+        self.sources.lock().unwrap().retain(|s| s.bank_id != id);
+        {
+            let facts = self.facts.lock().unwrap();
+            let fact_ids: Vec<FactId> = facts.iter().map(|f| f.id).collect();
+            self.fact_sources
+                .lock()
+                .unwrap()
+                .retain(|(fid, _)| fact_ids.contains(fid));
+        }
+        self.entities.lock().unwrap().retain(|e| e.bank_id != id);
+        // links: remove any that reference deleted facts
+        {
+            let facts = self.facts.lock().unwrap();
+            let fact_ids: Vec<FactId> = facts.iter().map(|f| f.id).collect();
+            self.links
+                .lock()
+                .unwrap()
+                .retain(|l| fact_ids.contains(&l.source_id) && fact_ids.contains(&l.target_id));
+        }
+        self.banks.lock().unwrap().retain(|b| b.id != id);
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -459,6 +484,10 @@ impl MemoryStore for MockTransactionHandle {
         at: chrono::DateTime<chrono::Utc>,
     ) -> Result<()> {
         self.inner.mark_consolidated(ids, at).await
+    }
+
+    async fn delete_bank(&self, id: BankId) -> Result<()> {
+        self.inner.delete_bank(id).await
     }
 }
 

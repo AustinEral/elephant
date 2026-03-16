@@ -108,4 +108,7 @@ pub trait MemoryStore: Send + Sync {
 
     /// Mark facts as consolidated.
     async fn mark_consolidated(&self, ids: &[FactId], at: DateTime<Utc>) -> Result<()>;
+
+    /// Delete a memory bank and all associated data (facts, sources, entities, links).
+    async fn delete_bank(&self, id: BankId) -> Result<()>;
 }
