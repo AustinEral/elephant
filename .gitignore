@@ -8,3 +8,5 @@ docs/agentic-reflect-improvements.md
 data/
 bench/locomo/results/local/*
 !bench/locomo/results/local/.gitkeep
+bench/longmemeval/results/local/*
+!bench/longmemeval/results/local/.gitkeep
