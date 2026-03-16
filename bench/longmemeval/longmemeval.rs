@@ -1,6 +1,6 @@
 //! LongMemEval benchmark harness for Elephant.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1645,7 +1645,7 @@ async fn main() {
     }
 
     // Load artifact state for QA mode
-    let (existing_banks, source_artifact) = if let Some(ref path) = artifact_path {
+    let (mut existing_banks, source_artifact) = if let Some(ref path) = artifact_path {
         let art = load_benchmark_output(path).unwrap_or_else(|e| {
             eprintln!("{e}");
             std::process::exit(1);
@@ -1730,7 +1730,7 @@ async fn main() {
     let runtime = Arc::new(
         build_runtime_from_env(BuildRuntimeOptions {
             metrics: Some(metrics.clone()),
-            max_pool_connections: Some(std::cmp::min(config.instance_jobs as u32 * 3, 50)),
+            max_pool_connections: Some(std::cmp::min(config.instance_jobs as u32 * 8, 80)),
         })
         .await
         .unwrap_or_else(|e| {
@@ -1772,14 +1772,46 @@ async fn main() {
     eprintln!("  instances:      {}", instances.len());
     eprintln!();
 
-    // Create output dirs, truncate sidecars
+    // Create output dirs
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent).ok();
     }
     let questions_path = sidecar_path(&output_path, "questions");
     let debug_path = sidecar_path(&output_path, "debug");
-    let _ = fs::write(&questions_path, "");
-    let _ = fs::write(&debug_path, "");
+
+    // Resume support: load already-completed instances from existing artifact
+    let mut completed_results: Vec<QuestionResult> = Vec::new();
+    let mut completed_ids: HashSet<String> = HashSet::new();
+    if config.allow_overwrite && output_path.exists() {
+        // Load existing summary to get bank IDs
+        if let Ok(bytes) = fs::read(&output_path) {
+            if let Ok(existing) = serde_json::from_slice::<BenchmarkOutput>(&bytes) {
+                for (qid, bid) in &existing.banks {
+                    existing_banks.entry(qid.clone()).or_insert_with(|| bid.clone());
+                }
+            }
+        }
+        // Load completed questions from sidecar
+        if questions_path.exists() {
+            if let Ok(records) = read_jsonl_records::<QuestionResult>(&questions_path) {
+                for r in &records {
+                    if r.status != "bank_error" && r.status != "ingest_error" {
+                        completed_ids.insert(r.question_id.clone());
+                    }
+                }
+                eprintln!(
+                    "  resume: {} instances already completed, {} to go",
+                    completed_ids.len(),
+                    instances.len().saturating_sub(completed_ids.len()),
+                );
+                completed_results = records;
+            }
+        }
+    } else {
+        // Fresh run: truncate sidecars
+        let _ = fs::write(&questions_path, "");
+        let _ = fs::write(&debug_path, "");
+    }
 
     // Capture full CLI string for manifest
     let cli_command: String = env::args().collect::<Vec<_>>().join(" ");
@@ -1828,13 +1860,18 @@ async fn main() {
     };
 
     // Concurrent per-instance loop
-    let total_instances = instances.len();
     let bench_start = Instant::now();
     let run_timestamp = Utc::now().to_rfc3339();
     let commit = git_commit_sha();
 
+    // Filter out already-completed instances
+    if !completed_ids.is_empty() {
+        instances.retain(|inst| !completed_ids.contains(&inst.question_id));
+    }
+    let total_instances = instances.len();
+
     let shared = Arc::new(Mutex::new(SharedState {
-        results: Vec::new(),
+        results: completed_results,
         banks: existing_banks,
         output_path: output_path.clone(),
         questions_path: questions_path.clone(),
