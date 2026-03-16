@@ -1,6 +1,6 @@
 //! LongMemEval benchmark harness for Elephant.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,6 +13,7 @@ use std::time::Instant;
 use tokio::sync::{Mutex, Semaphore};
 
 use chrono::Utc;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 #[path = "../common/mod.rs"]
@@ -94,6 +95,7 @@ enum BenchCommand {
     Run,
     Ingest,
     Qa,
+    Merge,
 }
 
 impl BenchCommand {
@@ -102,6 +104,7 @@ impl BenchCommand {
             Self::Run => "run",
             Self::Ingest => "ingest",
             Self::Qa => "qa",
+            Self::Merge => "merge",
         }
     }
 }
@@ -312,6 +315,7 @@ impl CliOverrides {
 struct ParsedCli {
     command: BenchCommand,
     artifact_path: Option<PathBuf>,
+    merge_artifacts: Vec<PathBuf>,
     overrides: CliOverrides,
 }
 
@@ -319,6 +323,7 @@ struct ParsedCli {
 struct BenchInvocation {
     command: BenchCommand,
     artifact_path: Option<PathBuf>,
+    merge_artifacts: Vec<PathBuf>,
     config: RunConfig,
 }
 
@@ -327,26 +332,29 @@ struct BenchInvocation {
 fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
     let mut overrides = CliOverrides::default();
     let command = match raw.get(1).map(String::as_str) {
-        None => return Err("expected subcommand: run, ingest, or qa".into()),
+        None => return Err("expected subcommand: run, ingest, qa, or merge".into()),
         Some("--help") | Some("-h") => {
             overrides.help = true;
             return Ok(ParsedCli {
                 command: BenchCommand::Run,
                 artifact_path: None,
+                merge_artifacts: Vec::new(),
                 overrides,
             });
         }
         Some("run") => BenchCommand::Run,
         Some("ingest") => BenchCommand::Ingest,
         Some("qa") => BenchCommand::Qa,
+        Some("merge") => BenchCommand::Merge,
         Some(other) => {
             return Err(format!(
-                "unknown subcommand: {other} (expected one of: run, ingest, qa)"
+                "unknown subcommand: {other} (expected one of: run, ingest, qa, merge)"
             ));
         }
     };
 
     let mut artifact_path = None;
+    let mut merge_artifacts = Vec::new();
     let mut i = 2;
     if matches!(command, BenchCommand::Qa) {
         match raw.get(2).map(String::as_str) {
@@ -356,6 +364,7 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
                 return Ok(ParsedCli {
                     command,
                     artifact_path: None,
+                    merge_artifacts,
                     overrides,
                 });
             }
@@ -458,14 +467,21 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
             "--force" => {
                 overrides.allow_overwrite = true;
             }
+            value if matches!(command, BenchCommand::Merge) && !value.starts_with('-') => {
+                merge_artifacts.push(PathBuf::from(value));
+            }
             other => return Err(format!("Unknown argument: {other}")),
         }
         i += 1;
     }
 
+    if matches!(command, BenchCommand::Merge) && merge_artifacts.len() < 2 {
+        return Err("`merge` requires at least two input artifacts".into());
+    }
     Ok(ParsedCli {
         command,
         artifact_path,
+        merge_artifacts,
         overrides,
     })
 }
@@ -480,6 +496,7 @@ fn parse_args_from(raw: &[String]) -> Result<Option<BenchInvocation>, String> {
     let ParsedCli {
         command,
         artifact_path,
+        merge_artifacts,
         overrides,
     } = parse_cli_overrides(raw)?;
     if overrides.help {
@@ -494,10 +511,12 @@ fn parse_args_from(raw: &[String]) -> Result<Option<BenchInvocation>, String> {
                 .ok_or_else(|| "`qa` requires an artifact path".to_string())?,
             overrides,
         )?,
+        BenchCommand::Merge => resolve_merge_config(overrides)?,
     };
     Ok(Some(BenchInvocation {
         command,
         artifact_path,
+        merge_artifacts,
         config,
     }))
 }
@@ -605,6 +624,64 @@ fn validate_qa_overrides(overrides: &CliOverrides) -> Result<(), String> {
     }
 }
 
+fn validate_merge_overrides(overrides: &CliOverrides) -> Result<(), String> {
+    let mut unsupported = Vec::new();
+    if overrides.profile.is_some() {
+        unsupported.push("--profile");
+    }
+    if overrides.config_path.is_some() {
+        unsupported.push("--config");
+    }
+    if overrides.dataset.is_some() {
+        unsupported.push("--dataset");
+    }
+    if !overrides.instances.is_empty() {
+        unsupported.push("--instance");
+    }
+    if overrides.session_limit.is_some() {
+        unsupported.push("--session-limit");
+    }
+    if overrides.instance_limit.is_some() {
+        unsupported.push("--instance-limit");
+    }
+    if overrides.ingest_format.is_some() {
+        unsupported.push("--ingest-format");
+    }
+    if overrides.consolidation.is_some() {
+        unsupported.push("--consolidation");
+    }
+    if overrides.instance_jobs.is_some() {
+        unsupported.push("--instance-jobs");
+    }
+    if overrides.judge_model.is_some() {
+        unsupported.push("--judge-model");
+    }
+
+    if unsupported.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "`merge` does not accept {}; it only supports input artifacts plus --out/--tag",
+            unsupported.join(", ")
+        ))
+    }
+}
+
+fn resolve_merge_config(overrides: CliOverrides) -> Result<RunConfig, String> {
+    validate_merge_overrides(&overrides)?;
+    let mut config = RunConfig::default();
+    if let Some(output) = overrides.output {
+        config.output = Some(output);
+    }
+    if let Some(tag) = overrides.tag {
+        config.tag = Some(tag);
+    }
+    if overrides.allow_overwrite {
+        config.allow_overwrite = true;
+    }
+    Ok(config)
+}
+
 // --- Output paths ---
 
 fn default_output_path(
@@ -626,6 +703,10 @@ fn default_output_path(
                     .unwrap_or_else(|| PathBuf::from("bench/longmemeval/results/local/qa.json"))
             }
         }
+        BenchCommand::Merge => {
+            let stem = config.tag.as_deref().unwrap_or("merged");
+            PathBuf::from(format!("bench/longmemeval/results/local/{stem}.json"))
+        }
         BenchCommand::Run | BenchCommand::Ingest => {
             let stem = if let Some(ref tag) = config.tag {
                 tag.clone()
@@ -644,12 +725,16 @@ fn print_help() {
     eprintln!("  longmemeval-bench run [OPTIONS]");
     eprintln!("  longmemeval-bench ingest [OPTIONS]");
     eprintln!("  longmemeval-bench qa <ARTIFACT.json> [OPTIONS]");
+    eprintln!("  longmemeval-bench merge <A.json> <B.json> [... --out/--tag/--force]");
     eprintln!();
     eprintln!("Subcommands:");
     eprintln!("  run                              Fresh ingest, consolidate, then score QA");
     eprintln!("  ingest                           Ingest and consolidate only; do not run QA");
     eprintln!(
         "  qa <ARTIFACT.json>               Score QA against existing banks; skip ingest and consolidation"
+    );
+    eprintln!(
+        "  merge <A> <B> [...]              Merge subset artifacts into a single result file"
     );
     eprintln!();
     eprintln!("Options:");
@@ -754,6 +839,8 @@ struct BenchmarkManifest {
     runtime_config: BenchmarkRuntimeConfig,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     source_artifact: Option<SourceArtifact>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    source_artifacts: Vec<SourceArtifact>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -894,6 +981,7 @@ fn ensure_output_paths_are_safe(
     command: BenchCommand,
     output_path: &Path,
     artifact_path: Option<&Path>,
+    merge_inputs: &[PathBuf],
     allow_overwrite: bool,
 ) -> Result<(), String> {
     if allow_overwrite {
@@ -907,6 +995,17 @@ fn ensure_output_paths_are_safe(
     {
         return Err(format!(
             "refusing to overwrite source artifact {} during `qa`; choose --out or pass --force",
+            output_path.display()
+        ));
+    }
+
+    if matches!(command, BenchCommand::Merge)
+        && merge_inputs
+            .iter()
+            .any(|input| same_path(output_path, input))
+    {
+        return Err(format!(
+            "refusing to overwrite merge input {}; choose a different --out/--tag or pass --force",
             output_path.display()
         ));
     }
@@ -1088,6 +1187,400 @@ impl SharedState {
     }
 }
 
+// --- Merge helpers ---
+
+fn read_jsonl_records<T: DeserializeOwned>(path: &Path) -> Result<Vec<T>, String> {
+    let raw =
+        fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    raw.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            serde_json::from_str::<T>(line)
+                .map_err(|e| format!("failed to parse record in {}: {e}", path.display()))
+        })
+        .collect()
+}
+
+fn write_jsonl_records<T: Serialize>(path: &Path, values: &[T]) -> Result<(), String> {
+    fs::write(path, "").map_err(|e| format!("failed to initialize {}: {e}", path.display()))?;
+    for value in values {
+        append_jsonl(path, value);
+    }
+    Ok(())
+}
+
+fn artifact_relative_path(summary_path: &Path, rel: &str) -> PathBuf {
+    summary_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(rel)
+}
+
+#[derive(Debug)]
+struct LoadedArtifactBundle {
+    path: PathBuf,
+    fingerprint: String,
+    output: BenchmarkOutput,
+    questions: Vec<QuestionResult>,
+    debug_records: Vec<QuestionDebugRecord>,
+}
+
+fn load_artifact_bundle(path: &Path) -> Result<LoadedArtifactBundle, String> {
+    let artifact_bytes =
+        fs::read(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    let output: BenchmarkOutput = serde_json::from_slice(&artifact_bytes)
+        .map_err(|e| format!("failed to parse {}: {e}", path.display()))?;
+
+    let questions = if output.artifacts.questions_path.is_empty() {
+        return Err(format!(
+            "artifact {} is missing question sidecars; merge requires new-style artifacts",
+            path.display()
+        ));
+    } else {
+        read_jsonl_records::<QuestionResult>(&artifact_relative_path(
+            path,
+            &output.artifacts.questions_path,
+        ))?
+    };
+
+    if output.total_questions > 0 && output.total_questions != questions.len() {
+        return Err(format!(
+            "artifact {} summary says {} questions but loaded {} question records",
+            path.display(),
+            output.total_questions,
+            questions.len()
+        ));
+    }
+
+    let debug_records = if output.artifacts.debug_path.is_empty() {
+        Vec::new()
+    } else {
+        let debug_path = artifact_relative_path(path, &output.artifacts.debug_path);
+        if !debug_path.exists() {
+            return Err(format!(
+                "artifact {} is missing debug sidecar {}",
+                path.display(),
+                debug_path.display()
+            ));
+        }
+        read_jsonl_records::<QuestionDebugRecord>(&debug_path)?
+    };
+
+    if !debug_records.is_empty() && debug_records.len() != questions.len() {
+        return Err(format!(
+            "artifact {} has {} question records but {} debug records",
+            path.display(),
+            questions.len(),
+            debug_records.len()
+        ));
+    }
+
+    Ok(LoadedArtifactBundle {
+        path: path.to_path_buf(),
+        fingerprint: format!("{:016x}", common::fingerprint::fnv1a64(&artifact_bytes)),
+        output,
+        questions,
+        debug_records,
+    })
+}
+
+fn merge_source_artifact(bundle: &LoadedArtifactBundle) -> SourceArtifact {
+    SourceArtifact {
+        path: bundle.path.display().to_string(),
+        fingerprint: bundle.fingerprint.clone(),
+        mode: bundle.output.manifest.mode.clone(),
+        tag: bundle.output.tag.clone(),
+        commit: bundle.output.commit.clone(),
+    }
+}
+
+fn ensure_merge_compatible(
+    base: &LoadedArtifactBundle,
+    other: &LoadedArtifactBundle,
+) -> Result<(), String> {
+    let base_manifest = &base.output.manifest;
+    let other_manifest = &other.output.manifest;
+
+    macro_rules! ensure_same {
+        ($left:expr, $right:expr, $label:literal) => {
+            if $left != $right {
+                return Err(format!(
+                    "cannot merge {} and {}: mismatched {}",
+                    base.path.display(),
+                    other.path.display(),
+                    $label
+                ));
+            }
+        };
+    }
+
+    ensure_same!(base.output.benchmark, other.output.benchmark, "benchmark");
+    ensure_same!(
+        base.output.judge_model,
+        other.output.judge_model,
+        "judge model"
+    );
+    ensure_same!(
+        base.output.retain_model,
+        other.output.retain_model,
+        "retain model"
+    );
+    ensure_same!(
+        base.output.reflect_model,
+        other.output.reflect_model,
+        "reflect model"
+    );
+    ensure_same!(
+        base.output.embedding_model,
+        other.output.embedding_model,
+        "embedding model"
+    );
+    ensure_same!(
+        base.output.reranker_model,
+        other.output.reranker_model,
+        "reranker model"
+    );
+    ensure_same!(
+        base.output.consolidation_strategy,
+        other.output.consolidation_strategy,
+        "consolidation strategy"
+    );
+    ensure_same!(
+        base_manifest.protocol_version,
+        other_manifest.protocol_version,
+        "protocol version"
+    );
+    ensure_same!(base_manifest.mode, other_manifest.mode, "mode");
+    ensure_same!(
+        base_manifest.dataset_fingerprint,
+        other_manifest.dataset_fingerprint,
+        "dataset fingerprint"
+    );
+    ensure_same!(
+        base_manifest.ingest_format,
+        other_manifest.ingest_format,
+        "ingest format"
+    );
+    ensure_same!(
+        base_manifest.consolidation_strategy,
+        other_manifest.consolidation_strategy,
+        "manifest consolidation strategy"
+    );
+    ensure_same!(
+        base_manifest.session_limit,
+        other_manifest.session_limit,
+        "session limit"
+    );
+    ensure_same!(
+        base_manifest.instance_limit,
+        other_manifest.instance_limit,
+        "instance limit"
+    );
+    if serde_json::to_string(&base_manifest.prompt_hashes).ok()
+        != serde_json::to_string(&other_manifest.prompt_hashes).ok()
+    {
+        return Err(format!(
+            "cannot merge {} and {}: mismatched prompt hashes",
+            base.path.display(),
+            other.path.display()
+        ));
+    }
+    if serde_json::to_string(&base_manifest.runtime_config).ok()
+        != serde_json::to_string(&other_manifest.runtime_config).ok()
+    {
+        return Err(format!(
+            "cannot merge {} and {}: mismatched runtime config",
+            base.path.display(),
+            other.path.display()
+        ));
+    }
+
+    Ok(())
+}
+
+fn merge_profile_value(bundles: &[LoadedArtifactBundle]) -> String {
+    let profiles = bundles
+        .iter()
+        .map(|bundle| bundle.output.manifest.profile.clone())
+        .collect::<BTreeSet<_>>();
+    if profiles.len() == 1 {
+        profiles.into_iter().next().unwrap_or_default()
+    } else {
+        "mixed".into()
+    }
+}
+
+fn merge_concurrency_value<F>(bundles: &[LoadedArtifactBundle], select: F) -> usize
+where
+    F: Fn(&LoadedArtifactBundle) -> usize,
+{
+    let values = bundles.iter().map(select).collect::<BTreeSet<_>>();
+    if values.len() == 1 {
+        values.into_iter().next().unwrap_or_default()
+    } else {
+        0
+    }
+}
+
+fn warn_if_mixed<F>(bundles: &[LoadedArtifactBundle], label: &str, select: F)
+where
+    F: Fn(&LoadedArtifactBundle) -> String,
+{
+    let values = bundles.iter().map(select).collect::<BTreeSet<_>>();
+    if values.len() > 1 {
+        eprintln!(
+            "merge note: mixed {label}: {}",
+            values.into_iter().collect::<Vec<_>>().join(", ")
+        );
+    }
+}
+
+fn merge_artifacts(
+    input_paths: &[PathBuf],
+    output_path: &Path,
+    tag: Option<String>,
+) -> Result<(), String> {
+    let bundles = input_paths
+        .iter()
+        .map(|path| load_artifact_bundle(path))
+        .collect::<Result<Vec<_>, _>>()?;
+    let base = bundles
+        .first()
+        .ok_or_else(|| "`merge` requires at least two input artifacts".to_string())?;
+
+    for bundle in bundles.iter().skip(1) {
+        ensure_merge_compatible(base, bundle)?;
+    }
+
+    warn_if_mixed(&bundles, "profiles", |bundle| {
+        bundle.output.manifest.profile.clone()
+    });
+    warn_if_mixed(&bundles, "instance concurrency", |bundle| {
+        bundle.output.manifest.instance_concurrency.to_string()
+    });
+    warn_if_mixed(&bundles, "source commits", |bundle| {
+        bundle
+            .output
+            .commit
+            .clone()
+            .unwrap_or_else(|| "<none>".into())
+    });
+    warn_if_mixed(&bundles, "source dirty-tree state", |bundle| {
+        bundle
+            .output
+            .manifest
+            .dirty_worktree
+            .map(|dirty| dirty.to_string())
+            .unwrap_or_else(|| "<unknown>".into())
+    });
+
+    let mut merged_results = Vec::new();
+    let mut merged_debug = Vec::new();
+    let mut banks = HashMap::new();
+    let metrics = MetricsCollector::new();
+    let mut total_time_s = 0.0;
+    let mut seen_question_ids = BTreeSet::new();
+    let mut seen_debug_ids = BTreeSet::new();
+
+    for bundle in &bundles {
+        metrics.extend_snapshot(&bundle.output.stage_metrics);
+        total_time_s += bundle.output.total_time_s;
+
+        for (question_id, bank_id) in &bundle.output.banks {
+            if banks.insert(question_id.clone(), bank_id.clone()).is_some() {
+                return Err(format!(
+                    "cannot merge {}: duplicate bank for question {}",
+                    bundle.path.display(),
+                    question_id
+                ));
+            }
+        }
+        for result in &bundle.questions {
+            if !seen_question_ids.insert(result.question_id.clone()) {
+                return Err(format!(
+                    "cannot merge {}: duplicate question id {}",
+                    bundle.path.display(),
+                    result.question_id
+                ));
+            }
+            merged_results.push(result.clone());
+        }
+        for record in &bundle.debug_records {
+            if !seen_debug_ids.insert(record.question_id.clone()) {
+                return Err(format!(
+                    "cannot merge {}: duplicate debug record for question {}",
+                    bundle.path.display(),
+                    record.question_id
+                ));
+            }
+            merged_debug.push(record.clone());
+        }
+    }
+
+    merged_results.sort_by(|a, b| a.question_id.cmp(&b.question_id));
+    merged_debug.sort_by(|a, b| a.question_id.cmp(&b.question_id));
+
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
+    }
+    let questions_path = sidecar_path(output_path, "questions");
+    let debug_path = sidecar_path(output_path, "debug");
+    write_jsonl_records(&questions_path, &merged_results)?;
+    write_jsonl_records(&debug_path, &merged_debug)?;
+
+    let mut manifest = base.output.manifest.clone();
+    manifest.mode = BenchCommand::Merge.as_str().into();
+    manifest.profile = merge_profile_value(&bundles);
+    manifest.command = env::args().collect::<Vec<_>>().join(" ");
+    manifest.selected_instances = seen_question_ids.into_iter().collect();
+    manifest.instance_concurrency = merge_concurrency_value(&bundles, |bundle| {
+        bundle.output.manifest.instance_concurrency
+    });
+    manifest.dirty_worktree = git_dirty_worktree();
+    manifest.source_artifact = None;
+    manifest.source_artifacts = bundles.iter().map(merge_source_artifact).collect();
+
+    let accuracy = compute_accuracy(&merged_results);
+    let per_category = compute_per_category(&merged_results);
+
+    let output = BenchmarkOutput {
+        benchmark: base.output.benchmark.clone(),
+        timestamp: Utc::now().to_rfc3339(),
+        commit: git_commit_sha(),
+        tag,
+        retain_model: base.output.retain_model.clone(),
+        reflect_model: base.output.reflect_model.clone(),
+        embedding_model: base.output.embedding_model.clone(),
+        reranker_model: base.output.reranker_model.clone(),
+        judge_model: base.output.judge_model.clone(),
+        consolidation_strategy: base.output.consolidation_strategy.clone(),
+        total_questions: merged_results.len(),
+        accuracy,
+        per_category,
+        banks,
+        manifest,
+        artifacts: BenchmarkArtifacts {
+            questions_path: questions_path.display().to_string(),
+            debug_path: debug_path.display().to_string(),
+        },
+        stage_metrics: metrics.snapshot(),
+        total_time_s,
+    };
+    let json = serde_json::to_string_pretty(&output).expect("serialize merged output");
+    fs::write(output_path, json)
+        .map_err(|e| format!("failed to write {}: {e}", output_path.display()))?;
+
+    println!(
+        "Merged {} artifacts into {}",
+        bundles.len(),
+        output_path.display()
+    );
+    println!("Questions saved to {}", questions_path.display());
+    println!("Debug saved to {}", debug_path.display());
+    Ok(())
+}
+
 // --- Main ---
 
 #[tokio::main]
@@ -1097,15 +1590,30 @@ async fn main() {
     let invocation = parse_args();
     let command = invocation.command;
     let artifact_path = invocation.artifact_path.clone();
+    let merge_inputs = invocation.merge_artifacts.clone();
     let config = invocation.config;
     let output_path = default_output_path(command, &config, artifact_path.as_deref());
 
     // Safety check
-    ensure_output_paths_are_safe(command, &output_path, artifact_path.as_deref(), config.allow_overwrite)
-        .unwrap_or_else(|e| {
-            eprintln!("{e}");
+    if let Err(err) = ensure_output_paths_are_safe(
+        command,
+        &output_path,
+        artifact_path.as_deref(),
+        &merge_inputs,
+        config.allow_overwrite,
+    ) {
+        eprintln!("{err}");
+        std::process::exit(1);
+    }
+
+    // Merge dispatch (early return — no runtime needed)
+    if matches!(command, BenchCommand::Merge) {
+        if let Err(err) = merge_artifacts(&merge_inputs, &output_path, config.tag.clone()) {
+            eprintln!("{err}");
             std::process::exit(1);
-        });
+        }
+        return;
+    }
 
     // Load artifact state for QA mode
     let (existing_banks, source_artifact) = if let Some(ref path) = artifact_path {
@@ -1264,6 +1772,7 @@ async fn main() {
         prompt_hashes: benchmark_prompt_hashes(&runtime),
         runtime_config: benchmark_runtime_config(&runtime),
         source_artifact,
+        source_artifacts: Vec::new(),
     };
 
     // Build judge client (only needed for Run/Qa)
@@ -2410,6 +2919,7 @@ mod tests {
             prompt_hashes: BenchmarkPromptHashes::default(),
             runtime_config: BenchmarkRuntimeConfig::default(),
             source_artifact: None,
+            source_artifacts: Vec::new(),
         };
         let json = serde_json::to_string(&m).unwrap();
         let back: BenchmarkManifest = serde_json::from_str(&json).unwrap();
@@ -2501,7 +3011,7 @@ mod tests {
         fs::write(&output, "{}").unwrap();
 
         let err =
-            ensure_output_paths_are_safe(BenchCommand::Run, &output, None, false).unwrap_err();
+            ensure_output_paths_are_safe(BenchCommand::Run, &output, None, &[], false).unwrap_err();
         assert!(err.contains("refusing to overwrite"));
 
         fs::remove_dir_all(&dir).ok();
@@ -2514,7 +3024,7 @@ mod tests {
         let output = dir.join("test.json");
         fs::write(&output, "{}").unwrap();
 
-        assert!(ensure_output_paths_are_safe(BenchCommand::Run, &output, None, true).is_ok());
+        assert!(ensure_output_paths_are_safe(BenchCommand::Run, &output, None, &[], true).is_ok());
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -2526,7 +3036,7 @@ mod tests {
             std::process::id()
         ));
         let output = dir.join("nonexistent.json");
-        assert!(ensure_output_paths_are_safe(BenchCommand::Run, &output, None, false).is_ok());
+        assert!(ensure_output_paths_are_safe(BenchCommand::Run, &output, None, &[], false).is_ok());
     }
 
     #[test]
@@ -2543,6 +3053,7 @@ mod tests {
             BenchCommand::Qa,
             &artifact,
             Some(&artifact),
+            &[],
             false,
         )
         .unwrap_err();
