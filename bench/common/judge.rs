@@ -22,25 +22,21 @@ pub const JUDGE_MAX_TOKENS: usize = 200;
 pub const JUDGE_MAX_ATTEMPTS: usize = 3;
 
 fn judge_prompt_caching_config() -> llm::PromptCachingConfig {
-    fn parse_prompt_caching(var_name: &str, value: &str) -> llm::PromptCachingConfig {
-        let enabled = match value.trim().to_ascii_lowercase().as_str() {
-            "1" | "true" | "yes" | "on" => true,
-            "0" | "false" | "no" | "off" => false,
-            other => panic!("{var_name} must be a boolean, got: {other}"),
-        };
-
-        llm::PromptCachingConfig { enabled }
-    }
-
-    env::var("JUDGE_PROMPT_CACHING")
-        .ok()
-        .map(|value| parse_prompt_caching("JUDGE_PROMPT_CACHING", &value))
-        .or_else(|| {
-            env::var("LLM_PROMPT_CACHING")
-                .ok()
-                .map(|value| parse_prompt_caching("LLM_PROMPT_CACHING", &value))
-        })
-        .unwrap_or_default()
+    llm::parse_prompt_caching_config(
+        "JUDGE_PROMPT_CACHING",
+        env::var("JUDGE_PROMPT_CACHING")
+            .ok()
+            .or_else(|| env::var("LLM_PROMPT_CACHING").ok()),
+        "JUDGE_PROMPT_CACHING_RETENTION",
+        env::var("JUDGE_PROMPT_CACHING_RETENTION")
+            .ok()
+            .or_else(|| env::var("LLM_PROMPT_CACHING_RETENTION").ok()),
+        "JUDGE_PROMPT_CACHING_KEY",
+        env::var("JUDGE_PROMPT_CACHING_KEY")
+            .ok()
+            .or_else(|| env::var("LLM_PROMPT_CACHING_KEY").ok()),
+    )
+    .unwrap_or_else(|err| panic!("{err}"))
 }
 
 fn judge_provider_config(override_model: Option<String>) -> ProviderConfig {
@@ -150,7 +146,9 @@ pub fn judge_label(override_model: &Option<String>) -> String {
 #[cfg(test)]
 mod tests {
     use super::judge_provider_config;
-    use elephant::llm::Provider;
+    use elephant::llm::{
+        ExplicitPromptCachingConfig, PromptCacheRetention, PromptCachingConfig, Provider,
+    };
     use std::sync::{Mutex, OnceLock};
 
     fn env_lock() -> &'static Mutex<()> {
@@ -182,7 +180,7 @@ mod tests {
         let config = judge_provider_config(None);
 
         assert_eq!(config.provider, Provider::Anthropic);
-        assert!(!config.prompt_caching.enabled);
+        assert_eq!(config.prompt_caching, PromptCachingConfig::ProviderDefault);
         clear_env("JUDGE_PROMPT_CACHING");
         clear_env("LLM_PROMPT_CACHING");
         clear_env("LLM_MODEL");
@@ -202,11 +200,37 @@ mod tests {
         let config = judge_provider_config(None);
 
         assert_eq!(config.provider, Provider::OpenAi);
-        assert!(config.prompt_caching.enabled);
+        assert_eq!(config.prompt_caching, PromptCachingConfig::explicit());
         clear_env("JUDGE_MODEL");
         clear_env("JUDGE_API_KEY");
         clear_env("JUDGE_PROVIDER");
         clear_env("LLM_PROMPT_CACHING");
+    }
+
+    #[test]
+    fn judge_prompt_caching_options_promote_to_explicit_policy() {
+        let _guard = env_lock().lock().unwrap();
+        set_env("JUDGE_PROVIDER", "openai");
+        set_env("JUDGE_API_KEY", "test-key");
+        set_env("JUDGE_MODEL", "gpt-4o-mini");
+        clear_env("JUDGE_PROMPT_CACHING");
+        set_env("JUDGE_PROMPT_CACHING_RETENTION", "24h");
+        set_env("JUDGE_PROMPT_CACHING_KEY", "judge-bench");
+
+        let config = judge_provider_config(None);
+
+        assert_eq!(
+            config.prompt_caching,
+            PromptCachingConfig::Explicit(ExplicitPromptCachingConfig {
+                retention: PromptCacheRetention::Extended,
+                scope_key: Some("judge-bench".into()),
+            })
+        );
+        clear_env("JUDGE_PROMPT_CACHING_KEY");
+        clear_env("JUDGE_PROMPT_CACHING_RETENTION");
+        clear_env("JUDGE_MODEL");
+        clear_env("JUDGE_API_KEY");
+        clear_env("JUDGE_PROVIDER");
     }
 
     #[test]
@@ -226,7 +250,7 @@ mod tests {
             .or_else(|| panic.downcast_ref::<&str>().copied())
             .unwrap_or("");
 
-        assert!(message.contains("JUDGE_PROMPT_CACHING must be a boolean"));
+        assert!(message.contains("JUDGE_PROMPT_CACHING"));
         clear_env("JUDGE_PROMPT_CACHING");
         clear_env("LLM_MODEL");
         clear_env("LLM_API_KEY");

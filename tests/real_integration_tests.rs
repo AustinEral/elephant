@@ -87,7 +87,7 @@ fn make_prompt_caching_test_llm() -> Arc<dyn LlmClient> {
             api_key: llm_api_key(),
             model: llm_model(),
             base_url: llm_base_url(),
-            prompt_caching: llm::PromptCachingConfig { enabled: true },
+            prompt_caching: llm::PromptCachingConfig::explicit(),
         })
         .unwrap(),
     )

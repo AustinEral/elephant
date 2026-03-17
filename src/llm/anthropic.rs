@@ -5,7 +5,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
-use crate::llm::{LlmClient, PromptCachingConfig};
+use crate::llm::{LlmClient, PromptCacheRetention, PromptCachingConfig};
 use crate::types::llm::{
     CacheStatus, CompletionRequest, CompletionResponse, CompletionUsage, ToolCall, ToolChoice,
 };
@@ -77,6 +77,8 @@ impl AnthropicClient {
 struct AnthropicCacheControl {
     #[serde(rename = "type")]
     kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ttl: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -196,8 +198,16 @@ impl AnthropicUsage {
 
 impl PromptCachingConfig {
     fn anthropic_cache_control(&self) -> Option<AnthropicCacheControl> {
-        self.enabled
-            .then_some(AnthropicCacheControl { kind: "ephemeral" })
+        match self {
+            PromptCachingConfig::ProviderDefault => None,
+            PromptCachingConfig::Explicit(explicit) => Some(AnthropicCacheControl {
+                kind: "ephemeral",
+                ttl: Some(match explicit.retention {
+                    PromptCacheRetention::Standard => "5m",
+                    PromptCacheRetention::Extended => "1h",
+                }),
+            }),
+        }
     }
 }
 
@@ -378,9 +388,9 @@ mod tests {
         };
 
         let json = serde_json::to_string(&request).unwrap();
-        if prompt_caching.enabled {
+        if matches!(prompt_caching, PromptCachingConfig::Explicit(_)) {
             assert!(
-                json.contains("\"cache_control\":{\"type\":\"ephemeral\"}"),
+                json.contains("\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\""),
                 "enabled prompt caching should serialize cache_control: {json}"
             );
         } else {
@@ -429,13 +439,21 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_prompt_caching_request_enabled() {
-        let json = anthropic_request_json(PromptCachingConfig { enabled: true });
-        assert!(json.contains("\"cache_control\":{\"type\":\"ephemeral\"}"));
+    fn anthropic_prompt_caching_request_explicit_standard() {
+        let json = anthropic_request_json(PromptCachingConfig::explicit());
+        assert!(json.contains("\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"5m\"}"));
     }
 
     #[test]
-    fn anthropic_prompt_caching_request_disabled() {
+    fn anthropic_prompt_caching_request_explicit_extended() {
+        let json = anthropic_request_json(PromptCachingConfig::explicit_with_retention(
+            PromptCacheRetention::Extended,
+        ));
+        assert!(json.contains("\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}"));
+    }
+
+    #[test]
+    fn anthropic_prompt_caching_request_provider_default() {
         let json = anthropic_request_json(PromptCachingConfig::default());
         assert!(!json.contains("cache_control"));
     }

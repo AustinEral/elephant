@@ -97,11 +97,11 @@ fn provider_prompt_caching_anthropic_request_uses_ephemeral_cache_control_when_e
     let json = anthropic::anthropic_request_json(
         &request,
         "claude-sonnet",
-        &PromptCachingConfig { enabled: true },
+        &PromptCachingConfig::explicit(),
     )
     .expect("anthropic request should serialize");
 
-    assert!(json.contains("\"cache_control\":{\"type\":\"ephemeral\"}"));
+    assert!(json.contains("\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"5m\"}"));
 }
 fn is_official_openai_api_base_url(base_url: &str) -> bool {
     base_url.trim_end_matches('/') == "https://api.openai.com/v1"

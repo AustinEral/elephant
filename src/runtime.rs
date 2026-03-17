@@ -157,11 +157,14 @@ pub struct BuildRuntimeOptions {
 
 fn make_llm(config: &LlmConfig) -> Result<Box<dyn LlmClient>> {
     match config.provider.as_str() {
-        "openai" => Ok(Box::new(OpenAiClient::new(
-            config.api_key.clone(),
-            config.model.clone(),
-            config.base_url.clone(),
-        )?)),
+        "openai" => Ok(Box::new(
+            OpenAiClient::new(
+                config.api_key.clone(),
+                config.model.clone(),
+                config.base_url.clone(),
+            )?
+            .prompt_caching(config.prompt_caching.clone()),
+        )),
         _ => Ok(Box::new(
             AnthropicClient::new(config.api_key.clone(), config.model.clone())?
                 .prompt_caching(config.prompt_caching.clone()),
@@ -174,25 +177,16 @@ fn env_required(name: &str) -> Result<String> {
 }
 
 fn prompt_caching_from_env(var_name: &str) -> Result<crate::llm::PromptCachingConfig> {
-    let enabled = match env::var(var_name) {
-        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
-            "1" | "true" | "yes" | "on" => true,
-            "0" | "false" | "no" | "off" => false,
-            other => {
-                return Err(Error::Internal(format!(
-                    "{var_name} must be a boolean, got: {other}"
-                )));
-            }
-        },
-        Err(env::VarError::NotPresent) => return Ok(crate::llm::PromptCachingConfig::default()),
-        Err(err) => {
-            return Err(Error::Internal(format!(
-                "{var_name} could not be read: {err}"
-            )));
-        }
-    };
-
-    Ok(crate::llm::PromptCachingConfig { enabled })
+    let retention_var = format!("{var_name}_RETENTION");
+    let key_var = format!("{var_name}_KEY");
+    crate::llm::parse_prompt_caching_config(
+        var_name,
+        env::var(var_name).ok(),
+        &retention_var,
+        env::var(&retention_var).ok(),
+        &key_var,
+        env::var(&key_var).ok(),
+    )
 }
 
 fn stage_llm(
@@ -541,10 +535,12 @@ mod tests {
     fn runtime_prompt_caching_from_env_defaults_disabled() {
         let _guard = env_lock().lock().unwrap();
         clear_env("LLM_PROMPT_CACHING");
+        clear_env("LLM_PROMPT_CACHING_RETENTION");
+        clear_env("LLM_PROMPT_CACHING_KEY");
 
         let config = prompt_caching_from_env("LLM_PROMPT_CACHING").unwrap();
 
-        assert_eq!(config, crate::llm::PromptCachingConfig::default());
+        assert_eq!(config, crate::llm::PromptCachingConfig::ProviderDefault);
     }
 
     #[test]
@@ -555,9 +551,33 @@ mod tests {
 
             let config = prompt_caching_from_env("LLM_PROMPT_CACHING").unwrap();
 
-            assert!(config.enabled, "expected {value} to enable prompt caching");
+            assert_eq!(
+                config,
+                crate::llm::PromptCachingConfig::explicit(),
+                "expected {value} to request explicit prompt caching"
+            );
         }
         clear_env("LLM_PROMPT_CACHING");
+    }
+
+    #[test]
+    fn runtime_prompt_caching_from_env_accepts_extended_retention() {
+        let _guard = env_lock().lock().unwrap();
+        clear_env("LLM_PROMPT_CACHING");
+        set_env("LLM_PROMPT_CACHING_RETENTION", "24h");
+        set_env("LLM_PROMPT_CACHING_KEY", "bench");
+
+        let config = prompt_caching_from_env("LLM_PROMPT_CACHING").unwrap();
+
+        assert_eq!(
+            config,
+            crate::llm::PromptCachingConfig::Explicit(crate::llm::ExplicitPromptCachingConfig {
+                retention: crate::llm::PromptCacheRetention::Extended,
+                scope_key: Some("bench".into()),
+            })
+        );
+        clear_env("LLM_PROMPT_CACHING_RETENTION");
+        clear_env("LLM_PROMPT_CACHING_KEY");
     }
 
     #[test]

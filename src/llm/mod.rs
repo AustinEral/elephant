@@ -239,11 +239,158 @@ pub enum Provider {
     OpenAi,
 }
 
-/// Shared prompt-caching settings for provider clients.
+/// Retention intent for request-level prompt caching controls.
+///
+/// This is intentionally semantic rather than provider-specific:
+/// - `Standard` maps to the shorter provider-native retention window
+/// - `Extended` maps to the longer provider-native retention window
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PromptCacheRetention {
+    /// Provider-native standard retention.
+    #[default]
+    Standard,
+    /// Provider-native extended retention.
+    Extended,
+}
+
+/// Explicit request-level prompt caching controls.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PromptCachingConfig {
-    /// Whether provider-native prompt caching should be enabled.
-    pub enabled: bool,
+pub struct ExplicitPromptCachingConfig {
+    /// Requested provider-native retention window.
+    pub retention: PromptCacheRetention,
+    /// Optional stable cache scope key for providers that support it.
+    pub scope_key: Option<String>,
+}
+
+/// Shared prompt-caching policy across providers.
+///
+/// `ProviderDefault` preserves the provider's natural behavior:
+/// - OpenAI Chat Completions: automatic caching on supported requests/models
+/// - Anthropic Messages: no prompt caching unless explicit cache controls are sent
+///
+/// `Explicit` requests provider-specific prompt caching controls where they exist.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum PromptCachingConfig {
+    /// Preserve provider-native defaults.
+    #[default]
+    ProviderDefault,
+    /// Apply explicit request-level prompt caching controls.
+    Explicit(ExplicitPromptCachingConfig),
+}
+
+impl PromptCachingConfig {
+    /// Preserve provider-native prompt caching behavior.
+    pub fn provider_default() -> Self {
+        Self::ProviderDefault
+    }
+
+    /// Apply explicit request-level prompt caching controls using standard retention.
+    pub fn explicit() -> Self {
+        Self::Explicit(ExplicitPromptCachingConfig::default())
+    }
+
+    /// Apply explicit request-level prompt caching controls with a chosen retention intent.
+    pub fn explicit_with_retention(retention: PromptCacheRetention) -> Self {
+        Self::Explicit(ExplicitPromptCachingConfig {
+            retention,
+            scope_key: None,
+        })
+    }
+
+    /// Attach a stable cache scope key to an explicit prompt-caching policy.
+    pub fn with_scope_key(self, scope_key: impl Into<String>) -> Self {
+        let scope_key = scope_key.into();
+        let mut explicit = match self {
+            Self::ProviderDefault => ExplicitPromptCachingConfig::default(),
+            Self::Explicit(explicit) => explicit,
+        };
+        explicit.scope_key = Some(scope_key);
+        Self::Explicit(explicit)
+    }
+}
+
+fn parse_prompt_cache_retention(
+    var_name: &str,
+    value: Option<String>,
+) -> Result<Option<PromptCacheRetention>> {
+    value
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            match normalized.as_str() {
+                "standard" | "short" | "5m" | "in_memory" | "in-memory" => {
+                    Ok(PromptCacheRetention::Standard)
+                }
+                "extended" | "long" | "1h" | "24h" => Ok(PromptCacheRetention::Extended),
+                other => Err(Error::Internal(format!(
+                    "{var_name} must be one of standard|short|5m|in_memory|extended|1h|24h, got: {other}"
+                ))),
+            }
+        })
+        .transpose()
+}
+
+/// Parse prompt-caching configuration from already-resolved string values.
+///
+/// This keeps provider-default semantics explicit while allowing richer request-level
+/// controls when a provider supports them.
+pub fn parse_prompt_caching_config(
+    mode_var_name: &str,
+    mode: Option<String>,
+    retention_var_name: &str,
+    retention: Option<String>,
+    scope_key_var_name: &str,
+    scope_key: Option<String>,
+) -> Result<PromptCachingConfig> {
+    let parsed_retention = parse_prompt_cache_retention(retention_var_name, retention.clone())?;
+    let scope_key = scope_key.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    });
+
+    let explicit_from_options = parsed_retention.is_some() || scope_key.is_some();
+    let parsed_mode = match mode {
+        Some(value) => {
+            let normalized = value.trim().to_ascii_lowercase();
+            match normalized.as_str() {
+                "default" | "provider_default" | "provider-default" | "auto" => {
+                    PromptCachingConfig::ProviderDefault
+                }
+                "explicit" | "enabled" | "enable" | "on" | "true" | "yes" | "1" => {
+                    PromptCachingConfig::explicit()
+                }
+                // Backward-compatible shorthand: the old boolean "off" means
+                // "do not request explicit controls", i.e. preserve provider defaults.
+                "disabled" | "disable" | "off" | "false" | "no" | "0" => {
+                    PromptCachingConfig::ProviderDefault
+                }
+                other => {
+                    return Err(Error::Internal(format!(
+                        "{mode_var_name} must be one of default|auto|explicit|on|off, got: {other}"
+                    )));
+                }
+            }
+        }
+        None if explicit_from_options => PromptCachingConfig::explicit(),
+        None => PromptCachingConfig::ProviderDefault,
+    };
+
+    match parsed_mode {
+        PromptCachingConfig::ProviderDefault => {
+            if explicit_from_options {
+                return Err(Error::Internal(format!(
+                    "{mode_var_name}=provider_default cannot be combined with {retention_var_name} or {scope_key_var_name}"
+                )));
+            }
+            Ok(PromptCachingConfig::ProviderDefault)
+        }
+        PromptCachingConfig::Explicit(mut explicit) => {
+            if let Some(retention) = parsed_retention {
+                explicit.retention = retention;
+            }
+            explicit.scope_key = scope_key;
+            Ok(PromptCachingConfig::Explicit(explicit))
+        }
+    }
 }
 
 /// Configuration for a single LLM provider.
@@ -282,11 +429,14 @@ pub fn build_client(config: &ProviderConfig) -> crate::error::Result<Box<dyn Llm
             anthropic::AnthropicClient::new(config.api_key.clone(), config.model.clone())?
                 .prompt_caching(config.prompt_caching.clone()),
         )),
-        Provider::OpenAi => Ok(Box::new(openai::OpenAiClient::new(
-            config.api_key.clone(),
-            config.model.clone(),
-            config.base_url.clone(),
-        )?)),
+        Provider::OpenAi => Ok(Box::new(
+            openai::OpenAiClient::new(
+                config.api_key.clone(),
+                config.model.clone(),
+                config.base_url.clone(),
+            )?
+            .prompt_caching(config.prompt_caching.clone()),
+        )),
     }
 }
 
@@ -341,5 +491,77 @@ mod tests {
         let input = r#"{"msg": "hello {world}"}"#;
         let result = extract_json(input).unwrap();
         assert_eq!(result, input);
+    }
+
+    #[test]
+    fn prompt_caching_parse_defaults_to_provider_default() {
+        let parsed = parse_prompt_caching_config(
+            "LLM_PROMPT_CACHING",
+            None,
+            "LLM_PROMPT_CACHE_RETENTION",
+            None,
+            "LLM_PROMPT_CACHE_KEY",
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(parsed, PromptCachingConfig::ProviderDefault);
+    }
+
+    #[test]
+    fn prompt_caching_parse_truthy_mode_becomes_explicit_standard() {
+        let parsed = parse_prompt_caching_config(
+            "LLM_PROMPT_CACHING",
+            Some("true".into()),
+            "LLM_PROMPT_CACHE_RETENTION",
+            None,
+            "LLM_PROMPT_CACHE_KEY",
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            parsed,
+            PromptCachingConfig::Explicit(ExplicitPromptCachingConfig {
+                retention: PromptCacheRetention::Standard,
+                scope_key: None,
+            })
+        );
+    }
+
+    #[test]
+    fn prompt_caching_parse_options_imply_explicit_when_mode_unspecified() {
+        let parsed = parse_prompt_caching_config(
+            "LLM_PROMPT_CACHING",
+            None,
+            "LLM_PROMPT_CACHE_RETENTION",
+            Some("24h".into()),
+            "LLM_PROMPT_CACHE_KEY",
+            Some("benchmark-seed".into()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            parsed,
+            PromptCachingConfig::Explicit(ExplicitPromptCachingConfig {
+                retention: PromptCacheRetention::Extended,
+                scope_key: Some("benchmark-seed".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn prompt_caching_parse_rejects_default_mode_with_explicit_options() {
+        let err = parse_prompt_caching_config(
+            "LLM_PROMPT_CACHING",
+            Some("default".into()),
+            "LLM_PROMPT_CACHE_RETENTION",
+            Some("extended".into()),
+            "LLM_PROMPT_CACHE_KEY",
+            None,
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, Error::Internal(_)));
     }
 }
