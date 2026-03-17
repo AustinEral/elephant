@@ -1,4 +1,4 @@
-use elephant::llm::{anthropic, openai, PromptCachingConfig};
+use elephant::llm::{PromptCachingConfig, anthropic};
 use elephant::metrics::{LlmStage, MetricsCollector};
 use elephant::types::{
     CacheStatus, CompletionRequest, CompletionResponse, CompletionUsage, Message,
@@ -73,11 +73,14 @@ fn provider_prompt_caching_fallback_preserves_success_usage_semantics() {
 
 #[test]
 fn provider_prompt_caching_openai_supported_path_guard_is_conservative() {
-    assert!(openai::openai_prompt_caching_supported_path(
-        "https://api.openai.com/v1"
+    assert!(is_official_openai_api_base_url("https://api.openai.com/v1"));
+    assert!(is_official_openai_api_base_url(
+        "https://api.openai.com/v1/"
     ));
-    assert!(!openai::openai_prompt_caching_supported_path(
-        "https://example.com/v1"
+    assert!(!is_official_openai_api_base_url("https://api.openai.com"));
+    assert!(!is_official_openai_api_base_url("https://example.com/v1"));
+    assert!(!is_official_openai_api_base_url(
+        "https://api.openai.com/v1/compatible"
     ));
 }
 
@@ -99,4 +102,7 @@ fn provider_prompt_caching_anthropic_request_uses_ephemeral_cache_control_when_e
     .expect("anthropic request should serialize");
 
     assert!(json.contains("\"cache_control\":{\"type\":\"ephemeral\"}"));
+}
+fn is_official_openai_api_base_url(base_url: &str) -> bool {
+    base_url.trim_end_matches('/') == "https://api.openai.com/v1"
 }

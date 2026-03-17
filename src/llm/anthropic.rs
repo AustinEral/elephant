@@ -46,15 +46,6 @@ pub struct AnthropicClient {
 impl AnthropicClient {
     /// Create a new Anthropic client. Auto-detects OAuth from token prefix.
     pub fn new(api_key: String, model: String) -> Result<Self> {
-        Self::new_with_prompt_caching(api_key, model, PromptCachingConfig::default())
-    }
-
-    /// Create a new Anthropic client with explicit prompt-caching settings.
-    pub fn new_with_prompt_caching(
-        api_key: String,
-        model: String,
-        prompt_caching: PromptCachingConfig,
-    ) -> Result<Self> {
         let auth = AnthropicAuth::from_token(api_key);
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(
@@ -69,8 +60,14 @@ impl AnthropicClient {
             client,
             auth,
             default_model: model,
-            prompt_caching,
+            prompt_caching: PromptCachingConfig::default(),
         })
+    }
+
+    /// Override prompt-caching settings while keeping the default constructor minimal.
+    pub fn with_prompt_caching(mut self, prompt_caching: PromptCachingConfig) -> Self {
+        self.prompt_caching = prompt_caching;
+        self
     }
 }
 
@@ -171,19 +168,18 @@ fn normalize_anthropic_usage(usage: &AnthropicUsage) -> CompletionUsage {
     let uncached_prompt_tokens = usage.input_tokens;
     let prompt_tokens =
         uncached_prompt_tokens + cache_hit_prompt_tokens + cache_write_prompt_tokens;
-
-    let cache_status = if usage.cache_read_input_tokens.is_none()
-        && usage.cache_creation_input_tokens.is_none()
-    {
-        CacheStatus::Unsupported
-    } else if cache_hit_prompt_tokens == 0 && cache_write_prompt_tokens == 0 {
-        CacheStatus::NoActivity
-    } else if cache_hit_prompt_tokens == 0 {
-        CacheStatus::WriteOnly
-    } else if cache_write_prompt_tokens == 0 {
-        CacheStatus::Hit
-    } else {
-        CacheStatus::HitAndWrite
+    let has_cache_metadata =
+        usage.cache_read_input_tokens.is_some() || usage.cache_creation_input_tokens.is_some();
+    let cache_status = match (
+        has_cache_metadata,
+        cache_hit_prompt_tokens > 0,
+        cache_write_prompt_tokens > 0,
+    ) {
+        (false, _, _) => CacheStatus::Unsupported,
+        (true, false, false) => CacheStatus::NoActivity,
+        (true, false, true) => CacheStatus::WriteOnly,
+        (true, true, false) => CacheStatus::Hit,
+        (true, true, true) => CacheStatus::HitAndWrite,
     };
 
     CompletionUsage {
@@ -197,7 +193,9 @@ fn normalize_anthropic_usage(usage: &AnthropicUsage) -> CompletionUsage {
 }
 
 fn anthropic_cache_control(prompt_caching: &PromptCachingConfig) -> Option<AnthropicCacheControl> {
-    prompt_caching.enabled.then_some(AnthropicCacheControl { kind: "ephemeral" })
+    prompt_caching
+        .enabled
+        .then_some(AnthropicCacheControl { kind: "ephemeral" })
 }
 
 fn build_anthropic_request(

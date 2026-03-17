@@ -41,7 +41,6 @@ use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use tower::util::ServiceExt;
 
-use elephant::llm::openai::openai_prompt_caching_supported_path;
 use elephant::types::llm::{CacheStatus, CompletionRequest, CompletionResponse, Message};
 
 // ---------------------------------------------------------------------------
@@ -96,6 +95,10 @@ fn make_prompt_caching_test_llm() -> Arc<dyn LlmClient> {
 
 fn prompt_caching_base_url() -> String {
     llm_base_url().unwrap_or_else(|| "https://api.openai.com/v1".into())
+}
+
+fn is_official_openai_api_base_url(base_url: &str) -> bool {
+    base_url.trim_end_matches('/') == "https://api.openai.com/v1"
 }
 
 fn repeated_long_prompt(provider_name: &str) -> String {
@@ -852,7 +855,7 @@ async fn live_prompt_caching_openai_repeated_prompt() {
 
     let (_first, second) = run_prompt_caching_smoke("openai").await;
     let base_url = prompt_caching_base_url();
-    let official_path = openai_prompt_caching_supported_path(&base_url);
+    let official_path = is_official_openai_api_base_url(&base_url);
 
     match second.usage.cache_status {
         CacheStatus::Hit | CacheStatus::NoActivity => {}

@@ -278,16 +278,14 @@ pub struct LlmConfig {
 /// Build an LLM client from a provider configuration.
 pub fn build_client(config: &ProviderConfig) -> crate::error::Result<Box<dyn LlmClient>> {
     match config.provider {
-        Provider::Anthropic => Ok(Box::new(anthropic::AnthropicClient::new_with_prompt_caching(
-            config.api_key.clone(),
-            config.model.clone(),
-            config.prompt_caching.clone(),
-        )?)),
-        Provider::OpenAi => Ok(Box::new(openai::OpenAiClient::new_with_prompt_caching(
+        Provider::Anthropic => Ok(Box::new(
+            anthropic::AnthropicClient::new(config.api_key.clone(), config.model.clone())?
+                .with_prompt_caching(config.prompt_caching.clone()),
+        )),
+        Provider::OpenAi => Ok(Box::new(openai::OpenAiClient::new(
             config.api_key.clone(),
             config.model.clone(),
             config.base_url.clone(),
-            config.prompt_caching.clone(),
         )?)),
     }
 }

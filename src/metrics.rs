@@ -248,7 +248,7 @@ impl MetricsCollector {
         let mut operator_usage = BTreeMap::new();
         for (stage, usage) in self.cache_aware_snapshot() {
             operator_usage
-                .entry(operator_stage(stage))
+                .entry(OperatorStage::from(stage))
                 .or_insert_with(CacheAwareStageUsage::default)
                 .merge(&usage);
         }
@@ -278,11 +278,7 @@ impl MetricsCollector {
     pub fn extend_cache_aware_snapshot(&self, snapshot: &BTreeMap<LlmStage, CacheAwareStageUsage>) {
         let mut inner = self.inner.lock().expect("metrics mutex poisoned");
         for (stage, usage) in snapshot {
-            inner
-                .cache_aware
-                .entry(*stage)
-                .or_default()
-                .merge(usage);
+            inner.cache_aware.entry(*stage).or_default().merge(usage);
 
             let legacy_usage = usage.legacy_totals();
             let legacy = inner.legacy.entry(*stage).or_default();
@@ -323,25 +319,28 @@ impl MetricsCollector {
 
     /// Return the summed cache-aware usage across all stages.
     pub fn cache_aware_total_usage(&self) -> CacheAwareStageUsage {
-        self.cache_aware_snapshot()
-            .into_values()
-            .fold(CacheAwareStageUsage::default(), |mut acc, stage| {
+        self.cache_aware_snapshot().into_values().fold(
+            CacheAwareStageUsage::default(),
+            |mut acc, stage| {
                 acc.merge(&stage);
                 acc
-            })
+            },
+        )
     }
 }
 
-fn operator_stage(stage: LlmStage) -> OperatorStage {
-    match stage {
-        LlmStage::RetainExtract
-        | LlmStage::RetainResolve
-        | LlmStage::RetainGraph
-        | LlmStage::RetainOpinion => OperatorStage::Retain,
-        LlmStage::Reflect => OperatorStage::Reflect,
-        LlmStage::Consolidate => OperatorStage::Consolidate,
-        LlmStage::OpinionMerge => OperatorStage::OpinionMerge,
-        LlmStage::Judge => OperatorStage::Judge,
+impl From<LlmStage> for OperatorStage {
+    fn from(stage: LlmStage) -> Self {
+        match stage {
+            LlmStage::RetainExtract
+            | LlmStage::RetainResolve
+            | LlmStage::RetainGraph
+            | LlmStage::RetainOpinion => OperatorStage::Retain,
+            LlmStage::Reflect => OperatorStage::Reflect,
+            LlmStage::Consolidate => OperatorStage::Consolidate,
+            LlmStage::OpinionMerge => OperatorStage::OpinionMerge,
+            LlmStage::Judge => OperatorStage::Judge,
+        }
     }
 }
 
@@ -550,7 +549,10 @@ mod tests {
         let legacy_total = collector.total_usage();
 
         assert_eq!(cache_total.prompt_tokens, legacy_total.prompt_tokens);
-        assert_eq!(cache_total.completion_tokens, legacy_total.completion_tokens);
+        assert_eq!(
+            cache_total.completion_tokens,
+            legacy_total.completion_tokens
+        );
         assert_eq!(cache_total.calls, legacy_total.calls);
         assert_eq!(cache_total.errors, legacy_total.errors);
         assert_eq!(cache_total.latency_ms, legacy_total.latency_ms);

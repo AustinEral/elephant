@@ -5,7 +5,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
-use crate::llm::{LlmClient, PromptCachingConfig};
+use crate::llm::LlmClient;
 use crate::types::llm::{
     CacheStatus, CompletionRequest, CompletionResponse, CompletionUsage, ToolCall, ToolChoice,
 };
@@ -18,22 +18,11 @@ pub struct OpenAiClient {
     api_key: String,
     default_model: String,
     base_url: String,
-    prompt_caching: PromptCachingConfig,
 }
 
 impl OpenAiClient {
     /// Create a new OpenAI client with optional base URL for compatible providers.
     pub fn new(api_key: String, model: String, base_url: Option<String>) -> Result<Self> {
-        Self::new_with_prompt_caching(api_key, model, base_url, PromptCachingConfig::default())
-    }
-
-    /// Create a new OpenAI client with explicit prompt-caching settings.
-    pub fn new_with_prompt_caching(
-        api_key: String,
-        model: String,
-        base_url: Option<String>,
-        prompt_caching: PromptCachingConfig,
-    ) -> Result<Self> {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(
                 std::env::var("LLM_TIMEOUT_SECS")
@@ -48,7 +37,6 @@ impl OpenAiClient {
             api_key,
             default_model: model,
             base_url: base_url.unwrap_or_else(|| API_URL.to_string()),
-            prompt_caching,
         })
     }
 }
@@ -178,35 +166,31 @@ fn normalize_openai_usage(usage: &OpenAiUsage) -> CompletionUsage {
         .as_ref()
         .and_then(|details| details.cached_tokens)
         .unwrap_or(0);
-    let cache_status = if usage.prompt_tokens_details.is_none() {
-        CacheStatus::Unsupported
-    } else if cache_hit_prompt_tokens == 0 {
-        CacheStatus::NoActivity
-    } else {
-        CacheStatus::Hit
+    let cache_status = match (
+        usage.prompt_tokens_details.is_some(),
+        cache_hit_prompt_tokens > 0,
+    ) {
+        (false, _) => CacheStatus::Unsupported,
+        (true, false) => CacheStatus::NoActivity,
+        (true, true) => CacheStatus::Hit,
     };
+    // OpenAI's current Chat Completions usage payload does not expose cache-write tokens.
+    let cache_write_prompt_tokens = 0;
 
     CompletionUsage {
         prompt_tokens: usage.prompt_tokens,
         uncached_prompt_tokens: usage.prompt_tokens.saturating_sub(cache_hit_prompt_tokens),
         cache_hit_prompt_tokens,
-        cache_write_prompt_tokens: 0,
+        cache_write_prompt_tokens,
         completion_tokens: usage.completion_tokens,
         cache_status,
     }
-}
-
-/// Return whether the base URL matches the official OpenAI Chat Completions path.
-pub fn openai_prompt_caching_supported_path(base_url: &str) -> bool {
-    base_url.trim_end_matches('/') == API_URL
 }
 
 #[async_trait]
 impl LlmClient for OpenAiClient {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
         let model = super::resolve_model(request.model, &self.default_model);
-        let _prompt_caching_supported_path =
-            self.prompt_caching.enabled && openai_prompt_caching_supported_path(&self.base_url);
 
         // Build messages: system prompt goes as a system message in the array
         let mut messages: Vec<OpenAiMessage> = Vec::new();
@@ -359,17 +343,9 @@ impl LlmClient for OpenAiClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::PromptCachingConfig;
     use crate::types::llm::{CacheStatus, Message};
 
-    fn openai_request_json(prompt_caching: PromptCachingConfig) -> String {
-        let _client = OpenAiClient::new_with_prompt_caching(
-            "test-key".into(),
-            "gpt-4o-mini".into(),
-            None,
-            prompt_caching,
-        )
-        .unwrap();
+    fn openai_request_json() -> String {
         let request = OpenAiRequest {
             model: "gpt-4o-mini".into(),
             messages: vec![OpenAiMessage {
@@ -443,24 +419,9 @@ mod tests {
 
     #[test]
     fn openai_prompt_caching_request_default_body_unchanged() {
-        let json = openai_request_json(PromptCachingConfig { enabled: true });
+        let json = openai_request_json();
         assert!(!json.contains("prompt_cache_retention"));
         assert!(!json.contains("prompt_cache_key"));
-    }
-
-    #[test]
-    fn openai_prompt_caching_supported_path_guard_accepts_official_api() {
-        assert!(openai_prompt_caching_supported_path("https://api.openai.com/v1"));
-        assert!(openai_prompt_caching_supported_path("https://api.openai.com/v1/"));
-    }
-
-    #[test]
-    fn openai_prompt_caching_supported_path_guard_rejects_custom_base_url() {
-        assert!(!openai_prompt_caching_supported_path("https://api.openai.com"));
-        assert!(!openai_prompt_caching_supported_path("https://example.com/v1"));
-        assert!(!openai_prompt_caching_supported_path(
-            "https://api.openai.com/v1/compatible"
-        ));
     }
 
     #[tokio::test]

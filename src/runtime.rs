@@ -157,17 +157,15 @@ pub struct BuildRuntimeOptions {
 
 fn make_llm(config: &LlmConfig) -> Result<Box<dyn LlmClient>> {
     match config.provider.as_str() {
-        "openai" => Ok(Box::new(OpenAiClient::new_with_prompt_caching(
+        "openai" => Ok(Box::new(OpenAiClient::new(
             config.api_key.clone(),
             config.model.clone(),
             config.base_url.clone(),
-            config.prompt_caching.clone(),
         )?)),
-        _ => Ok(Box::new(AnthropicClient::new_with_prompt_caching(
-            config.api_key.clone(),
-            config.model.clone(),
-            config.prompt_caching.clone(),
-        )?)),
+        _ => Ok(Box::new(
+            AnthropicClient::new(config.api_key.clone(), config.model.clone())?
+                .with_prompt_caching(config.prompt_caching.clone()),
+        )),
     }
 }
 
@@ -187,7 +185,11 @@ fn prompt_caching_from_env(var_name: &str) -> Result<crate::llm::PromptCachingCo
             }
         },
         Err(env::VarError::NotPresent) => return Ok(crate::llm::PromptCachingConfig::default()),
-        Err(err) => return Err(Error::Internal(format!("{var_name} could not be read: {err}"))),
+        Err(err) => {
+            return Err(Error::Internal(format!(
+                "{var_name} could not be read: {err}"
+            )));
+        }
     };
 
     Ok(crate::llm::PromptCachingConfig { enabled })
