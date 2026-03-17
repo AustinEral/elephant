@@ -25,14 +25,16 @@ use tokio::sync::{Mutex, Semaphore, mpsc};
 use elephant::MemoryStore;
 use elephant::consolidation::{ConsolidationProgress, observation};
 use elephant::llm::LlmClient;
-use elephant::metrics::{LlmStage, MetricsCollector, StageUsage, with_scoped_collector};
+use elephant::metrics::{
+    CacheAwareStageUsage, LlmStage, MetricsCollector, StageUsage, with_scoped_collector,
+};
 use elephant::runtime::{
     BuildRuntimeOptions, ElephantRuntime, RuntimePromptHashes as ElephantPromptHashes,
     RuntimeTuning as ElephantRuntimeTuning, build_runtime_from_env,
 };
 use elephant::types::{
-    BankId, Disposition, MemoryBank, NetworkType, ReflectDoneTrace,
-    ReflectQuery, RetainInput, RetrievalSource, TurnId,
+    BankId, Disposition, MemoryBank, NetworkType, ReflectDoneTrace, ReflectQuery, RetainInput,
+    RetrievalSource, TurnId,
 };
 
 // --- LoCoMo dataset types ---
@@ -125,6 +127,8 @@ struct ConversationSummary {
     total_time_s: f64,
     #[serde(default)]
     stage_metrics: BTreeMap<LlmStage, StageUsage>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    cache_aware_stage_metrics: BTreeMap<LlmStage, CacheAwareStageUsage>,
     #[serde(default)]
     bank_stats: ConversationBankStats,
 }
@@ -172,6 +176,10 @@ struct BenchmarkOutput {
     stage_metrics: BTreeMap<LlmStage, StageUsage>,
     #[serde(default)]
     total_stage_usage: StageUsage,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    cache_aware_stage_metrics: BTreeMap<LlmStage, CacheAwareStageUsage>,
+    #[serde(default, skip_serializing_if = "cache_aware_stage_usage_is_empty")]
+    cache_aware_total_stage_usage: CacheAwareStageUsage,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     results: Vec<QuestionResult>,
     total_time_s: f64,
@@ -327,6 +335,8 @@ struct QuestionResult {
     evidence_recall: f64,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     qa_stage_metrics: BTreeMap<LlmStage, StageUsage>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    cache_aware_qa_stage_metrics: BTreeMap<LlmStage, CacheAwareStageUsage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -391,10 +401,14 @@ fn preserve_stage_for_qa(stage: LlmStage) -> bool {
     !matches!(stage, LlmStage::Reflect | LlmStage::Judge)
 }
 
-fn seeded_stage_metrics(
+fn cache_aware_stage_usage_is_empty(usage: &CacheAwareStageUsage) -> bool {
+    usage == &CacheAwareStageUsage::default()
+}
+
+fn filter_stage_snapshot<T: Clone>(
     command: BenchCommand,
-    snapshot: &BTreeMap<LlmStage, StageUsage>,
-) -> BTreeMap<LlmStage, StageUsage> {
+    snapshot: &BTreeMap<LlmStage, T>,
+) -> BTreeMap<LlmStage, T> {
     if matches!(command, BenchCommand::Qa) {
         snapshot
             .iter()
@@ -404,6 +418,33 @@ fn seeded_stage_metrics(
     } else {
         snapshot.clone()
     }
+}
+
+fn hybrid_stage_snapshots(
+    cache_aware: &BTreeMap<LlmStage, CacheAwareStageUsage>,
+    legacy: &BTreeMap<LlmStage, StageUsage>,
+) -> (
+    BTreeMap<LlmStage, StageUsage>,
+    BTreeMap<LlmStage, CacheAwareStageUsage>,
+) {
+    let metrics = MetricsCollector::new();
+    metrics.extend_cache_aware_or_legacy_snapshot(cache_aware, legacy);
+    (metrics.snapshot(), metrics.cache_aware_snapshot())
+}
+
+fn seeded_hybrid_stage_snapshots(
+    command: BenchCommand,
+    cache_aware: &BTreeMap<LlmStage, CacheAwareStageUsage>,
+    legacy: &BTreeMap<LlmStage, StageUsage>,
+) -> (
+    BTreeMap<LlmStage, StageUsage>,
+    BTreeMap<LlmStage, CacheAwareStageUsage>,
+) {
+    let (legacy_snapshot, cache_aware_snapshot) = hybrid_stage_snapshots(cache_aware, legacy);
+    (
+        filter_stage_snapshot(command, &legacy_snapshot),
+        filter_stage_snapshot(command, &cache_aware_snapshot),
+    )
 }
 
 // --- Token F1 ---
@@ -701,6 +742,10 @@ fn flush_results(
     results: &[QuestionResult],
     banks: &HashMap<String, String>,
     conversation_stage_metrics: &HashMap<String, BTreeMap<LlmStage, StageUsage>>,
+    conversation_cache_aware_stage_metrics: &HashMap<
+        String,
+        BTreeMap<LlmStage, CacheAwareStageUsage>,
+    >,
     conversation_timings: &HashMap<String, ConversationPhaseTimings>,
     conversation_bank_stats: &HashMap<String, ConversationBankStats>,
     turn_refs: &HashMap<String, String>,
@@ -783,6 +828,7 @@ fn flush_results(
         .keys()
         .cloned()
         .chain(conversation_stage_metrics.keys().cloned())
+        .chain(conversation_cache_aware_stage_metrics.keys().cloned())
         .chain(banks.keys().cloned())
         .chain(conversation_timings.keys().cloned())
         .chain(conversation_bank_stats.keys().cloned())
@@ -835,6 +881,10 @@ fn flush_results(
                     .get(&sample_id)
                     .cloned()
                     .unwrap_or_default(),
+                cache_aware_stage_metrics: conversation_cache_aware_stage_metrics
+                    .get(&sample_id)
+                    .cloned()
+                    .unwrap_or_default(),
                 bank_stats: conversation_bank_stats
                     .get(&sample_id)
                     .cloned()
@@ -845,6 +895,8 @@ fn flush_results(
 
     let stage_metrics = metrics.snapshot();
     let total_stage_usage = metrics.total_usage();
+    let cache_aware_stage_metrics = metrics.cache_aware_snapshot();
+    let cache_aware_total_stage_usage = metrics.cache_aware_total_usage();
 
     let output = BenchmarkOutput {
         benchmark: "locomo".into(),
@@ -872,6 +924,8 @@ fn flush_results(
         },
         stage_metrics,
         total_stage_usage,
+        cache_aware_stage_metrics,
+        cache_aware_total_stage_usage,
         results: Vec::new(),
         total_time_s: bench_elapsed,
     };
@@ -1979,6 +2033,7 @@ fn merge_artifacts(
     let mut banks = HashMap::new();
     let mut turn_refs = HashMap::new();
     let mut conversation_stage_metrics = HashMap::new();
+    let mut conversation_cache_aware_stage_metrics = HashMap::new();
     let mut conversation_timings = HashMap::new();
     let mut conversation_bank_stats = HashMap::new();
     let metrics = MetricsCollector::new();
@@ -2003,7 +2058,10 @@ fn merge_artifacts(
         }
         seen_conversations.extend(scope_ids);
 
-        metrics.extend_snapshot(&bundle.output.stage_metrics);
+        metrics.extend_cache_aware_or_legacy_snapshot(
+            &bundle.output.cache_aware_stage_metrics,
+            &bundle.output.stage_metrics,
+        );
         total_time_s += bundle.output.total_time_s;
 
         for (sample_id, bank_id) in &bundle.output.banks {
@@ -2027,7 +2085,11 @@ fn merge_artifacts(
             }
         }
         for (sample_id, summary) in &bundle.output.per_conversation {
-            conversation_stage_metrics.insert(sample_id.clone(), summary.stage_metrics.clone());
+            let (stage_metrics, cache_aware_stage_metrics) =
+                hybrid_stage_snapshots(&summary.cache_aware_stage_metrics, &summary.stage_metrics);
+            conversation_stage_metrics.insert(sample_id.clone(), stage_metrics);
+            conversation_cache_aware_stage_metrics
+                .insert(sample_id.clone(), cache_aware_stage_metrics);
             conversation_timings.insert(
                 sample_id.clone(),
                 ConversationPhaseTimings {
@@ -2105,6 +2167,7 @@ fn merge_artifacts(
         &merged_results,
         &banks,
         &conversation_stage_metrics,
+        &conversation_cache_aware_stage_metrics,
         &conversation_timings,
         &conversation_bank_stats,
         &turn_refs,
@@ -2197,6 +2260,8 @@ struct SharedResults {
     results: Vec<QuestionResult>,
     banks: HashMap<String, String>,
     conversation_stage_metrics: HashMap<String, BTreeMap<LlmStage, StageUsage>>,
+    conversation_cache_aware_stage_metrics:
+        HashMap<String, BTreeMap<LlmStage, CacheAwareStageUsage>>,
     conversation_timings: HashMap<String, ConversationPhaseTimings>,
     conversation_bank_stats: HashMap<String, ConversationBankStats>,
     turn_refs: HashMap<String, String>,
@@ -2224,12 +2289,15 @@ impl SharedResults {
         debug: QuestionDebugRecord,
         sample_id: String,
         stage_metrics: BTreeMap<LlmStage, StageUsage>,
+        cache_aware_stage_metrics: BTreeMap<LlmStage, CacheAwareStageUsage>,
     ) {
         append_jsonl(&self.questions_path, &result);
         append_jsonl(&self.debug_path, &debug);
         self.results.push(result);
         self.conversation_stage_metrics
-            .insert(sample_id, stage_metrics);
+            .insert(sample_id.clone(), stage_metrics);
+        self.conversation_cache_aware_stage_metrics
+            .insert(sample_id, cache_aware_stage_metrics);
         self.flush();
     }
 
@@ -2242,9 +2310,12 @@ impl SharedResults {
         &mut self,
         sample_id: String,
         stage_metrics: BTreeMap<LlmStage, StageUsage>,
+        cache_aware_stage_metrics: BTreeMap<LlmStage, CacheAwareStageUsage>,
     ) {
         self.conversation_stage_metrics
-            .insert(sample_id, stage_metrics);
+            .insert(sample_id.clone(), stage_metrics);
+        self.conversation_cache_aware_stage_metrics
+            .insert(sample_id, cache_aware_stage_metrics);
         self.flush();
     }
 
@@ -2271,6 +2342,7 @@ impl SharedResults {
             &self.results,
             &self.banks,
             &self.conversation_stage_metrics,
+            &self.conversation_cache_aware_stage_metrics,
             &self.conversation_timings,
             &self.conversation_bank_stats,
             &self.turn_refs,
@@ -2303,6 +2375,7 @@ struct ConversationRunOptions {
     ingest_mode: IngestMode,
     consolidation: ConsolidationMode,
     seed_stage_metrics: BTreeMap<LlmStage, StageUsage>,
+    seed_cache_aware_stage_metrics: BTreeMap<LlmStage, CacheAwareStageUsage>,
     seed_timings: ConversationPhaseTimings,
     seed_bank_stats: ConversationBankStats,
     existing_bank: Option<String>,
@@ -2402,7 +2475,10 @@ async fn run_conversation(
     let sample_id = entry.sample_id.clone();
     let total_sessions = session_count(conv);
     let conversation_metrics = Arc::new(MetricsCollector::new());
-    conversation_metrics.extend_snapshot(&options.seed_stage_metrics);
+    conversation_metrics.extend_cache_aware_or_legacy_snapshot(
+        &options.seed_cache_aware_stage_metrics,
+        &options.seed_stage_metrics,
+    );
     let mut ingest_time_s = options.seed_timings.ingest_time_s;
     let mut consolidation_time_s = options.seed_timings.consolidation_time_s;
     let mut bank_stats = options.seed_bank_stats.clone();
@@ -2652,10 +2728,11 @@ async fn run_conversation(
         consolidation_time_s += t0.elapsed().as_secs_f64();
     }
 
-    shared
-        .lock()
-        .await
-        .record_conversation_metrics(sample_id.clone(), conversation_metrics.snapshot());
+    shared.lock().await.record_conversation_metrics(
+        sample_id.clone(),
+        conversation_metrics.snapshot(),
+        conversation_metrics.cache_aware_snapshot(),
+    );
     finalize_bank_stats(&runtime.store, bank_id, &mut bank_stats).await?;
     shared
         .lock()
@@ -2943,6 +3020,7 @@ async fn run_conversation(
                 evidence_hit,
                 evidence_recall,
                 qa_stage_metrics: question_metrics.snapshot(),
+                cache_aware_qa_stage_metrics: question_metrics.cache_aware_snapshot(),
             };
             let debug = QuestionDebugRecord {
                 question_id: result.question_id.clone(),
@@ -2959,6 +3037,7 @@ async fn run_conversation(
                 debug,
                 sample_id.clone(),
                 conversation_metrics.snapshot(),
+                conversation_metrics.cache_aware_snapshot(),
             );
 
             let total = local_total.load(std::sync::atomic::Ordering::Relaxed);
@@ -2997,10 +3076,11 @@ async fn run_conversation(
 
     let qa_time_s = qa_start.elapsed().as_secs_f64();
 
-    shared
-        .lock()
-        .await
-        .record_conversation_metrics(sample_id.clone(), conversation_metrics.snapshot());
+    shared.lock().await.record_conversation_metrics(
+        sample_id.clone(),
+        conversation_metrics.snapshot(),
+        conversation_metrics.cache_aware_snapshot(),
+    );
     shared
         .lock()
         .await
@@ -3226,22 +3306,44 @@ async fn main() {
         existing_banks,
         existing_turn_refs,
         existing_stage_metrics,
+        existing_cache_aware_stage_metrics,
         existing_conversation_metrics,
+        existing_conversation_cache_aware_metrics,
         existing_conversation_timings,
         existing_conversation_bank_stats,
         source_artifact,
     ) = if let Some((prev, source_artifact)) = artifact_state.as_ref() {
+        let (existing_stage_metrics, existing_cache_aware_stage_metrics) =
+            seeded_hybrid_stage_snapshots(
+                command,
+                &prev.cache_aware_stage_metrics,
+                &prev.stage_metrics,
+            );
         (
             prev.banks.clone(),
             prev.turn_refs.clone(),
-            seeded_stage_metrics(command, &prev.stage_metrics),
+            existing_stage_metrics,
+            existing_cache_aware_stage_metrics,
             prev.per_conversation
                 .iter()
                 .map(|(sample_id, summary)| {
-                    (
-                        sample_id.clone(),
-                        seeded_stage_metrics(command, &summary.stage_metrics),
-                    )
+                    let (stage_metrics, _) = seeded_hybrid_stage_snapshots(
+                        command,
+                        &summary.cache_aware_stage_metrics,
+                        &summary.stage_metrics,
+                    );
+                    (sample_id.clone(), stage_metrics)
+                })
+                .collect(),
+            prev.per_conversation
+                .iter()
+                .map(|(sample_id, summary)| {
+                    let (_, cache_aware_stage_metrics) = seeded_hybrid_stage_snapshots(
+                        command,
+                        &summary.cache_aware_stage_metrics,
+                        &summary.stage_metrics,
+                    );
+                    (sample_id.clone(), cache_aware_stage_metrics)
                 })
                 .collect(),
             prev.per_conversation
@@ -3269,6 +3371,8 @@ async fn main() {
             HashMap::new(),
             HashMap::new(),
             BTreeMap::new(),
+            BTreeMap::new(),
+            HashMap::new(),
             HashMap::new(),
             HashMap::new(),
             HashMap::new(),
@@ -3322,7 +3426,10 @@ async fn main() {
     }
 
     let metrics = Arc::new(MetricsCollector::new());
-    metrics.extend_snapshot(&existing_stage_metrics);
+    metrics.extend_cache_aware_or_legacy_snapshot(
+        &existing_cache_aware_stage_metrics,
+        &existing_stage_metrics,
+    );
     let runtime = Arc::new(
         build_runtime_from_env(BuildRuntimeOptions {
             metrics: Some(metrics.clone()),
@@ -3403,6 +3510,7 @@ async fn main() {
         results: Vec::new(),
         banks: existing_banks.clone(),
         conversation_stage_metrics: existing_conversation_metrics.clone(),
+        conversation_cache_aware_stage_metrics: existing_conversation_cache_aware_metrics.clone(),
         conversation_timings: existing_conversation_timings.clone(),
         conversation_bank_stats: existing_conversation_bank_stats.clone(),
         turn_refs: existing_turn_refs,
@@ -3437,6 +3545,10 @@ async fn main() {
             ingest_mode: config.ingest,
             consolidation: config.consolidation,
             seed_stage_metrics: existing_conversation_metrics
+                .get(&entry.sample_id)
+                .cloned()
+                .unwrap_or_default(),
+            seed_cache_aware_stage_metrics: existing_conversation_cache_aware_metrics
                 .get(&entry.sample_id)
                 .cloned()
                 .unwrap_or_default(),
@@ -3580,6 +3692,23 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn test_cache_aware_usage() -> CacheAwareStageUsage {
+        CacheAwareStageUsage {
+            prompt_tokens: 10,
+            uncached_prompt_tokens: 6,
+            cache_hit_prompt_tokens: 2,
+            cache_write_prompt_tokens: 2,
+            completion_tokens: 5,
+            calls: 1,
+            errors: 0,
+            latency_ms: 100,
+            cache_supported_calls: 1,
+            cache_hit_calls: 1,
+            cache_write_calls: 1,
+            cache_unsupported_calls: 0,
+        }
+    }
+
     fn test_question_result(
         sample_id: &str,
         question_id: &str,
@@ -3617,6 +3746,10 @@ mod tests {
                     errors: 0,
                     latency_ms: 100,
                 },
+            )]),
+            cache_aware_qa_stage_metrics: BTreeMap::from([(
+                LlmStage::Reflect,
+                test_cache_aware_usage(),
             )]),
         }
     }
@@ -3694,6 +3827,10 @@ mod tests {
                     qa_time_s: 3.0,
                     total_time_s: 6.0,
                     stage_metrics: BTreeMap::from([(LlmStage::Reflect, stage_usage.clone())]),
+                    cache_aware_stage_metrics: BTreeMap::from([(
+                        LlmStage::Reflect,
+                        test_cache_aware_usage(),
+                    )]),
                     bank_stats: ConversationBankStats {
                         sessions_ingested: 1,
                         turns_ingested: 2,
@@ -3743,6 +3880,11 @@ mod tests {
             },
             stage_metrics: BTreeMap::from([(LlmStage::Reflect, stage_usage.clone())]),
             total_stage_usage: stage_usage,
+            cache_aware_stage_metrics: BTreeMap::from([(
+                LlmStage::Reflect,
+                test_cache_aware_usage(),
+            )]),
+            cache_aware_total_stage_usage: test_cache_aware_usage(),
             results: Vec::new(),
             total_time_s: 6.0,
         };
@@ -3753,6 +3895,54 @@ mod tests {
         )
         .expect("write summary");
         output_path
+    }
+
+    fn strip_cache_aware_fields_from_artifact(summary_path: &Path) {
+        let mut summary: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(summary_path).expect("read summary artifact"))
+                .expect("parse summary artifact");
+        summary
+            .as_object_mut()
+            .expect("summary is object")
+            .remove("cache_aware_stage_metrics");
+        summary
+            .as_object_mut()
+            .expect("summary is object")
+            .remove("cache_aware_total_stage_usage");
+        if let Some(per_conversation) = summary
+            .get_mut("per_conversation")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            for conversation in per_conversation.values_mut() {
+                if let Some(conversation) = conversation.as_object_mut() {
+                    conversation.remove("cache_aware_stage_metrics");
+                }
+            }
+        }
+        fs::write(
+            summary_path,
+            serde_json::to_string_pretty(&summary).expect("serialize legacy summary"),
+        )
+        .expect("rewrite summary without cache-aware fields");
+
+        let questions_path = sidecar_path(summary_path, "questions");
+        let rewritten_questions = fs::read_to_string(&questions_path)
+            .expect("read question sidecar")
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                let mut value: serde_json::Value =
+                    serde_json::from_str(line).expect("parse question sidecar record");
+                value
+                    .as_object_mut()
+                    .expect("question record is object")
+                    .remove("cache_aware_qa_stage_metrics");
+                serde_json::to_string(&value).expect("serialize legacy question record")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&questions_path, format!("{rewritten_questions}\n"))
+            .expect("rewrite question sidecar without cache-aware fields");
     }
 
     #[test]
@@ -4239,6 +4429,158 @@ mod tests {
         assert_eq!(merged_output.manifest.question_concurrency, 0);
         assert_eq!(merged_output.manifest.conversation_concurrency, 0);
         assert_eq!(merged_output.total_questions, 2);
+
+        fs::remove_dir_all(&test_dir).ok();
+    }
+
+    #[test]
+    fn cache_artifact_locomo_summary_serializes_cache_aware_fields() {
+        let stage_usage = StageUsage {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            calls: 1,
+            errors: 0,
+            latency_ms: 100,
+        };
+        let cache_aware_usage = test_cache_aware_usage();
+        let output = BenchmarkOutput {
+            benchmark: "locomo".into(),
+            timestamp: "2026-03-10T00:00:00Z".into(),
+            commit: Some("deadbeefcafe".into()),
+            tag: Some("cache-aware".into()),
+            judge_model: "anthropic/test-judge".into(),
+            retain_model: "anthropic/test-main".into(),
+            reflect_model: "anthropic/test-main".into(),
+            embedding_model: "local/test-embedding".into(),
+            reranker_model: "local/test-reranker".into(),
+            consolidation_strategy: "end".into(),
+            total_questions: 1,
+            accuracy: 1.0,
+            mean_f1: 1.0,
+            mean_evidence_recall: 1.0,
+            per_category: HashMap::new(),
+            per_conversation: HashMap::from([(
+                "conv-01".into(),
+                ConversationSummary {
+                    bank_id: "bank-conv-01".into(),
+                    accuracy: 1.0,
+                    mean_f1: 1.0,
+                    mean_evidence_recall: 1.0,
+                    count: 1,
+                    ingest_time_s: 1.0,
+                    consolidation_time_s: 2.0,
+                    qa_time_s: 3.0,
+                    total_time_s: 6.0,
+                    stage_metrics: BTreeMap::from([(LlmStage::Reflect, stage_usage.clone())]),
+                    cache_aware_stage_metrics: BTreeMap::from([(
+                        LlmStage::Reflect,
+                        cache_aware_usage.clone(),
+                    )]),
+                    bank_stats: ConversationBankStats::default(),
+                },
+            )]),
+            banks: HashMap::from([("conv-01".into(), "bank-conv-01".into())]),
+            turn_refs: HashMap::new(),
+            manifest: BenchmarkManifest::default(),
+            artifacts: BenchmarkArtifacts::default(),
+            stage_metrics: BTreeMap::from([(LlmStage::Reflect, stage_usage.clone())]),
+            total_stage_usage: stage_usage,
+            cache_aware_stage_metrics: BTreeMap::from([(
+                LlmStage::Reflect,
+                cache_aware_usage.clone(),
+            )]),
+            cache_aware_total_stage_usage: cache_aware_usage,
+            results: Vec::new(),
+            total_time_s: 6.0,
+        };
+
+        let value = serde_json::to_value(&output).expect("serialize summary output");
+        assert!(value.get("cache_aware_stage_metrics").is_some());
+        assert!(value.get("cache_aware_total_stage_usage").is_some());
+        assert!(
+            value
+                .get("per_conversation")
+                .and_then(|per_conversation| per_conversation.get("conv-01"))
+                .and_then(|summary| summary.get("cache_aware_stage_metrics"))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn cache_artifact_locomo_question_sidecar_serializes_cache_aware_fields() {
+        let result = test_question_result("conv-01", "q-01", "single-hop", true);
+        let value = serde_json::to_value(&result).expect("serialize question result");
+
+        assert!(value.get("qa_stage_metrics").is_some());
+        assert!(value.get("cache_aware_qa_stage_metrics").is_some());
+    }
+
+    #[test]
+    fn cache_artifact_locomo_merge_prefers_cache_aware_metrics() {
+        let test_dir = env::temp_dir().join(format!(
+            "locomo-cache-aware-merge-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&test_dir).expect("create cache-aware merge test dir");
+
+        let new_style = write_test_artifact(&test_dir, "new-style", "conv-01", "q-left", true);
+        let legacy = write_test_artifact(&test_dir, "legacy", "conv-02", "q-right", false);
+        strip_cache_aware_fields_from_artifact(&legacy);
+        let merged = test_dir.join("merged-cache-aware.json");
+
+        merge_artifacts(
+            &[new_style.clone(), legacy.clone()],
+            &merged,
+            Some("merged-cache-aware".into()),
+        )
+        .expect("merge succeeds");
+
+        let merged_output = load_benchmark_output(&merged).expect("load merged artifact");
+        let usage = merged_output
+            .cache_aware_stage_metrics
+            .get(&LlmStage::Reflect)
+            .expect("reflect metrics");
+        assert_eq!(usage.prompt_tokens, 20);
+        assert_eq!(usage.cache_hit_prompt_tokens, 2);
+        assert_eq!(usage.cache_write_prompt_tokens, 2);
+        assert_eq!(usage.cache_supported_calls, 1);
+        assert_eq!(usage.cache_unsupported_calls, 1);
+
+        fs::remove_dir_all(&test_dir).ok();
+    }
+
+    #[test]
+    fn cache_artifact_locomo_merge_falls_back_to_legacy_metrics() {
+        let test_dir = env::temp_dir().join(format!(
+            "locomo-cache-aware-merge-legacy-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&test_dir).expect("create legacy merge test dir");
+
+        let new_style = write_test_artifact(&test_dir, "new-style", "conv-01", "q-left", true);
+        let legacy = write_test_artifact(&test_dir, "legacy", "conv-02", "q-right", false);
+        strip_cache_aware_fields_from_artifact(&legacy);
+        let merged = test_dir.join("merged-legacy-fallback.json");
+
+        merge_artifacts(
+            &[new_style.clone(), legacy.clone()],
+            &merged,
+            Some("merged-legacy-fallback".into()),
+        )
+        .expect("merge succeeds");
+
+        let merged_output = load_benchmark_output(&merged).expect("load merged artifact");
+        let usage = merged_output
+            .per_conversation
+            .get("conv-02")
+            .expect("legacy conversation summary")
+            .cache_aware_stage_metrics
+            .get(&LlmStage::Reflect)
+            .expect("legacy reflect metrics");
+        assert_eq!(usage.prompt_tokens, 10);
+        assert_eq!(usage.cache_hit_prompt_tokens, 0);
+        assert_eq!(usage.cache_write_prompt_tokens, 0);
+        assert_eq!(usage.cache_unsupported_calls, 1);
 
         fs::remove_dir_all(&test_dir).ok();
     }

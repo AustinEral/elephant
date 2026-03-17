@@ -41,6 +41,7 @@ struct LlmConfig {
     api_key: String,
     model: String,
     base_url: Option<String>,
+    prompt_caching: crate::llm::PromptCachingConfig,
 }
 
 /// Stable prompt-template hash bundle for publication provenance.
@@ -156,20 +157,40 @@ pub struct BuildRuntimeOptions {
 
 fn make_llm(config: &LlmConfig) -> Result<Box<dyn LlmClient>> {
     match config.provider.as_str() {
-        "openai" => Ok(Box::new(OpenAiClient::new(
+        "openai" => Ok(Box::new(OpenAiClient::new_with_prompt_caching(
             config.api_key.clone(),
             config.model.clone(),
             config.base_url.clone(),
+            config.prompt_caching.clone(),
         )?)),
-        _ => Ok(Box::new(AnthropicClient::new(
+        _ => Ok(Box::new(AnthropicClient::new_with_prompt_caching(
             config.api_key.clone(),
             config.model.clone(),
+            config.prompt_caching.clone(),
         )?)),
     }
 }
 
 fn env_required(name: &str) -> Result<String> {
     env::var(name).map_err(|e| Error::Internal(format!("{name} must be set: {e}")))
+}
+
+fn prompt_caching_from_env(var_name: &str) -> Result<crate::llm::PromptCachingConfig> {
+    let enabled = match env::var(var_name) {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "0" | "false" | "no" | "off" => false,
+            other => {
+                return Err(Error::Internal(format!(
+                    "{var_name} must be a boolean, got: {other}"
+                )));
+            }
+        },
+        Err(env::VarError::NotPresent) => return Ok(crate::llm::PromptCachingConfig::default()),
+        Err(err) => return Err(Error::Internal(format!("{var_name} could not be read: {err}"))),
+    };
+
+    Ok(crate::llm::PromptCachingConfig { enabled })
 }
 
 fn stage_llm(
@@ -255,6 +276,7 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
     let retain_model = env::var("RETAIN_LLM_MODEL").or_else(|_| env_required("LLM_MODEL"))?;
     let reflect_model = env::var("REFLECT_LLM_MODEL").or_else(|_| env_required("LLM_MODEL"))?;
     let llm_base_url = env::var("LLM_BASE_URL").ok();
+    let llm_prompt_caching = prompt_caching_from_env("LLM_PROMPT_CACHING")?;
 
     let max_conns = options.max_pool_connections.unwrap_or(10);
     let pool = sqlx::postgres::PgPoolOptions::new()
@@ -269,12 +291,14 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
         api_key: llm_api_key.clone(),
         model: retain_model.clone(),
         base_url: llm_base_url.clone(),
+        prompt_caching: llm_prompt_caching.clone(),
     };
     let reflect_config = LlmConfig {
         provider: llm_provider.clone(),
         api_key: llm_api_key,
         model: reflect_model.clone(),
         base_url: llm_base_url,
+        prompt_caching: llm_prompt_caching.clone(),
     };
 
     let emb_config = EmbeddingConfig {
@@ -487,4 +511,61 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
         store,
         embeddings,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prompt_caching_from_env;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn clear_env(var_name: &str) {
+        unsafe {
+            std::env::remove_var(var_name);
+        }
+    }
+
+    fn set_env(var_name: &str, value: &str) {
+        unsafe {
+            std::env::set_var(var_name, value);
+        }
+    }
+
+    #[test]
+    fn runtime_prompt_caching_from_env_defaults_disabled() {
+        let _guard = env_lock().lock().unwrap();
+        clear_env("LLM_PROMPT_CACHING");
+
+        let config = prompt_caching_from_env("LLM_PROMPT_CACHING").unwrap();
+
+        assert_eq!(config, crate::llm::PromptCachingConfig::default());
+    }
+
+    #[test]
+    fn runtime_prompt_caching_from_env_accepts_truthy_values() {
+        let _guard = env_lock().lock().unwrap();
+        for value in ["1", "true", "yes", "on"] {
+            set_env("LLM_PROMPT_CACHING", value);
+
+            let config = prompt_caching_from_env("LLM_PROMPT_CACHING").unwrap();
+
+            assert!(config.enabled, "expected {value} to enable prompt caching");
+        }
+        clear_env("LLM_PROMPT_CACHING");
+    }
+
+    #[test]
+    fn runtime_prompt_caching_from_env_rejects_invalid_value() {
+        let _guard = env_lock().lock().unwrap();
+        set_env("LLM_PROMPT_CACHING", "maybe");
+
+        let err = prompt_caching_from_env("LLM_PROMPT_CACHING").unwrap_err();
+
+        assert!(matches!(err, crate::error::Error::Internal(_)));
+        clear_env("LLM_PROMPT_CACHING");
+    }
 }

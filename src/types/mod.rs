@@ -16,7 +16,7 @@ pub use entity::{Entity, EntityType};
 pub use fact::{Fact, FactType, RetrievalSource, ScoredFact};
 pub use graph::{GraphLink, LinkType};
 pub use id::{BankId, EntityId, FactId, SourceId, TurnId};
-pub use llm::{CompletionRequest, CompletionResponse, Message};
+pub use llm::{CacheStatus, CompletionRequest, CompletionResponse, CompletionUsage, Message};
 pub use network::NetworkType;
 pub use pipeline::{
     AssembledContext, BankPromptContext, Chunk, ChunkConfig, ConsolidationReport, ExtractedFact,

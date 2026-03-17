@@ -5,8 +5,10 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
-use crate::llm::LlmClient;
-use crate::types::llm::{CompletionRequest, CompletionResponse, ToolCall, ToolChoice};
+use crate::llm::{LlmClient, PromptCachingConfig};
+use crate::types::llm::{
+    CacheStatus, CompletionRequest, CompletionResponse, CompletionUsage, ToolCall, ToolChoice,
+};
 
 const API_URL: &str = "https://api.openai.com/v1";
 
@@ -16,11 +18,22 @@ pub struct OpenAiClient {
     api_key: String,
     default_model: String,
     base_url: String,
+    prompt_caching: PromptCachingConfig,
 }
 
 impl OpenAiClient {
     /// Create a new OpenAI client with optional base URL for compatible providers.
     pub fn new(api_key: String, model: String, base_url: Option<String>) -> Result<Self> {
+        Self::new_with_prompt_caching(api_key, model, base_url, PromptCachingConfig::default())
+    }
+
+    /// Create a new OpenAI client with explicit prompt-caching settings.
+    pub fn new_with_prompt_caching(
+        api_key: String,
+        model: String,
+        base_url: Option<String>,
+        prompt_caching: PromptCachingConfig,
+    ) -> Result<Self> {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(
                 std::env::var("LLM_TIMEOUT_SECS")
@@ -35,6 +48,7 @@ impl OpenAiClient {
             api_key,
             default_model: model,
             base_url: base_url.unwrap_or_else(|| API_URL.to_string()),
+            prompt_caching,
         })
     }
 }
@@ -148,12 +162,51 @@ struct OpenAiRespFunctionCall {
 struct OpenAiUsage {
     prompt_tokens: usize,
     completion_tokens: usize,
+    #[serde(default)]
+    prompt_tokens_details: Option<OpenAiPromptTokensDetails>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiPromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: Option<usize>,
+}
+
+fn normalize_openai_usage(usage: &OpenAiUsage) -> CompletionUsage {
+    let cache_hit_prompt_tokens = usage
+        .prompt_tokens_details
+        .as_ref()
+        .and_then(|details| details.cached_tokens)
+        .unwrap_or(0);
+    let cache_status = if usage.prompt_tokens_details.is_none() {
+        CacheStatus::Unsupported
+    } else if cache_hit_prompt_tokens == 0 {
+        CacheStatus::NoActivity
+    } else {
+        CacheStatus::Hit
+    };
+
+    CompletionUsage {
+        prompt_tokens: usage.prompt_tokens,
+        uncached_prompt_tokens: usage.prompt_tokens.saturating_sub(cache_hit_prompt_tokens),
+        cache_hit_prompt_tokens,
+        cache_write_prompt_tokens: 0,
+        completion_tokens: usage.completion_tokens,
+        cache_status,
+    }
+}
+
+/// Return whether the base URL matches the official OpenAI Chat Completions path.
+pub fn openai_prompt_caching_supported_path(base_url: &str) -> bool {
+    base_url.trim_end_matches('/') == API_URL
 }
 
 #[async_trait]
 impl LlmClient for OpenAiClient {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
         let model = super::resolve_model(request.model, &self.default_model);
+        let _prompt_caching_supported_path =
+            self.prompt_caching.enabled && openai_prompt_caching_supported_path(&self.base_url);
 
         // Build messages: system prompt goes as a system message in the array
         let mut messages: Vec<OpenAiMessage> = Vec::new();
@@ -286,15 +339,17 @@ impl LlmClient for OpenAiClient {
             })
             .unwrap_or_default();
 
-        let (input_tokens, output_tokens) = parsed
+        let usage = parsed
             .usage
-            .map(|u| (u.prompt_tokens, u.completion_tokens))
-            .unwrap_or((0, 0));
+            .as_ref()
+            .map(normalize_openai_usage)
+            .unwrap_or_default();
 
         Ok(CompletionResponse {
             content,
-            input_tokens,
-            output_tokens,
+            input_tokens: usage.prompt_tokens,
+            output_tokens: usage.completion_tokens,
+            usage,
             stop_reason,
             tool_calls,
         })
@@ -304,7 +359,109 @@ impl LlmClient for OpenAiClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::llm::Message;
+    use crate::llm::PromptCachingConfig;
+    use crate::types::llm::{CacheStatus, Message};
+
+    fn openai_request_json(prompt_caching: PromptCachingConfig) -> String {
+        let _client = OpenAiClient::new_with_prompt_caching(
+            "test-key".into(),
+            "gpt-4o-mini".into(),
+            None,
+            prompt_caching,
+        )
+        .unwrap();
+        let request = OpenAiRequest {
+            model: "gpt-4o-mini".into(),
+            messages: vec![OpenAiMessage {
+                role: "user".into(),
+                content: Some("Cache this prompt".into()),
+                ..Default::default()
+            }],
+            max_tokens: Some(256),
+            temperature: Some(0.0),
+            tools: None,
+            tool_choice: None,
+        };
+
+        serde_json::to_string(&request).unwrap()
+    }
+
+    #[test]
+    fn normalize_usage_openai_cached_tokens() {
+        let usage = OpenAiUsage {
+            prompt_tokens: 30,
+            completion_tokens: 9,
+            prompt_tokens_details: Some(OpenAiPromptTokensDetails {
+                cached_tokens: Some(12),
+            }),
+        };
+
+        let normalized = normalize_openai_usage(&usage);
+        assert_eq!(normalized.prompt_tokens, 30);
+        assert_eq!(normalized.uncached_prompt_tokens, 18);
+        assert_eq!(normalized.cache_hit_prompt_tokens, 12);
+        assert_eq!(normalized.cache_write_prompt_tokens, 0);
+        assert_eq!(normalized.completion_tokens, 9);
+        assert_eq!(normalized.cache_status, CacheStatus::Hit);
+    }
+
+    #[test]
+    fn normalize_usage_openai_zero_hit() {
+        let usage = OpenAiUsage {
+            prompt_tokens: 30,
+            completion_tokens: 9,
+            prompt_tokens_details: Some(OpenAiPromptTokensDetails {
+                cached_tokens: Some(0),
+            }),
+        };
+
+        let normalized = normalize_openai_usage(&usage);
+        assert_eq!(normalized.prompt_tokens, 30);
+        assert_eq!(normalized.uncached_prompt_tokens, 30);
+        assert_eq!(normalized.cache_hit_prompt_tokens, 0);
+        assert_eq!(normalized.cache_write_prompt_tokens, 0);
+        assert_eq!(normalized.completion_tokens, 9);
+        assert_eq!(normalized.cache_status, CacheStatus::NoActivity);
+    }
+
+    #[test]
+    fn normalize_usage_openai_missing_details() {
+        let usage = OpenAiUsage {
+            prompt_tokens: 30,
+            completion_tokens: 9,
+            prompt_tokens_details: None,
+        };
+
+        let normalized = normalize_openai_usage(&usage);
+        assert_eq!(normalized.prompt_tokens, 30);
+        assert_eq!(normalized.uncached_prompt_tokens, 30);
+        assert_eq!(normalized.cache_hit_prompt_tokens, 0);
+        assert_eq!(normalized.cache_write_prompt_tokens, 0);
+        assert_eq!(normalized.completion_tokens, 9);
+        assert_eq!(normalized.cache_status, CacheStatus::Unsupported);
+    }
+
+    #[test]
+    fn openai_prompt_caching_request_default_body_unchanged() {
+        let json = openai_request_json(PromptCachingConfig { enabled: true });
+        assert!(!json.contains("prompt_cache_retention"));
+        assert!(!json.contains("prompt_cache_key"));
+    }
+
+    #[test]
+    fn openai_prompt_caching_supported_path_guard_accepts_official_api() {
+        assert!(openai_prompt_caching_supported_path("https://api.openai.com/v1"));
+        assert!(openai_prompt_caching_supported_path("https://api.openai.com/v1/"));
+    }
+
+    #[test]
+    fn openai_prompt_caching_supported_path_guard_rejects_custom_base_url() {
+        assert!(!openai_prompt_caching_supported_path("https://api.openai.com"));
+        assert!(!openai_prompt_caching_supported_path("https://example.com/v1"));
+        assert!(!openai_prompt_caching_supported_path(
+            "https://api.openai.com/v1/compatible"
+        ));
+    }
 
     #[tokio::test]
     #[ignore = "requires OPENAI_API_KEY"]

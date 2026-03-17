@@ -76,6 +76,7 @@ fn build_llm() -> Result<Arc<dyn LlmClient>, String> {
         api_key,
         model,
         base_url,
+        prompt_caching: llm::PromptCachingConfig::default(),
     };
     let base: Arc<dyn LlmClient> = Arc::from(
         llm::build_client(&config).map_err(|e| format!("failed to build LLM client: {e}"))?,

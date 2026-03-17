@@ -239,6 +239,13 @@ pub enum Provider {
     OpenAi,
 }
 
+/// Shared prompt-caching settings for provider clients.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PromptCachingConfig {
+    /// Whether provider-native prompt caching should be enabled.
+    pub enabled: bool,
+}
+
 /// Configuration for a single LLM provider.
 #[derive(Debug, Clone)]
 pub struct ProviderConfig {
@@ -250,6 +257,8 @@ pub struct ProviderConfig {
     pub model: String,
     /// Optional base URL override for OpenAI-compatible providers.
     pub base_url: Option<String>,
+    /// Prompt-caching behavior for the provider client.
+    pub prompt_caching: PromptCachingConfig,
 }
 
 /// Configuration for LLM usage across the system.
@@ -269,14 +278,16 @@ pub struct LlmConfig {
 /// Build an LLM client from a provider configuration.
 pub fn build_client(config: &ProviderConfig) -> crate::error::Result<Box<dyn LlmClient>> {
     match config.provider {
-        Provider::Anthropic => Ok(Box::new(anthropic::AnthropicClient::new(
+        Provider::Anthropic => Ok(Box::new(anthropic::AnthropicClient::new_with_prompt_caching(
             config.api_key.clone(),
             config.model.clone(),
+            config.prompt_caching.clone(),
         )?)),
-        Provider::OpenAi => Ok(Box::new(openai::OpenAiClient::new(
+        Provider::OpenAi => Ok(Box::new(openai::OpenAiClient::new_with_prompt_caching(
             config.api_key.clone(),
             config.model.clone(),
             config.base_url.clone(),
+            config.prompt_caching.clone(),
         )?)),
     }
 }

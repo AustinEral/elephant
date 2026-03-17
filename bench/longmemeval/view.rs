@@ -62,6 +62,8 @@ struct ViewBenchmarkOutput {
     #[serde(default)]
     stage_metrics: BTreeMap<String, ViewStageUsage>,
     #[serde(default)]
+    cache_aware_stage_metrics: BTreeMap<String, ViewCacheAwareStageUsage>,
+    #[serde(default)]
     total_time_s: f64,
 }
 
@@ -155,6 +157,51 @@ impl ViewStageUsage {
     }
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+struct ViewCacheAwareStageUsage {
+    #[serde(default)]
+    prompt_tokens: u64,
+    #[serde(default)]
+    uncached_prompt_tokens: u64,
+    #[serde(default)]
+    cache_hit_prompt_tokens: u64,
+    #[serde(default)]
+    cache_write_prompt_tokens: u64,
+    #[serde(default)]
+    completion_tokens: u64,
+    #[serde(default)]
+    calls: u64,
+    #[serde(default)]
+    errors: u64,
+    #[serde(default)]
+    latency_ms: u64,
+    #[serde(default)]
+    cache_supported_calls: u64,
+    #[serde(default)]
+    cache_hit_calls: u64,
+    #[serde(default)]
+    cache_write_calls: u64,
+    #[serde(default)]
+    cache_unsupported_calls: u64,
+}
+
+impl ViewCacheAwareStageUsage {
+    fn merge_from(&mut self, other: &Self) {
+        self.prompt_tokens += other.prompt_tokens;
+        self.uncached_prompt_tokens += other.uncached_prompt_tokens;
+        self.cache_hit_prompt_tokens += other.cache_hit_prompt_tokens;
+        self.cache_write_prompt_tokens += other.cache_write_prompt_tokens;
+        self.completion_tokens += other.completion_tokens;
+        self.calls += other.calls;
+        self.errors += other.errors;
+        self.latency_ms += other.latency_ms;
+        self.cache_supported_calls += other.cache_supported_calls;
+        self.cache_hit_calls += other.cache_hit_calls;
+        self.cache_write_calls += other.cache_write_calls;
+        self.cache_unsupported_calls += other.cache_unsupported_calls;
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 struct ViewQuestionResult {
     #[serde(default)]
@@ -245,6 +292,54 @@ struct CompareStageRow {
 }
 
 #[derive(Tabled)]
+struct CacheSummaryRow {
+    metric: String,
+    value: String,
+}
+
+#[derive(Tabled)]
+struct CacheStageRow {
+    stage: String,
+    #[tabled(rename = "effective prompt tok")]
+    effective_prompt_tok: u64,
+    #[tabled(rename = "cache hit tok")]
+    cache_hit_tok: u64,
+    #[tabled(rename = "cache write tok")]
+    cache_write_tok: u64,
+    #[tabled(rename = "completion tok")]
+    completion_tok: u64,
+    calls: u64,
+}
+
+#[derive(Tabled)]
+struct CacheCompareRow {
+    metric: String,
+    #[tabled(rename = "A")]
+    val_a: String,
+    #[tabled(rename = "B")]
+    val_b: String,
+    #[tabled(rename = "Δ")]
+    delta: String,
+}
+
+#[derive(Tabled)]
+struct CacheStageCompareRow {
+    stage: String,
+    #[tabled(rename = "eff(A)")]
+    effective_prompt_a: u64,
+    #[tabled(rename = "eff(B)")]
+    effective_prompt_b: u64,
+    #[tabled(rename = "Δ eff")]
+    delta_effective_prompt: String,
+    #[tabled(rename = "hit(A)")]
+    cache_hit_a: u64,
+    #[tabled(rename = "hit(B)")]
+    cache_hit_b: u64,
+    #[tabled(rename = "Δ hit")]
+    delta_cache_hit: String,
+}
+
+#[derive(Tabled)]
 struct QuestionRow {
     question_id: String,
     category: String,
@@ -326,6 +421,323 @@ fn question_mark(correct: bool) -> String {
     }
 }
 
+fn cache_usage_available(output: &ViewBenchmarkOutput) -> bool {
+    !output.cache_aware_stage_metrics.is_empty()
+}
+
+fn sum_cache_usage(output: &ViewBenchmarkOutput) -> ViewCacheAwareStageUsage {
+    let mut total = ViewCacheAwareStageUsage::default();
+    for usage in output.cache_aware_stage_metrics.values() {
+        total.merge_from(usage);
+    }
+    total
+}
+
+fn operator_stage_name(stage: &str) -> Option<&'static str> {
+    match stage {
+        "retain_extract" | "retain_resolve" | "retain_graph" | "retain_opinion" => Some("retain"),
+        "reflect" => Some("reflect"),
+        "consolidate" => Some("consolidate"),
+        "opinion_merge" => Some("opinion_merge"),
+        "judge" => Some("judge"),
+        _ => None,
+    }
+}
+
+fn rollup_operator_cache_metrics(
+    output: &ViewBenchmarkOutput,
+) -> BTreeMap<String, ViewCacheAwareStageUsage> {
+    let mut rolled_up = BTreeMap::new();
+    for (stage, usage) in &output.cache_aware_stage_metrics {
+        if let Some(operator_stage) = operator_stage_name(stage) {
+            rolled_up
+                .entry(operator_stage.to_string())
+                .or_insert_with(ViewCacheAwareStageUsage::default)
+                .merge_from(usage);
+        }
+    }
+    rolled_up
+}
+
+fn cache_summary_rows(total: &ViewCacheAwareStageUsage) -> Vec<CacheSummaryRow> {
+    let effective_prompt_tokens =
+        total.uncached_prompt_tokens + total.cache_write_prompt_tokens;
+    let cache_hit_rate = if total.prompt_tokens == 0 {
+        "0.0%".to_string()
+    } else {
+        fmt_pct(total.cache_hit_prompt_tokens as f64 / total.prompt_tokens as f64)
+    };
+
+    vec![
+        CacheSummaryRow {
+            metric: "effective prompt tok".into(),
+            value: effective_prompt_tokens.to_string(),
+        },
+        CacheSummaryRow {
+            metric: "cache hit tok".into(),
+            value: total.cache_hit_prompt_tokens.to_string(),
+        },
+        CacheSummaryRow {
+            metric: "cache write tok".into(),
+            value: total.cache_write_prompt_tokens.to_string(),
+        },
+        CacheSummaryRow {
+            metric: "cache supported".into(),
+            value: total.cache_supported_calls.to_string(),
+        },
+        CacheSummaryRow {
+            metric: "cache unsupported".into(),
+            value: total.cache_unsupported_calls.to_string(),
+        },
+        CacheSummaryRow {
+            metric: "cache hit rate".into(),
+            value: cache_hit_rate,
+        },
+    ]
+}
+
+fn effective_prompt_tokens(usage: &ViewCacheAwareStageUsage) -> u64 {
+    usage.uncached_prompt_tokens + usage.cache_write_prompt_tokens
+}
+
+fn cache_hit_rate(usage: &ViewCacheAwareStageUsage) -> f64 {
+    if usage.prompt_tokens == 0 {
+        0.0
+    } else {
+        usage.cache_hit_prompt_tokens as f64 / usage.prompt_tokens as f64
+    }
+}
+
+fn cache_compare_rows(
+    a: &ViewCacheAwareStageUsage,
+    b: &ViewCacheAwareStageUsage,
+) -> Vec<CacheCompareRow> {
+    vec![
+        CacheCompareRow {
+            metric: "effective prompt tok".into(),
+            val_a: effective_prompt_tokens(a).to_string(),
+            val_b: effective_prompt_tokens(b).to_string(),
+            delta: fmt_cost_delta_u64(effective_prompt_tokens(a), effective_prompt_tokens(b)),
+        },
+        CacheCompareRow {
+            metric: "cache hit tok".into(),
+            val_a: a.cache_hit_prompt_tokens.to_string(),
+            val_b: b.cache_hit_prompt_tokens.to_string(),
+            delta: fmt_cost_delta_u64(a.cache_hit_prompt_tokens, b.cache_hit_prompt_tokens),
+        },
+        CacheCompareRow {
+            metric: "cache write tok".into(),
+            val_a: a.cache_write_prompt_tokens.to_string(),
+            val_b: b.cache_write_prompt_tokens.to_string(),
+            delta: fmt_cost_delta_u64(a.cache_write_prompt_tokens, b.cache_write_prompt_tokens),
+        },
+        CacheCompareRow {
+            metric: "cache supported".into(),
+            val_a: a.cache_supported_calls.to_string(),
+            val_b: b.cache_supported_calls.to_string(),
+            delta: fmt_cost_delta_u64(a.cache_supported_calls, b.cache_supported_calls),
+        },
+        CacheCompareRow {
+            metric: "cache unsupported".into(),
+            val_a: a.cache_unsupported_calls.to_string(),
+            val_b: b.cache_unsupported_calls.to_string(),
+            delta: fmt_cost_delta_u64(a.cache_unsupported_calls, b.cache_unsupported_calls),
+        },
+        CacheCompareRow {
+            metric: "cache hit rate".into(),
+            val_a: fmt_pct(cache_hit_rate(a)),
+            val_b: fmt_pct(cache_hit_rate(b)),
+            delta: fmt_pct_delta(cache_hit_rate(a), cache_hit_rate(b)),
+        },
+    ]
+}
+
+const REQUIRED_PROMPT_HASH_KEYS: &[&str] = &[
+    "retain_extract",
+    "retain_resolve_system",
+    "retain_resolve_user",
+    "retain_graph_system",
+    "retain_graph_user",
+    "retain_opinion",
+    "reflect_agent",
+    "consolidate",
+    "opinion_merge",
+];
+
+fn prompt_hashes_complete(hashes: &ViewPromptHashes) -> bool {
+    if hashes.judge.is_empty() {
+        return false;
+    }
+    REQUIRED_PROMPT_HASH_KEYS
+        .iter()
+        .all(|key| matches!(hashes.other.get(*key), Some(serde_json::Value::String(text)) if !text.is_empty()))
+}
+
+fn savings_comparable(a: &ViewBenchmarkOutput, b: &ViewBenchmarkOutput) -> bool {
+    !a.manifest.dataset_fingerprint.is_empty()
+        && a.manifest.dataset_fingerprint == b.manifest.dataset_fingerprint
+        && prompt_hashes_complete(&a.manifest.prompt_hashes)
+        && prompt_hashes_complete(&b.manifest.prompt_hashes)
+        && a.manifest.prompt_hashes.judge == b.manifest.prompt_hashes.judge
+        && a.manifest.prompt_hashes.other == b.manifest.prompt_hashes.other
+        && !a.retain_model.is_empty()
+        && a.retain_model == b.retain_model
+        && !a.reflect_model.is_empty()
+        && a.reflect_model == b.reflect_model
+        && !a.judge_model.is_empty()
+        && a.judge_model == b.judge_model
+}
+
+fn savings_signal(
+    a: &ViewCacheAwareStageUsage,
+    b: &ViewCacheAwareStageUsage,
+    comparable: bool,
+) -> &'static str {
+    if !comparable {
+        return "unavailable";
+    }
+
+    let effective_a = effective_prompt_tokens(a);
+    let effective_b = effective_prompt_tokens(b);
+
+    if a.cache_hit_prompt_tokens == 0 && b.cache_hit_prompt_tokens == 0 {
+        "no cache-hit evidence"
+    } else if effective_b < effective_a && b.cache_hit_prompt_tokens > a.cache_hit_prompt_tokens {
+        "cache savings visible"
+    } else if b.cache_hit_prompt_tokens > 0 && effective_b >= effective_a {
+        "warm-up / write-heavy"
+    } else {
+        "no cache-hit evidence"
+    }
+}
+
+fn savings_unavailable_reason(a: &ViewBenchmarkOutput, b: &ViewBenchmarkOutput) -> String {
+    if a.manifest.dataset_fingerprint.is_empty() || b.manifest.dataset_fingerprint.is_empty() {
+        return "dataset fingerprint missing".into();
+    }
+    if a.manifest.dataset_fingerprint != b.manifest.dataset_fingerprint {
+        return "dataset fingerprint mismatch".into();
+    }
+    if !prompt_hashes_complete(&a.manifest.prompt_hashes)
+        || !prompt_hashes_complete(&b.manifest.prompt_hashes)
+    {
+        return "prompt hashes missing".into();
+    }
+    if a.manifest.prompt_hashes.judge != b.manifest.prompt_hashes.judge
+        || a.manifest.prompt_hashes.other != b.manifest.prompt_hashes.other
+    {
+        return "prompt hashes mismatch".into();
+    }
+    if a.retain_model.is_empty() || b.retain_model.is_empty() {
+        return "retain model missing".into();
+    }
+    if a.retain_model != b.retain_model {
+        return "retain model mismatch".into();
+    }
+    if a.reflect_model.is_empty() || b.reflect_model.is_empty() {
+        return "reflect model missing".into();
+    }
+    if a.reflect_model != b.reflect_model {
+        return "reflect model mismatch".into();
+    }
+    if a.judge_model.is_empty() || b.judge_model.is_empty() {
+        return "judge model missing".into();
+    }
+    if a.judge_model != b.judge_model {
+        return "judge model mismatch".into();
+    }
+    "comparison metadata missing".into()
+}
+
+fn render_table<T: Tabled>(rows: &[T], align_from: usize) -> String {
+    Table::new(rows)
+        .with(Style::rounded())
+        .with(Modify::new(Columns::new(align_from..)).with(Alignment::right()))
+        .to_string()
+}
+
+fn render_single_output(
+    output: &ViewBenchmarkOutput,
+    path: &str,
+    verbose: bool,
+    questions: &[ViewQuestionResult],
+) -> String {
+    let label = file_label(output, path);
+    let mut rendered = String::new();
+
+    rendered.push_str(&format!("LongMemEval: {label}\n\n"));
+
+    let config_rows = build_config_rows(output);
+    if !config_rows.is_empty() {
+        rendered.push_str(&Table::new(&config_rows).with(Style::rounded()).to_string());
+        rendered.push_str("\n\n");
+    }
+
+    let cat_rows = build_category_rows(output);
+    rendered.push_str(&render_table(&cat_rows, 1));
+    rendered.push_str("\n\n");
+
+    let stage_rows = build_stage_rows(output);
+    if !stage_rows.is_empty() {
+        rendered.push_str(&render_table(&stage_rows, 1));
+        rendered.push_str("\n\n");
+    }
+
+    if cache_usage_available(output) {
+        let cache_rows = cache_summary_rows(&sum_cache_usage(output));
+        rendered.push_str(&render_table(&cache_rows, 1));
+        rendered.push_str("\n\n");
+
+        let cache_stage_rows: Vec<CacheStageRow> = rollup_operator_cache_metrics(output)
+            .into_iter()
+            .map(|(stage, usage)| CacheStageRow {
+                stage,
+                effective_prompt_tok: usage.uncached_prompt_tokens + usage.cache_write_prompt_tokens,
+                cache_hit_tok: usage.cache_hit_prompt_tokens,
+                cache_write_tok: usage.cache_write_prompt_tokens,
+                completion_tok: usage.completion_tokens,
+                calls: usage.calls,
+            })
+            .collect();
+        if !cache_stage_rows.is_empty() {
+            rendered.push_str(&render_table(&cache_stage_rows, 1));
+            rendered.push_str("\n\n");
+        }
+    } else {
+        rendered.push_str("cache-aware metrics unavailable (legacy artifact)\n\n");
+    }
+
+    rendered.push_str(&format!("Total time: {}", fmt_time(output.total_time_s)));
+
+    if verbose {
+        if questions.is_empty() {
+            rendered.push_str("\n\n(no question sidecar found)");
+        } else {
+            let mut sorted = questions.iter().collect::<Vec<_>>();
+            sorted.sort_by(|a, b| a.category.cmp(&b.category).then(a.question_id.cmp(&b.question_id)));
+            let q_rows: Vec<QuestionRow> = sorted
+                .iter()
+                .map(|q| QuestionRow {
+                    question_id: q.question_id.clone(),
+                    category: q.category.clone(),
+                    correct: question_mark(q.judge_correct),
+                    status: if q.status.is_empty() {
+                        "ok".into()
+                    } else {
+                        q.status.clone()
+                    },
+                    elapsed_s: format!("{:.1}s", q.elapsed_s),
+                })
+                .collect();
+            rendered.push('\n');
+            rendered.push('\n');
+            rendered.push_str(&render_table(&q_rows, 3));
+        }
+    }
+
+    rendered
+}
+
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
@@ -378,15 +790,34 @@ fn print_usage() {
 // Load / parse
 // ---------------------------------------------------------------------------
 
+fn parse_output(raw: &str) -> Result<ViewBenchmarkOutput, serde_json::Error> {
+    serde_json::from_str(raw)
+}
+
 fn load_file(path: &str) -> ViewBenchmarkOutput {
     let raw = fs::read_to_string(path).unwrap_or_else(|e| {
         eprintln!("Failed to read {path}: {e}");
         process::exit(1);
     });
-    serde_json::from_str(&raw).unwrap_or_else(|e| {
+    parse_output(&raw).unwrap_or_else(|e| {
         eprintln!("Failed to parse {path}: {e}");
         process::exit(1);
     })
+}
+
+pub fn parse_summary_artifact(raw: &str) -> Result<(), serde_json::Error> {
+    parse_output(raw).map(|_| ())
+}
+
+pub fn render_compare_artifacts(
+    raw_a: &str,
+    raw_b: &str,
+    path_a: &str,
+    path_b: &str,
+) -> Result<String, serde_json::Error> {
+    let a = parse_output(raw_a)?;
+    let b = parse_output(raw_b)?;
+    Ok(render_compare_output(&a, &b, path_a, path_b, false))
 }
 
 fn load_questions(artifact_path: &Path) -> Vec<ViewQuestionResult> {
@@ -500,105 +931,59 @@ fn build_stage_rows(output: &ViewBenchmarkOutput) -> Vec<StageRow> {
 // ---------------------------------------------------------------------------
 
 fn view_single(output: &ViewBenchmarkOutput, path: &str, verbose: bool) {
-    let label = file_label(output, path);
-    println!("LongMemEval: {label}");
-    println!();
-
-    // Config table
-    let config_rows = build_config_rows(output);
-    if !config_rows.is_empty() {
-        println!("{}", Table::new(&config_rows).with(Style::rounded()));
-        println!();
-    }
-
-    // Per-category accuracy table
-    let cat_rows = build_category_rows(output);
-    println!(
-        "{}",
-        Table::new(&cat_rows)
-            .with(Style::rounded())
-            .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
-    );
-    println!();
-
-    // Stage metrics table
-    let stage_rows = build_stage_rows(output);
-    if !stage_rows.is_empty() {
-        println!(
-            "{}",
-            Table::new(&stage_rows)
-                .with(Style::rounded())
-                .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
-        );
-        println!();
-    }
-
-    // Total time
-    println!("Total time: {}", fmt_time(output.total_time_s));
-
-    // Verbose: per-question table
-    if verbose {
-        let questions = load_questions(Path::new(path));
-        if questions.is_empty() {
-            println!();
-            println!("(no question sidecar found)");
-        } else {
-            let mut sorted = questions;
-            sorted.sort_by(|a, b| a.category.cmp(&b.category).then(a.question_id.cmp(&b.question_id)));
-            let q_rows: Vec<QuestionRow> = sorted
-                .iter()
-                .map(|q| QuestionRow {
-                    question_id: q.question_id.clone(),
-                    category: q.category.clone(),
-                    correct: question_mark(q.judge_correct),
-                    status: if q.status.is_empty() {
-                        "ok".into()
-                    } else {
-                        q.status.clone()
-                    },
-                    elapsed_s: format!("{:.1}s", q.elapsed_s),
-                })
-                .collect();
-            println!();
-            println!(
-                "{}",
-                Table::new(&q_rows)
-                    .with(Style::rounded())
-                    .with(Modify::new(Columns::new(3..)).with(Alignment::right()))
-            );
-        }
-    }
+    let questions = if verbose {
+        load_questions(Path::new(path))
+    } else {
+        Vec::new()
+    };
+    println!("{}", render_single_output(output, path, verbose, &questions));
 }
 
 // ---------------------------------------------------------------------------
 // Comparison mode
 // ---------------------------------------------------------------------------
 
-fn view_compare(
+fn render_compare_output(
     a: &ViewBenchmarkOutput,
     b: &ViewBenchmarkOutput,
     path_a: &str,
     path_b: &str,
     verbose: bool,
-) {
+) -> String {
     let label_a = file_label(a, path_a);
     let label_b = file_label(b, path_b);
-    println!("LongMemEval comparison: {label_a} vs {label_b}");
-    println!();
+    let mut rendered = String::new();
 
-    // Config comparison table
+    rendered.push_str(&format!("LongMemEval comparison: {label_a} vs {label_b}\n\n"));
+
     let config_pairs: Vec<(&str, String, String)> = vec![
         ("profile", a.manifest.profile.clone(), b.manifest.profile.clone()),
-        ("dataset", a.manifest.dataset_fingerprint.clone(), b.manifest.dataset_fingerprint.clone()),
-        ("consolidation", a.consolidation_strategy.clone(), b.consolidation_strategy.clone()),
-        ("instance_jobs", a.manifest.instance_concurrency.to_string(), b.manifest.instance_concurrency.to_string()),
+        (
+            "dataset",
+            a.manifest.dataset_fingerprint.clone(),
+            b.manifest.dataset_fingerprint.clone(),
+        ),
+        (
+            "consolidation",
+            a.consolidation_strategy.clone(),
+            b.consolidation_strategy.clone(),
+        ),
+        (
+            "instance_jobs",
+            a.manifest.instance_concurrency.to_string(),
+            b.manifest.instance_concurrency.to_string(),
+        ),
         ("retain_model", a.retain_model.clone(), b.retain_model.clone()),
         ("reflect_model", a.reflect_model.clone(), b.reflect_model.clone()),
         ("embedding_model", a.embedding_model.clone(), b.embedding_model.clone()),
         ("reranker_model", a.reranker_model.clone(), b.reranker_model.clone()),
         ("judge_model", a.judge_model.clone(), b.judge_model.clone()),
         ("tag", a.tag.clone().unwrap_or_default(), b.tag.clone().unwrap_or_default()),
-        ("commit", a.commit.clone().unwrap_or_default(), b.commit.clone().unwrap_or_default()),
+        (
+            "commit",
+            a.commit.clone().unwrap_or_default(),
+            b.commit.clone().unwrap_or_default(),
+        ),
         ("timestamp", a.timestamp.clone(), b.timestamp.clone()),
     ];
 
@@ -613,23 +998,18 @@ fn view_compare(
         .collect();
 
     if !config_rows.is_empty() {
-        println!("{}", Table::new(&config_rows).with(Style::rounded()));
-        println!();
+        rendered.push_str(&Table::new(&config_rows).with(Style::rounded()).to_string());
+        rendered.push_str("\n\n");
     }
 
-    // Per-category comparison with deltas
-    let mut all_categories: Vec<String> = {
-        let mut cats: Vec<String> = a
-            .per_category
-            .keys()
-            .chain(b.per_category.keys())
-            .cloned()
-            .collect();
-        cats.sort();
-        cats.dedup();
-        cats
-    };
-    // "overall" always last
+    let mut all_categories: Vec<String> = a
+        .per_category
+        .keys()
+        .chain(b.per_category.keys())
+        .cloned()
+        .collect();
+    all_categories.sort();
+    all_categories.dedup();
     all_categories.retain(|c| c != "overall");
 
     let default_cat = ViewCategoryResult::default();
@@ -648,7 +1028,6 @@ fn view_compare(
             }
         })
         .collect();
-    // overall row
     cat_rows.push(CompareCategoryRow {
         category: "overall".into(),
         acc_a: fmt_pct(a.accuracy),
@@ -657,27 +1036,17 @@ fn view_compare(
         n_a: a.total_questions,
         n_b: b.total_questions,
     });
+    rendered.push_str(&render_table(&cat_rows, 1));
+    rendered.push_str("\n\n");
 
-    println!(
-        "{}",
-        Table::new(&cat_rows)
-            .with(Style::rounded())
-            .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
-    );
-    println!();
-
-    // Stage metrics comparison
-    let all_stages: Vec<String> = {
-        let mut stages: Vec<String> = a
-            .stage_metrics
-            .keys()
-            .chain(b.stage_metrics.keys())
-            .cloned()
-            .collect();
-        stages.sort();
-        stages.dedup();
-        stages
-    };
+    let mut all_stages: Vec<String> = a
+        .stage_metrics
+        .keys()
+        .chain(b.stage_metrics.keys())
+        .cloned()
+        .collect();
+    all_stages.sort();
+    all_stages.dedup();
 
     let default_stage = ViewStageUsage::default();
     let stage_rows: Vec<CompareStageRow> = all_stages
@@ -702,30 +1071,117 @@ fn view_compare(
         .collect();
 
     if !stage_rows.is_empty() {
-        println!(
-            "{}",
-            Table::new(&stage_rows)
-                .with(Style::rounded())
-                .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
-        );
-        println!();
+        rendered.push_str(&render_table(&stage_rows, 1));
+        rendered.push_str("\n\n");
     }
 
-    // Total time comparison
-    println!(
+    let cache_total_a = sum_cache_usage(a);
+    let cache_total_b = sum_cache_usage(b);
+    rendered.push_str("cache-aware comparison\n");
+    rendered.push_str(&render_table(&cache_compare_rows(&cache_total_a, &cache_total_b), 1));
+    rendered.push_str("\n\n");
+
+    let rolled_up_a = rollup_operator_cache_metrics(a);
+    let rolled_up_b = rollup_operator_cache_metrics(b);
+    let cache_stage_order = ["retain", "reflect", "consolidate", "opinion_merge", "judge"];
+    let cache_stage_rows: Vec<CacheStageCompareRow> = cache_stage_order
+        .into_iter()
+        .filter_map(|stage| {
+            let usage_a = rolled_up_a.get(stage).cloned().unwrap_or_default();
+            let usage_b = rolled_up_b.get(stage).cloned().unwrap_or_default();
+            if usage_a.calls > 0 || usage_b.calls > 0 || usage_a.prompt_tokens > 0 || usage_b.prompt_tokens > 0
+            {
+                Some(CacheStageCompareRow {
+                    stage: stage.to_string(),
+                    effective_prompt_a: effective_prompt_tokens(&usage_a),
+                    effective_prompt_b: effective_prompt_tokens(&usage_b),
+                    delta_effective_prompt: fmt_cost_delta_u64(
+                        effective_prompt_tokens(&usage_a),
+                        effective_prompt_tokens(&usage_b),
+                    ),
+                    cache_hit_a: usage_a.cache_hit_prompt_tokens,
+                    cache_hit_b: usage_b.cache_hit_prompt_tokens,
+                    delta_cache_hit: fmt_cost_delta_u64(
+                        usage_a.cache_hit_prompt_tokens,
+                        usage_b.cache_hit_prompt_tokens,
+                    ),
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
+    if !cache_stage_rows.is_empty() {
+        rendered.push_str(&render_table(&cache_stage_rows, 1));
+        rendered.push_str("\n\n");
+    }
+
+    rendered.push_str("cache savings verification\n");
+    if savings_comparable(a, b) {
+        let signal = savings_signal(&cache_total_a, &cache_total_b, true);
+        let savings_rows = vec![
+            SingleConfigRow {
+                key: "verdict".into(),
+                value: signal.into(),
+            },
+            SingleConfigRow {
+                key: "effective prompt tok".into(),
+                value: format!(
+                    "{} -> {} ({})",
+                    effective_prompt_tokens(&cache_total_a),
+                    effective_prompt_tokens(&cache_total_b),
+                    fmt_cost_delta_u64(
+                        effective_prompt_tokens(&cache_total_a),
+                        effective_prompt_tokens(&cache_total_b),
+                    )
+                ),
+            },
+            SingleConfigRow {
+                key: "cache hit tok".into(),
+                value: format!(
+                    "{} -> {} ({})",
+                    cache_total_a.cache_hit_prompt_tokens,
+                    cache_total_b.cache_hit_prompt_tokens,
+                    fmt_cost_delta_u64(
+                        cache_total_a.cache_hit_prompt_tokens,
+                        cache_total_b.cache_hit_prompt_tokens,
+                    )
+                ),
+            },
+            SingleConfigRow {
+                key: "cache write tok".into(),
+                value: format!(
+                    "{} -> {} ({})",
+                    cache_total_a.cache_write_prompt_tokens,
+                    cache_total_b.cache_write_prompt_tokens,
+                    fmt_cost_delta_u64(
+                        cache_total_a.cache_write_prompt_tokens,
+                        cache_total_b.cache_write_prompt_tokens,
+                    )
+                ),
+            },
+        ];
+        rendered.push_str(&Table::new(&savings_rows).with(Style::rounded()).to_string());
+        rendered.push_str("\n\n");
+    } else {
+        rendered.push_str(&format!(
+            "verification unavailable: {}\n\n",
+            savings_unavailable_reason(a, b)
+        ));
+    }
+
+    rendered.push_str(&format!(
         "Total time: {} vs {}",
         fmt_time(a.total_time_s),
         fmt_time(b.total_time_s)
-    );
+    ));
 
-    // Verbose: per-question comparison
     if verbose {
         let questions_a = load_questions(Path::new(path_a));
         let questions_b = load_questions(Path::new(path_b));
 
         if questions_a.is_empty() && questions_b.is_empty() {
-            println!();
-            println!("(no question sidecars found)");
+            rendered.push_str("\n\n(no question sidecars found)");
         } else {
             let map_b: BTreeMap<&str, &ViewQuestionResult> =
                 questions_b.iter().map(|q| (q.question_id.as_str(), q)).collect();
@@ -741,20 +1197,37 @@ fn view_compare(
                         question_id: qa.question_id.clone(),
                         category: qa.category.clone(),
                         a: question_mark(qa.judge_correct),
-                        b: qb.map(|q| question_mark(q.judge_correct)).unwrap_or_else(|| "-".into()),
+                        b: qb
+                            .map(|q| question_mark(q.judge_correct))
+                            .unwrap_or_else(|| "-".into()),
                     }
                 })
                 .collect();
 
-            println!();
-            println!(
-                "{}",
-                Table::new(&q_rows)
+            rendered.push_str("\n\n");
+            rendered.push_str(
+                &Table::new(&q_rows)
                     .with(Style::rounded())
                     .with(Modify::new(Columns::new(2..)).with(Alignment::center()))
+                    .to_string(),
             );
         }
     }
+
+    rendered
+}
+
+fn view_compare(
+    a: &ViewBenchmarkOutput,
+    b: &ViewBenchmarkOutput,
+    path_a: &str,
+    path_b: &str,
+    verbose: bool,
+) {
+    println!(
+        "{}",
+        render_compare_output(a, b, path_a, path_b, verbose)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1049,5 +1522,189 @@ mod tests {
 
         let zero = fmt_cost_delta_u64(100, 100);
         assert_eq!(zero, "+0");
+    }
+
+    fn cache_usage(
+        prompt_tokens: u64,
+        uncached_prompt_tokens: u64,
+        cache_hit_prompt_tokens: u64,
+        cache_write_prompt_tokens: u64,
+        completion_tokens: u64,
+        calls: u64,
+        cache_supported_calls: u64,
+        cache_unsupported_calls: u64,
+    ) -> ViewCacheAwareStageUsage {
+        ViewCacheAwareStageUsage {
+            prompt_tokens,
+            uncached_prompt_tokens,
+            cache_hit_prompt_tokens,
+            cache_write_prompt_tokens,
+            completion_tokens,
+            calls,
+            cache_supported_calls,
+            cache_unsupported_calls,
+            ..Default::default()
+        }
+    }
+
+    fn sample_cache_aware_output() -> ViewBenchmarkOutput {
+        let mut cache_aware_stage_metrics = BTreeMap::new();
+        cache_aware_stage_metrics.insert(
+            "retain_extract".into(),
+            cache_usage(120, 70, 40, 10, 12, 2, 2, 0),
+        );
+        cache_aware_stage_metrics.insert(
+            "retain_resolve".into(),
+            cache_usage(80, 50, 20, 10, 8, 1, 1, 0),
+        );
+        cache_aware_stage_metrics.insert(
+            "reflect".into(),
+            cache_usage(60, 40, 15, 5, 6, 1, 1, 0),
+        );
+        cache_aware_stage_metrics.insert(
+            "consolidate".into(),
+            cache_usage(50, 25, 20, 5, 7, 1, 1, 0),
+        );
+        cache_aware_stage_metrics.insert(
+            "opinion_merge".into(),
+            cache_usage(40, 30, 5, 5, 4, 1, 1, 0),
+        );
+        cache_aware_stage_metrics.insert(
+            "judge".into(),
+            cache_usage(30, 30, 0, 0, 9, 1, 0, 1),
+        );
+
+        ViewBenchmarkOutput {
+            benchmark: "longmemeval".into(),
+            timestamp: "2026-03-16T00:00:00Z".into(),
+            retain_model: "retain-model".into(),
+            reflect_model: "reflect-model".into(),
+            embedding_model: "embed-model".into(),
+            reranker_model: "reranker".into(),
+            judge_model: "judge-model".into(),
+            consolidation_strategy: "end".into(),
+            total_questions: 4,
+            accuracy: 0.75,
+            cache_aware_stage_metrics,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn cache_aware_single_summary_reports_prompt_components() {
+        let rendered = render_single_output(
+            &sample_cache_aware_output(),
+            "bench/longmemeval/results/local/cache-aware.json",
+            false,
+            &[],
+        );
+
+        assert!(rendered.contains("effective prompt tok"));
+        assert!(rendered.contains("cache hit tok"));
+        assert!(rendered.contains("cache write tok"));
+        assert!(rendered.contains("cache supported"));
+        assert!(rendered.contains("cache unsupported"));
+        assert!(rendered.contains("cache hit rate"));
+    }
+
+    #[test]
+    fn cache_aware_single_rolls_up_operator_stages() {
+        let rendered = render_single_output(
+            &sample_cache_aware_output(),
+            "bench/longmemeval/results/local/cache-aware.json",
+            false,
+            &[],
+        );
+
+        assert!(rendered.contains("retain"));
+        assert!(rendered.contains("reflect"));
+        assert!(rendered.contains("consolidate"));
+        assert!(rendered.contains("opinion_merge"));
+        assert!(rendered.contains("judge"));
+    }
+
+    #[test]
+    fn cache_aware_single_legacy_artifact_reports_unavailable() {
+        let rendered = render_single_output(
+            &ViewBenchmarkOutput {
+                benchmark: "longmemeval".into(),
+                ..Default::default()
+            },
+            "bench/longmemeval/results/local/legacy.json",
+            false,
+            &[],
+        );
+
+        assert!(rendered.contains("cache-aware metrics unavailable (legacy artifact)"));
+        assert_eq!(
+            rendered
+                .matches("cache-aware metrics unavailable (legacy artifact)")
+                .count(),
+            1
+        );
+    }
+
+    fn compare_output_with_metadata() -> ViewBenchmarkOutput {
+        let mut output = sample_cache_aware_output();
+        output.manifest.dataset_fingerprint = "dataset-v1".into();
+        output.manifest.prompt_hashes.judge = "judge-hash".into();
+        for (key, value) in [
+            ("retain_extract", "retain-extract-hash"),
+            ("retain_resolve_system", "retain-resolve-system-hash"),
+            ("retain_resolve_user", "retain-resolve-user-hash"),
+            ("retain_graph_system", "retain-graph-system-hash"),
+            ("retain_graph_user", "retain-graph-user-hash"),
+            ("retain_opinion", "retain-opinion-hash"),
+            ("reflect_agent", "reflect-agent-hash"),
+            ("consolidate", "consolidate-hash"),
+            ("opinion_merge", "opinion-merge-hash"),
+        ] {
+            output
+                .manifest
+                .prompt_hashes
+                .other
+                .insert(key.into(), serde_json::json!(value));
+        }
+        output
+    }
+
+    #[test]
+    fn cache_aware_compare_reports_same_model_savings_signal() {
+        let baseline = compare_output_with_metadata();
+        let mut warm = compare_output_with_metadata();
+        warm.tag = Some("warm".into());
+        warm.cache_aware_stage_metrics.insert(
+            "reflect".into(),
+            cache_usage(60, 20, 35, 5, 6, 1, 1, 0),
+        );
+
+        let rendered = render_compare_output(&baseline, &warm, "baseline.json", "warm.json", false);
+
+        assert!(rendered.contains("cache-aware comparison"));
+        assert!(rendered.contains("cache savings verification"));
+        assert!(rendered.contains("effective prompt tok"));
+        assert!(rendered.contains("cache hit tok"));
+        assert!(rendered.contains("retain"));
+        assert!(rendered.contains("reflect"));
+        assert!(rendered.contains("cache savings visible"));
+    }
+
+    #[test]
+    fn cache_aware_compare_blocks_incomplete_prompt_hashes() {
+        let baseline = compare_output_with_metadata();
+        let mut incomplete = compare_output_with_metadata();
+        incomplete
+            .manifest
+            .prompt_hashes
+            .other
+            .remove("retain_graph_user");
+
+        let rendered =
+            render_compare_output(&baseline, &incomplete, "baseline.json", "incomplete.json", false);
+
+        assert!(rendered.contains("cache-aware comparison"));
+        assert!(rendered.contains("cache savings verification"));
+        assert!(rendered.contains("verification unavailable: prompt hashes missing"));
+        assert!(!rendered.contains("cache savings visible"));
     }
 }

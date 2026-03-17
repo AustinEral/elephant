@@ -783,7 +783,7 @@ mod tests {
     use crate::recall::{DefaultRecallPipeline, RecallPipeline};
     use crate::storage::MemoryStore;
     use crate::storage::mock::MockMemoryStore;
-    use crate::types::llm::CompletionResponse;
+    use crate::types::llm::{CompletionResponse, CompletionUsage};
     use crate::types::*;
     use chrono::{TimeZone, Utc};
 
@@ -883,6 +883,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: Some("tool_use".into()),
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_1".into(),
@@ -896,6 +897,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: Some("tool_use".into()),
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_2".into(),
@@ -909,6 +911,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: Some("tool_use".into()),
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_3".into(),
@@ -953,6 +956,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: Some("tool_use".into()),
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_1".into(),
@@ -964,6 +968,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: Some("tool_use".into()),
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_2".into(),
@@ -975,6 +980,7 @@ mod tests {
             content: "Synthesizing".into(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: Some("max_tokens".into()),
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_3".into(),
@@ -1056,6 +1062,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: None,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_1".into(),
@@ -1067,6 +1074,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: None,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_2".into(),
@@ -1078,6 +1086,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: None,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_3".into(),
@@ -1146,6 +1155,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: Some("tool_use".into()),
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_1".into(),
@@ -1157,6 +1167,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: Some("tool_use".into()),
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_2".into(),
@@ -1168,6 +1179,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: Some("tool_use".into()),
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_3".into(),
@@ -1183,6 +1195,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: Some("tool_use".into()),
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_4".into(),
@@ -1272,6 +1285,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: Some("tool_use".into()),
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_1".into(),
@@ -1283,6 +1297,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: Some("tool_use".into()),
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_2".into(),
@@ -1294,6 +1309,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: Some("tool_use".into()),
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_3".into(),
@@ -1309,6 +1325,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: Some("tool_use".into()),
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_4".into(),
@@ -1420,6 +1437,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: None,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_1".into(),
@@ -1433,6 +1451,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: None,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_2".into(),
@@ -1446,6 +1465,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: None,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_3".into(),
@@ -1511,6 +1531,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: None,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_1".into(),
@@ -1524,6 +1545,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: None,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_2".into(),
@@ -1537,6 +1559,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: None,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_3".into(),
@@ -1573,6 +1596,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: None,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_1".into(),
@@ -1586,6 +1610,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: None,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_2".into(),
@@ -1599,6 +1624,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: None,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_3".into(),
@@ -1647,6 +1673,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: None,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_1".into(),
@@ -1659,6 +1686,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: None,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_2".into(),
@@ -1671,6 +1699,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: None,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_3".into(),
@@ -1756,6 +1785,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: None,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_1".into(),
@@ -1768,6 +1798,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: None,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_2".into(),
@@ -1780,6 +1811,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: None,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_3".into(),
@@ -1792,6 +1824,7 @@ mod tests {
             content: String::new(),
             input_tokens: 10,
             output_tokens: 20,
+            usage: CompletionUsage::legacy_compat(10, 20),
             stop_reason: None,
             tool_calls: vec![crate::types::llm::ToolCall {
                 id: "call_4".into(),

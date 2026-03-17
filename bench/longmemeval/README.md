@@ -122,3 +122,5 @@ cargo run --release --bin longmemeval-view -- results/local/baseline.json --verb
 # Compare two runs (shows delta per category)
 cargo run --release --bin longmemeval-view -- results/local/a.json results/local/b.json
 ```
+
+Single-result output now includes cache-aware prompt-token summary and operator-stage metrics alongside the legacy tables. Two-file compare keeps the existing category/stage deltas and adds `cache-aware comparison` plus compare-only `cache savings verification` when the artifacts are same-model comparable by dataset fingerprint, prompt hashes, and retain/reflect/judge models. The savings section stays scoped to artifact-derived prompt-token behavior rather than live dollar-cost accounting.

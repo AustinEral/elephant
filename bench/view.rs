@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::env;
+use std::fmt::Write as _;
 use std::fs;
 use std::process;
 
@@ -73,6 +74,8 @@ struct ConversationSummary {
     total_time_s: f64,
     #[serde(default)]
     bank_stats: ConversationBankStats,
+    #[serde(default)]
+    cache_aware_stage_metrics: BTreeMap<String, CacheAwareStageUsage>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -184,6 +187,34 @@ impl StageUsage {
     }
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+struct CacheAwareStageUsage {
+    #[serde(default)]
+    prompt_tokens: u64,
+    #[serde(default)]
+    uncached_prompt_tokens: u64,
+    #[serde(default)]
+    cache_hit_prompt_tokens: u64,
+    #[serde(default)]
+    cache_write_prompt_tokens: u64,
+    #[serde(default)]
+    completion_tokens: u64,
+    #[serde(default)]
+    calls: u64,
+    #[serde(default)]
+    errors: u64,
+    #[serde(default)]
+    latency_ms: u64,
+    #[serde(default)]
+    cache_supported_calls: u64,
+    #[serde(default)]
+    cache_hit_calls: u64,
+    #[serde(default)]
+    cache_write_calls: u64,
+    #[serde(default)]
+    cache_unsupported_calls: u64,
+}
+
 #[derive(Debug, Deserialize)]
 struct BenchmarkOutput {
     #[serde(default)]
@@ -219,6 +250,10 @@ struct BenchmarkOutput {
     stage_metrics: BTreeMap<String, StageUsage>,
     #[serde(default)]
     total_stage_usage: StageUsage,
+    #[serde(default)]
+    cache_aware_stage_metrics: BTreeMap<String, CacheAwareStageUsage>,
+    #[serde(default)]
+    cache_aware_total_stage_usage: CacheAwareStageUsage,
     #[serde(default)]
     results: Vec<QuestionResult>,
     total_time_s: f64,
@@ -350,6 +385,36 @@ fn fmt_stage_value(usage: &StageUsage) -> String {
     } else {
         format!("{} tok / {} calls", usage.total_tokens(), usage.calls)
     }
+}
+
+fn cache_usage_available(usage: &CacheAwareStageUsage) -> bool {
+    usage.prompt_tokens > 0
+        || usage.uncached_prompt_tokens > 0
+        || usage.cache_hit_prompt_tokens > 0
+        || usage.cache_write_prompt_tokens > 0
+        || usage.completion_tokens > 0
+        || usage.calls > 0
+        || usage.errors > 0
+        || usage.latency_ms > 0
+        || usage.cache_supported_calls > 0
+        || usage.cache_hit_calls > 0
+        || usage.cache_write_calls > 0
+        || usage.cache_unsupported_calls > 0
+}
+
+fn merge_cache_usage(total: &mut CacheAwareStageUsage, usage: &CacheAwareStageUsage) {
+    total.prompt_tokens += usage.prompt_tokens;
+    total.uncached_prompt_tokens += usage.uncached_prompt_tokens;
+    total.cache_hit_prompt_tokens += usage.cache_hit_prompt_tokens;
+    total.cache_write_prompt_tokens += usage.cache_write_prompt_tokens;
+    total.completion_tokens += usage.completion_tokens;
+    total.calls += usage.calls;
+    total.errors += usage.errors;
+    total.latency_ms += usage.latency_ms;
+    total.cache_supported_calls += usage.cache_supported_calls;
+    total.cache_hit_calls += usage.cache_hit_calls;
+    total.cache_write_calls += usage.cache_write_calls;
+    total.cache_unsupported_calls += usage.cache_unsupported_calls;
 }
 
 fn fmt_float_delta(a: f64, b: f64, precision: usize, higher_is_better: bool) -> String {
@@ -624,9 +689,252 @@ struct StageCompareRow {
     delta: String,
 }
 
-fn view_single(output: &BenchmarkOutput, path: &str) {
+#[derive(Tabled)]
+struct CacheStageRow {
+    stage: String,
+    #[tabled(rename = "effective prompt tok")]
+    effective_prompt_tokens: String,
+    #[tabled(rename = "cache hit tok")]
+    cache_hit_prompt_tokens: String,
+    #[tabled(rename = "cache write tok")]
+    cache_write_prompt_tokens: String,
+    calls: u64,
+    errors: u64,
+    latency: String,
+}
+
+#[derive(Tabled)]
+struct CacheStageCompareRow {
+    stage: String,
+    #[tabled(rename = "eff(A)")]
+    effective_prompt_a: String,
+    #[tabled(rename = "eff(B)")]
+    effective_prompt_b: String,
+    #[tabled(rename = "Δ eff")]
+    delta_effective_prompt: String,
+    #[tabled(rename = "hit(A)")]
+    cache_hit_a: String,
+    #[tabled(rename = "hit(B)")]
+    cache_hit_b: String,
+    #[tabled(rename = "Δ hit")]
+    delta_cache_hit: String,
+}
+
+fn operator_stage_name(stage: &str) -> Option<&'static str> {
+    match stage {
+        "retain_extract" | "retain_resolve" | "retain_graph" | "retain_opinion" => {
+            Some("retain")
+        }
+        "reflect" => Some("reflect"),
+        "consolidate" => Some("consolidate"),
+        "opinion_merge" => Some("opinion_merge"),
+        "judge" => Some("judge"),
+        _ => None,
+    }
+}
+
+fn rollup_operator_cache_metrics(
+    stage_metrics: &BTreeMap<String, CacheAwareStageUsage>,
+) -> BTreeMap<String, CacheAwareStageUsage> {
+    let mut rolled_up = BTreeMap::new();
+    for (stage, usage) in stage_metrics {
+        if let Some(operator_stage) = operator_stage_name(stage) {
+            merge_cache_usage(rolled_up.entry(operator_stage.to_string()).or_default(), usage);
+        }
+    }
+    rolled_up
+}
+
+fn cache_summary_rows(usage: &CacheAwareStageUsage) -> Vec<SingleConfigRow> {
+    let effective_prompt_tokens = usage.uncached_prompt_tokens + usage.cache_write_prompt_tokens;
+    vec![
+        SingleConfigRow {
+            key: "effective prompt tok".into(),
+            value: effective_prompt_tokens.to_string(),
+        },
+        SingleConfigRow {
+            key: "cache hit tok".into(),
+            value: usage.cache_hit_prompt_tokens.to_string(),
+        },
+        SingleConfigRow {
+            key: "cache write tok".into(),
+            value: usage.cache_write_prompt_tokens.to_string(),
+        },
+        SingleConfigRow {
+            key: "cache supported".into(),
+            value: usage.cache_supported_calls.to_string(),
+        },
+        SingleConfigRow {
+            key: "cache unsupported".into(),
+            value: usage.cache_unsupported_calls.to_string(),
+        },
+        SingleConfigRow {
+            key: "cache hit rate".into(),
+            value: if usage.prompt_tokens > 0 {
+                fmt_pct(usage.cache_hit_prompt_tokens as f64 / usage.prompt_tokens as f64)
+            } else {
+                "-".into()
+            },
+        },
+    ]
+}
+
+fn cache_compare_total(output: &BenchmarkOutput) -> CacheAwareStageUsage {
+    if cache_usage_available(&output.cache_aware_total_stage_usage) {
+        return output.cache_aware_total_stage_usage.clone();
+    }
+
+    let mut total = CacheAwareStageUsage::default();
+    for usage in output.cache_aware_stage_metrics.values() {
+        merge_cache_usage(&mut total, usage);
+    }
+    total
+}
+
+fn cache_hit_rate(usage: &CacheAwareStageUsage) -> f64 {
+    if usage.prompt_tokens == 0 {
+        0.0
+    } else {
+        usage.cache_hit_prompt_tokens as f64 / usage.prompt_tokens as f64
+    }
+}
+
+fn effective_prompt_tokens(usage: &CacheAwareStageUsage) -> u64 {
+    usage.uncached_prompt_tokens + usage.cache_write_prompt_tokens
+}
+
+fn cache_compare_rows(a: &CacheAwareStageUsage, b: &CacheAwareStageUsage) -> Vec<MetricsRow> {
+    vec![
+        MetricsRow {
+            metric: "effective prompt tok".into(),
+            val_a: effective_prompt_tokens(a).to_string(),
+            val_b: effective_prompt_tokens(b).to_string(),
+            delta: fmt_cost_delta_u64(effective_prompt_tokens(a), effective_prompt_tokens(b)),
+        },
+        MetricsRow {
+            metric: "cache hit tok".into(),
+            val_a: a.cache_hit_prompt_tokens.to_string(),
+            val_b: b.cache_hit_prompt_tokens.to_string(),
+            delta: fmt_cost_delta_u64(a.cache_hit_prompt_tokens, b.cache_hit_prompt_tokens),
+        },
+        MetricsRow {
+            metric: "cache write tok".into(),
+            val_a: a.cache_write_prompt_tokens.to_string(),
+            val_b: b.cache_write_prompt_tokens.to_string(),
+            delta: fmt_cost_delta_u64(a.cache_write_prompt_tokens, b.cache_write_prompt_tokens),
+        },
+        MetricsRow {
+            metric: "cache supported".into(),
+            val_a: a.cache_supported_calls.to_string(),
+            val_b: b.cache_supported_calls.to_string(),
+            delta: fmt_cost_delta_u64(a.cache_supported_calls, b.cache_supported_calls),
+        },
+        MetricsRow {
+            metric: "cache unsupported".into(),
+            val_a: a.cache_unsupported_calls.to_string(),
+            val_b: b.cache_unsupported_calls.to_string(),
+            delta: fmt_cost_delta_u64(a.cache_unsupported_calls, b.cache_unsupported_calls),
+        },
+        MetricsRow {
+            metric: "cache hit rate".into(),
+            val_a: fmt_pct(cache_hit_rate(a)),
+            val_b: fmt_pct(cache_hit_rate(b)),
+            delta: fmt_pct_delta(cache_hit_rate(a), cache_hit_rate(b)),
+        },
+    ]
+}
+
+fn prompt_hashes_complete(hashes: &BenchmarkPromptHashes) -> bool {
+    !hashes.judge.is_empty()
+        && !hashes.retain_extract.is_empty()
+        && !hashes.reflect_agent.is_empty()
+        && !hashes.consolidate.is_empty()
+}
+
+fn prompt_hashes_match(a: &BenchmarkPromptHashes, b: &BenchmarkPromptHashes) -> bool {
+    a.judge == b.judge
+        && a.retain_extract == b.retain_extract
+        && a.reflect_agent == b.reflect_agent
+        && a.consolidate == b.consolidate
+}
+
+fn savings_comparable(a: &BenchmarkOutput, b: &BenchmarkOutput) -> bool {
+    !a.manifest.dataset_fingerprint.is_empty()
+        && a.manifest.dataset_fingerprint == b.manifest.dataset_fingerprint
+        && prompt_hashes_complete(&a.manifest.prompt_hashes)
+        && prompt_hashes_complete(&b.manifest.prompt_hashes)
+        && prompt_hashes_match(&a.manifest.prompt_hashes, &b.manifest.prompt_hashes)
+        && !a.retain_model.is_empty()
+        && a.retain_model == b.retain_model
+        && !a.reflect_model.is_empty()
+        && a.reflect_model == b.reflect_model
+        && !a.judge_model.is_empty()
+        && a.judge_model == b.judge_model
+}
+
+fn savings_signal(
+    a: &CacheAwareStageUsage,
+    b: &CacheAwareStageUsage,
+    comparable: bool,
+) -> &'static str {
+    if !comparable {
+        return "unavailable";
+    }
+
+    let effective_a = effective_prompt_tokens(a);
+    let effective_b = effective_prompt_tokens(b);
+
+    if a.cache_hit_prompt_tokens == 0 && b.cache_hit_prompt_tokens == 0 {
+        "no cache-hit evidence"
+    } else if effective_b < effective_a && b.cache_hit_prompt_tokens > a.cache_hit_prompt_tokens {
+        "cache savings visible"
+    } else if b.cache_hit_prompt_tokens > 0 && effective_b >= effective_a {
+        "warm-up / write-heavy"
+    } else {
+        "no cache-hit evidence"
+    }
+}
+
+fn savings_unavailable_reason(a: &BenchmarkOutput, b: &BenchmarkOutput) -> String {
+    if a.manifest.dataset_fingerprint.is_empty() || b.manifest.dataset_fingerprint.is_empty() {
+        return "dataset fingerprint missing".into();
+    }
+    if a.manifest.dataset_fingerprint != b.manifest.dataset_fingerprint {
+        return "dataset fingerprint mismatch".into();
+    }
+    if !prompt_hashes_complete(&a.manifest.prompt_hashes)
+        || !prompt_hashes_complete(&b.manifest.prompt_hashes)
+    {
+        return "prompt hashes missing".into();
+    }
+    if !prompt_hashes_match(&a.manifest.prompt_hashes, &b.manifest.prompt_hashes) {
+        return "prompt hashes mismatch".into();
+    }
+    if a.retain_model.is_empty() || b.retain_model.is_empty() {
+        return "retain model missing".into();
+    }
+    if a.retain_model != b.retain_model {
+        return "retain model mismatch".into();
+    }
+    if a.reflect_model.is_empty() || b.reflect_model.is_empty() {
+        return "reflect model missing".into();
+    }
+    if a.reflect_model != b.reflect_model {
+        return "reflect model mismatch".into();
+    }
+    if a.judge_model.is_empty() || b.judge_model.is_empty() {
+        return "judge model missing".into();
+    }
+    if a.judge_model != b.judge_model {
+        return "judge model mismatch".into();
+    }
+    "comparison metadata missing".into()
+}
+
+fn render_single(output: &BenchmarkOutput, path: &str) -> String {
     let label = file_label(output, path);
     let evidence_available = has_evidence(output);
+    let mut rendered = String::new();
 
     let mut config_rows = vec![
         SingleConfigRow {
@@ -896,8 +1204,13 @@ fn view_single(output: &BenchmarkOutput, path: &str) {
         });
     }
 
-    println!("{}", Table::new(&config_rows).with(Style::rounded()));
-    println!();
+    writeln!(
+        rendered,
+        "{}",
+        Table::new(&config_rows).with(Style::rounded())
+    )
+    .expect("write config table");
+    writeln!(rendered).expect("write config spacer");
 
     let mut cat_stats: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
     for result in &output.results {
@@ -925,12 +1238,14 @@ fn view_single(output: &BenchmarkOutput, path: &str) {
         n: output.results.len(),
     });
 
-    println!(
+    writeln!(
+        rendered,
         "{}",
         Table::new(&summary_rows)
             .with(Style::rounded())
             .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
-    );
+    )
+    .expect("write summary table");
 
     let mut metrics_rows = vec![
         SingleConfigRow {
@@ -991,8 +1306,13 @@ fn view_single(output: &BenchmarkOutput, path: &str) {
         });
     }
 
-    println!();
-    println!("{}", Table::new(&metrics_rows).with(Style::rounded()));
+    writeln!(rendered).expect("write metrics spacer");
+    writeln!(
+        rendered,
+        "{}",
+        Table::new(&metrics_rows).with(Style::rounded())
+    )
+    .expect("write metrics table");
 
     if !output.stage_metrics.is_empty() {
         let stage_rows = output
@@ -1007,13 +1327,75 @@ fn view_single(output: &BenchmarkOutput, path: &str) {
             })
             .collect::<Vec<_>>();
 
-        println!();
-        println!(
+        writeln!(rendered).expect("write legacy stage spacer");
+        writeln!(
+            rendered,
             "{}",
             Table::new(&stage_rows)
                 .with(Style::rounded())
                 .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
-        );
+        )
+        .expect("write legacy stage table");
+    }
+
+    let cache_available = cache_usage_available(&output.cache_aware_total_stage_usage)
+        || output
+            .cache_aware_stage_metrics
+            .values()
+            .any(cache_usage_available);
+    if cache_available {
+        let cache_summary = cache_summary_rows(&output.cache_aware_total_stage_usage);
+        writeln!(rendered).expect("write cache summary spacer");
+        writeln!(
+            rendered,
+            "{}",
+            Table::new(&cache_summary).with(Style::rounded())
+        )
+        .expect("write cache summary table");
+
+        let rolled_up = rollup_operator_cache_metrics(&output.cache_aware_stage_metrics);
+        let stage_order = ["retain", "reflect", "consolidate", "opinion_merge", "judge"];
+        let cache_stage_rows = stage_order
+            .into_iter()
+            .filter_map(|stage| {
+                rolled_up.get(stage).and_then(|usage| {
+                    if cache_usage_available(usage) {
+                        Some(CacheStageRow {
+                            stage: stage.to_string(),
+                            effective_prompt_tokens: (
+                                usage.uncached_prompt_tokens + usage.cache_write_prompt_tokens
+                            )
+                            .to_string(),
+                            cache_hit_prompt_tokens: usage.cache_hit_prompt_tokens.to_string(),
+                            cache_write_prompt_tokens: usage.cache_write_prompt_tokens.to_string(),
+                            calls: usage.calls,
+                            errors: usage.errors,
+                            latency: fmt_ms(usage.latency_ms),
+                        })
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        if !cache_stage_rows.is_empty() {
+            writeln!(rendered).expect("write cache stage spacer");
+            writeln!(
+                rendered,
+                "{}",
+                Table::new(&cache_stage_rows)
+                    .with(Style::rounded())
+                    .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
+            )
+            .expect("write cache stage table");
+        }
+    } else {
+        writeln!(rendered).expect("write cache unavailable spacer");
+        writeln!(
+            rendered,
+            "cache-aware metrics unavailable (legacy artifact)"
+        )
+        .expect("write cache unavailable line");
     }
 
     let conv_ids: BTreeSet<&str> = output
@@ -1086,13 +1468,15 @@ fn view_single(output: &BenchmarkOutput, path: &str) {
         n: output.results.len(),
     });
 
-    println!();
-    println!(
+    writeln!(rendered).expect("write conversation spacer");
+    writeln!(
+        rendered,
         "{}",
         Table::new(&conv_rows)
             .with(Style::rounded())
             .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
-    );
+    )
+    .expect("write conversation table");
 
     if has_bank_stats(output) {
         let mut bank_rows = output
@@ -1115,17 +1499,19 @@ fn view_single(output: &BenchmarkOutput, path: &str) {
             .collect::<Vec<_>>();
         bank_rows.sort_by(|a, b| a.sample_id.cmp(&b.sample_id));
 
-        println!();
-        println!(
+        writeln!(rendered).expect("write bank spacer");
+        writeln!(
+            rendered,
             "{}",
             Table::new(&bank_rows)
                 .with(Style::rounded())
                 .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
-        );
+        )
+        .expect("write bank table");
     }
 
     if output.results.is_empty() {
-        return;
+        return rendered;
     }
 
     let mut sorted = output.results.iter().collect::<Vec<_>>();
@@ -1152,126 +1538,49 @@ fn view_single(output: &BenchmarkOutput, path: &str) {
         })
         .collect::<Vec<_>>();
 
-    println!();
-    println!(
+    writeln!(rendered).expect("write question spacer");
+    writeln!(
+        rendered,
         "{}",
         Table::new(&question_rows)
             .with(Style::rounded())
             .with(Modify::new(Columns::new(3..=5)).with(Alignment::center()))
-    );
+    )
+    .expect("write question table");
 
     let correct = output.results.iter().filter(|r| r.judge_correct).count();
     let wrong = output.results.len().saturating_sub(correct);
     let failed = failed_count(&output.results);
     let evidence_hits = output.results.iter().filter(|r| r.evidence_hit).count();
-    println!();
+    writeln!(rendered).expect("write footer spacer");
     if evidence_available {
-        println!(
+        writeln!(
+            rendered,
             "\x1b[32m{correct} correct\x1b[0m, \x1b[31m{wrong} wrong\x1b[0m, {failed} failed, {evidence_hits} evidence hits"
-        );
+        )
+        .expect("write footer");
     } else {
-        println!("\x1b[32m{correct} correct\x1b[0m, \x1b[31m{wrong} wrong\x1b[0m, {failed} failed");
+        writeln!(
+            rendered,
+            "\x1b[32m{correct} correct\x1b[0m, \x1b[31m{wrong} wrong\x1b[0m, {failed} failed"
+        )
+        .expect("write footer");
     }
+    rendered
 }
 
-fn load_file(path: &str) -> BenchmarkOutput {
-    let raw = fs::read_to_string(path).unwrap_or_else(|e| {
-        eprintln!("Failed to read {path}: {e}");
-        process::exit(1);
-    });
-    let mut output: BenchmarkOutput = serde_json::from_str(&raw).unwrap_or_else(|e| {
-        eprintln!("Failed to parse {path}: {e}");
-        process::exit(1);
-    });
-    if output.results.is_empty() && !output.artifacts.questions_path.is_empty() {
-        let base = std::path::Path::new(path)
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."));
-        let questions_path = base.join(&output.artifacts.questions_path);
-        if questions_path.exists() {
-            let raw_questions = fs::read_to_string(&questions_path).unwrap_or_else(|e| {
-                eprintln!("Failed to read {}: {e}", questions_path.display());
-                process::exit(1);
-            });
-            output.results = raw_questions
-                .lines()
-                .filter(|line| !line.trim().is_empty())
-                .map(|line| {
-                    serde_json::from_str::<QuestionResult>(line).unwrap_or_else(|e| {
-                        eprintln!(
-                            "Failed to parse question record in {}: {e}",
-                            questions_path.display()
-                        );
-                        process::exit(1);
-                    })
-                })
-                .collect();
-        }
-    }
-    output
+fn view_single(output: &BenchmarkOutput, path: &str) {
+    print!("{}", render_single(output, path));
 }
 
-fn filter_conv(mut output: BenchmarkOutput, conv: &str) -> BenchmarkOutput {
-    output.results.retain(|r| r.sample_id == conv);
-    output.total_questions = output.results.len();
-    output.accuracy = if output.results.is_empty() {
-        0.0
-    } else {
-        output.results.iter().filter(|r| r.judge_correct).count() as f64
-            / output.results.len() as f64
-    };
-    output.mean_f1 = avg(&output.results.iter().map(|r| r.f1).collect::<Vec<_>>());
-    output.mean_evidence_recall = avg(&output
-        .results
-        .iter()
-        .map(|r| r.evidence_recall)
-        .collect::<Vec<_>>());
-    output
+fn parse_output(raw: &str) -> Result<BenchmarkOutput, serde_json::Error> {
+    serde_json::from_str(raw)
 }
 
-fn main() {
-    let raw_args = env::args().collect::<Vec<_>>();
-
-    let mut conv_filter: Option<String> = None;
-    let mut files = Vec::new();
-    let mut index = 1;
-    while index < raw_args.len() {
-        if raw_args[index] == "--conv" {
-            index += 1;
-            if index >= raw_args.len() {
-                eprintln!("--conv requires a conversation ID");
-                process::exit(1);
-            }
-            conv_filter = Some(raw_args[index].clone());
-        } else {
-            files.push(raw_args[index].clone());
-        }
-        index += 1;
-    }
-
-    if files.len() == 1 {
-        let mut output = load_file(&files[0]);
-        if let Some(ref conv) = conv_filter {
-            output = filter_conv(output, conv);
-        }
-        view_single(&output, &files[0]);
-        return;
-    }
-    if files.len() != 2 {
-        eprintln!("Usage: view [--conv <id>] <file.json> [file2.json]");
-        process::exit(1);
-    }
-
-    let mut a = load_file(&files[0]);
-    let mut b = load_file(&files[1]);
-    if let Some(ref conv) = conv_filter {
-        a = filter_conv(a, conv);
-        b = filter_conv(b, conv);
-    }
-
-    let evidence_available = has_evidence(&a) || has_evidence(&b);
-    let label_a = file_label(&a, &files[0]);
-    let label_b = file_label(&b, &files[1]);
+fn render_compare(a: &BenchmarkOutput, b: &BenchmarkOutput, path_a: &str, path_b: &str) -> String {
+    let evidence_available = has_evidence(a) || has_evidence(b);
+    let label_a = file_label(a, path_a);
+    let label_b = file_label(b, path_b);
 
     let map_b = b
         .results
@@ -1309,6 +1618,7 @@ fn main() {
         }
     }
 
+    let mut rendered = String::new();
     let mut config_rows = vec![
         ConfigRow {
             key: "tag".into(),
@@ -1476,138 +1786,124 @@ fn main() {
         });
     }
 
-    println!("{}", Table::new(&config_rows).with(Style::rounded()));
-    println!();
+    writeln!(
+        rendered,
+        "{}",
+        Table::new(&config_rows).with(Style::rounded())
+    )
+    .expect("write config table");
 
-    let mut summary_rows = Vec::new();
-    for category in &categories {
-        if let Some(&(correct_a, correct_b, total)) = cat_stats.get(category.as_str()) {
-            let acc_a = correct_a as f64 / total.max(1) as f64;
-            let acc_b = correct_b as f64 / total.max(1) as f64;
-            summary_rows.push(SummaryRow {
+    let mut summary_rows = categories
+        .iter()
+        .map(|category| {
+            let (correct_a, correct_b, total) = cat_stats.get(category.as_str()).copied().unwrap_or_default();
+            SummaryRow {
                 category: category.clone(),
-                acc_a: fmt_pct(acc_a),
-                acc_b: fmt_pct(acc_b),
-                delta: fmt_pct_delta(acc_a, acc_b),
+                acc_a: if total > 0 {
+                    fmt_pct(correct_a as f64 / total as f64)
+                } else {
+                    "-".into()
+                },
+                acc_b: if total > 0 {
+                    fmt_pct(correct_b as f64 / total as f64)
+                } else {
+                    "-".into()
+                },
+                delta: if total > 0 {
+                    fmt_pct_delta(correct_a as f64 / total as f64, correct_b as f64 / total as f64)
+                } else {
+                    "-".into()
+                },
                 n: total,
-            });
-        }
-    }
-    let total_a = matched
-        .iter()
-        .filter(|(left, _)| left.judge_correct)
-        .count();
-    let total_b = matched
-        .iter()
-        .filter(|(_, right)| right.judge_correct)
-        .count();
-    let total_n = matched.len();
-    let acc_a = total_a as f64 / total_n.max(1) as f64;
-    let acc_b = total_b as f64 / total_n.max(1) as f64;
+            }
+        })
+        .collect::<Vec<_>>();
+
     summary_rows.push(SummaryRow {
         category: "TOTAL".into(),
-        acc_a: fmt_pct(acc_a),
-        acc_b: fmt_pct(acc_b),
-        delta: fmt_pct_delta(acc_a, acc_b),
-        n: total_n,
+        acc_a: fmt_pct(a.accuracy),
+        acc_b: fmt_pct(b.accuracy),
+        delta: fmt_pct_delta(a.accuracy, b.accuracy),
+        n: matched.len(),
     });
 
-    println!(
+    writeln!(rendered).expect("write summary spacer");
+    writeln!(
+        rendered,
         "{}",
         Table::new(&summary_rows)
             .with(Style::rounded())
             .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
-    );
+    )
+    .expect("write summary table");
 
+    let failed_a = failed_count(&a.results);
+    let failed_b = failed_count(&b.results);
+    let correct_a = correct_count(&a.results);
+    let correct_b = correct_count(&b.results);
     let mut metrics_rows = vec![
         MetricsRow {
             metric: "accuracy".into(),
-            val_a: fmt_pct(acc_a),
-            val_b: fmt_pct(acc_b),
-            delta: fmt_pct_delta(acc_a, acc_b),
+            val_a: fmt_pct(a.accuracy),
+            val_b: fmt_pct(b.accuracy),
+            delta: fmt_pct_delta(a.accuracy, b.accuracy),
         },
         MetricsRow {
             metric: "F1".into(),
-            val_a: format!(
-                "{:.3}",
-                avg(&matched.iter().map(|(left, _)| left.f1).collect::<Vec<_>>())
-            ),
-            val_b: format!(
-                "{:.3}",
-                avg(&matched
-                    .iter()
-                    .map(|(_, right)| right.f1)
-                    .collect::<Vec<_>>())
-            ),
+            val_a: format!("{:.3}", a.mean_f1),
+            val_b: format!("{:.3}", b.mean_f1),
+            delta: fmt_float_delta(a.mean_f1, b.mean_f1, 3, true),
+        },
+        MetricsRow {
+            metric: "avg time".into(),
+            val_a: fmt_time(avg(&a.results.iter().map(|r| r.elapsed_s).collect::<Vec<_>>())),
+            val_b: fmt_time(avg(&b.results.iter().map(|r| r.elapsed_s).collect::<Vec<_>>())),
             delta: fmt_float_delta(
-                avg(&matched.iter().map(|(left, _)| left.f1).collect::<Vec<_>>()),
-                avg(&matched
-                    .iter()
-                    .map(|(_, right)| right.f1)
-                    .collect::<Vec<_>>()),
-                3,
-                true,
+                avg(&a.results.iter().map(|r| r.elapsed_s).collect::<Vec<_>>()),
+                avg(&b.results.iter().map(|r| r.elapsed_s).collect::<Vec<_>>()),
+                1,
+                false,
             ),
+        },
+        MetricsRow {
+            metric: "failed".into(),
+            val_a: failed_a.to_string(),
+            val_b: failed_b.to_string(),
+            delta: fmt_cost_delta_u64(failed_a as u64, failed_b as u64),
         },
     ];
 
     if evidence_available {
-        let evidence_a = avg(&matched
-            .iter()
-            .map(|(left, _)| left.evidence_recall)
-            .collect::<Vec<_>>());
-        let evidence_b = avg(&matched
-            .iter()
-            .map(|(_, right)| right.evidence_recall)
-            .collect::<Vec<_>>());
-        metrics_rows.push(MetricsRow {
-            metric: "evidence recall".into(),
-            val_a: format!("{evidence_a:.3}"),
-            val_b: format!("{evidence_b:.3}"),
-            delta: fmt_float_delta(evidence_a, evidence_b, 3, true),
-        });
-        let precision_a = avg_option(matched.iter().map(|(left, _)| evidence_precision(left)));
-        let precision_b = avg_option(matched.iter().map(|(_, right)| evidence_precision(right)));
-        metrics_rows.push(MetricsRow {
-            metric: "evidence precision".into(),
-            val_a: fmt_metric(precision_a, 3),
-            val_b: fmt_metric(precision_b, 3),
-            delta: match (precision_a, precision_b) {
-                (Some(a), Some(b)) => fmt_float_delta(a, b, 3, true),
-                _ => "-".into(),
+        metrics_rows.insert(
+            2,
+            MetricsRow {
+                metric: "evidence recall".into(),
+                val_a: format!("{:.3}", a.mean_evidence_recall),
+                val_b: format!("{:.3}", b.mean_evidence_recall),
+                delta: fmt_float_delta(
+                    a.mean_evidence_recall,
+                    b.mean_evidence_recall,
+                    3,
+                    true,
+                ),
             },
-        });
+        );
+        metrics_rows.insert(
+            3,
+            MetricsRow {
+                metric: "evidence precision".into(),
+                val_a: fmt_metric(avg_option(a.results.iter().map(evidence_precision)), 3),
+                val_b: fmt_metric(avg_option(b.results.iter().map(evidence_precision)), 3),
+                delta: match (
+                    avg_option(a.results.iter().map(evidence_precision)),
+                    avg_option(b.results.iter().map(evidence_precision)),
+                ) {
+                    (Some(left), Some(right)) => fmt_float_delta(left, right, 3, true),
+                    _ => "-".into(),
+                },
+            },
+        );
     }
-
-    let time_a = avg(&matched
-        .iter()
-        .map(|(left, _)| left.elapsed_s)
-        .collect::<Vec<_>>());
-    let time_b = avg(&matched
-        .iter()
-        .map(|(_, right)| right.elapsed_s)
-        .collect::<Vec<_>>());
-    metrics_rows.push(MetricsRow {
-        metric: "avg time".into(),
-        val_a: fmt_time(time_a),
-        val_b: fmt_time(time_b),
-        delta: fmt_float_delta(time_a, time_b, 1, false),
-    });
-
-    let failed_a = matched
-        .iter()
-        .filter(|(left, _)| left.status != "ok")
-        .count() as u64;
-    let failed_b = matched
-        .iter()
-        .filter(|(_, right)| right.status != "ok")
-        .count() as u64;
-    metrics_rows.push(MetricsRow {
-        metric: "failed".into(),
-        val_a: failed_a.to_string(),
-        val_b: failed_b.to_string(),
-        delta: fmt_cost_delta_u64(failed_a, failed_b),
-    });
 
     if a.total_stage_usage.calls > 0 || b.total_stage_usage.calls > 0 {
         metrics_rows.push(MetricsRow {
@@ -1629,28 +1925,20 @@ fn main() {
             metric: "latency".into(),
             val_a: fmt_ms(a.total_stage_usage.latency_ms),
             val_b: fmt_ms(b.total_stage_usage.latency_ms),
-            delta: fmt_cost_delta_u64(
-                a.total_stage_usage.latency_ms,
-                b.total_stage_usage.latency_ms,
-            ),
+            delta: fmt_cost_delta_u64(a.total_stage_usage.latency_ms, b.total_stage_usage.latency_ms),
         });
-        let correct_a = correct_count(&a.results);
-        let correct_b = correct_count(&b.results);
+    }
+
+    if correct_a > 0 || correct_b > 0 {
         metrics_rows.push(MetricsRow {
             metric: "tokens/correct".into(),
             val_a: if correct_a > 0 {
-                format!(
-                    "{:.1}",
-                    a.total_stage_usage.total_tokens() as f64 / correct_a as f64
-                )
+                format!("{:.1}", a.total_stage_usage.total_tokens() as f64 / correct_a as f64)
             } else {
                 "-".into()
             },
             val_b: if correct_b > 0 {
-                format!(
-                    "{:.1}",
-                    b.total_stage_usage.total_tokens() as f64 / correct_b as f64
-                )
+                format!("{:.1}", b.total_stage_usage.total_tokens() as f64 / correct_b as f64)
             } else {
                 "-".into()
             },
@@ -1667,13 +1955,15 @@ fn main() {
         });
     }
 
-    println!();
-    println!(
+    writeln!(rendered).expect("write metrics spacer");
+    writeln!(
+        rendered,
         "{}",
         Table::new(&metrics_rows)
             .with(Style::rounded())
             .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
-    );
+    )
+    .expect("write metrics table");
 
     if !a.stage_metrics.is_empty() || !b.stage_metrics.is_empty() {
         let stages = a
@@ -1696,17 +1986,135 @@ fn main() {
             })
             .collect::<Vec<_>>();
 
-        println!();
-        println!(
+        writeln!(rendered).expect("write legacy stage spacer");
+        writeln!(
+            rendered,
             "{}",
             Table::new(&stage_rows)
                 .with(Style::rounded())
                 .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
-        );
+        )
+        .expect("write legacy stage table");
+    }
+
+    let cache_total_a = cache_compare_total(a);
+    let cache_total_b = cache_compare_total(b);
+    let cache_compare = cache_compare_rows(&cache_total_a, &cache_total_b);
+    writeln!(rendered).expect("write cache compare spacer");
+    writeln!(rendered, "cache-aware comparison").expect("write cache compare header");
+    writeln!(
+        rendered,
+        "{}",
+        Table::new(&cache_compare)
+            .with(Style::rounded())
+            .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
+    )
+    .expect("write cache compare table");
+
+    let rolled_up_a = rollup_operator_cache_metrics(&a.cache_aware_stage_metrics);
+    let rolled_up_b = rollup_operator_cache_metrics(&b.cache_aware_stage_metrics);
+    let stage_order = ["retain", "reflect", "consolidate", "opinion_merge", "judge"];
+    let cache_stage_rows = stage_order
+        .into_iter()
+        .filter_map(|stage| {
+            let usage_a = rolled_up_a.get(stage).cloned().unwrap_or_default();
+            let usage_b = rolled_up_b.get(stage).cloned().unwrap_or_default();
+            if cache_usage_available(&usage_a) || cache_usage_available(&usage_b) {
+                Some(CacheStageCompareRow {
+                    stage: stage.to_string(),
+                    effective_prompt_a: effective_prompt_tokens(&usage_a).to_string(),
+                    effective_prompt_b: effective_prompt_tokens(&usage_b).to_string(),
+                    delta_effective_prompt: fmt_cost_delta_u64(
+                        effective_prompt_tokens(&usage_a),
+                        effective_prompt_tokens(&usage_b),
+                    ),
+                    cache_hit_a: usage_a.cache_hit_prompt_tokens.to_string(),
+                    cache_hit_b: usage_b.cache_hit_prompt_tokens.to_string(),
+                    delta_cache_hit: fmt_cost_delta_u64(
+                        usage_a.cache_hit_prompt_tokens,
+                        usage_b.cache_hit_prompt_tokens,
+                    ),
+                })
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    if !cache_stage_rows.is_empty() {
+        writeln!(rendered).expect("write cache stage spacer");
+        writeln!(
+            rendered,
+            "{}",
+            Table::new(&cache_stage_rows)
+                .with(Style::rounded())
+                .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
+        )
+        .expect("write cache stage compare table");
+    }
+
+    writeln!(rendered).expect("write savings spacer");
+    writeln!(rendered, "cache savings verification").expect("write savings header");
+    if savings_comparable(a, b) {
+        let signal = savings_signal(&cache_total_a, &cache_total_b, true);
+        let savings_rows = vec![
+            SingleConfigRow {
+                key: "verdict".into(),
+                value: signal.into(),
+            },
+            SingleConfigRow {
+                key: "effective prompt tok".into(),
+                value: format!(
+                    "{} -> {} ({})",
+                    effective_prompt_tokens(&cache_total_a),
+                    effective_prompt_tokens(&cache_total_b),
+                    fmt_cost_delta_u64(
+                        effective_prompt_tokens(&cache_total_a),
+                        effective_prompt_tokens(&cache_total_b),
+                    )
+                ),
+            },
+            SingleConfigRow {
+                key: "cache hit tok".into(),
+                value: format!(
+                    "{} -> {} ({})",
+                    cache_total_a.cache_hit_prompt_tokens,
+                    cache_total_b.cache_hit_prompt_tokens,
+                    fmt_cost_delta_u64(
+                        cache_total_a.cache_hit_prompt_tokens,
+                        cache_total_b.cache_hit_prompt_tokens,
+                    )
+                ),
+            },
+            SingleConfigRow {
+                key: "cache write tok".into(),
+                value: format!(
+                    "{} -> {} ({})",
+                    cache_total_a.cache_write_prompt_tokens,
+                    cache_total_b.cache_write_prompt_tokens,
+                    fmt_cost_delta_u64(
+                        cache_total_a.cache_write_prompt_tokens,
+                        cache_total_b.cache_write_prompt_tokens,
+                    )
+                ),
+            },
+        ];
+        writeln!(
+            rendered,
+            "{}",
+            Table::new(&savings_rows).with(Style::rounded())
+        )
+        .expect("write savings table");
+    } else {
+        writeln!(
+            rendered,
+            "verification unavailable: {}",
+            savings_unavailable_reason(a, b)
+        )
+        .expect("write savings unavailable");
     }
 
     if matched.is_empty() {
-        return;
+        return rendered;
     }
 
     let mut question_rows = Vec::new();
@@ -1731,13 +2139,15 @@ fn main() {
         }
     }
 
-    println!();
-    println!(
+    writeln!(rendered).expect("write question spacer");
+    writeln!(
+        rendered,
         "{}",
         Table::new(&question_rows)
             .with(Style::rounded())
             .with(Modify::new(Columns::new(3..=4)).with(Alignment::center()))
-    );
+    )
+    .expect("write question table");
 
     let regressions = matched
         .iter()
@@ -1748,8 +2158,588 @@ fn main() {
         .filter(|(left, right)| !left.judge_correct && right.judge_correct)
         .count();
     let unchanged = matched.len().saturating_sub(improvements + regressions);
-    println!();
-    println!(
+    writeln!(rendered).expect("write footer spacer");
+    writeln!(
+        rendered,
         "\x1b[32m{improvements} improved\x1b[0m, \x1b[31m{regressions} regressed\x1b[0m, {unchanged} unchanged"
-    );
+    )
+    .expect("write footer");
+
+    rendered
+}
+
+fn load_file(path: &str) -> BenchmarkOutput {
+    let raw = fs::read_to_string(path).unwrap_or_else(|e| {
+        eprintln!("Failed to read {path}: {e}");
+        process::exit(1);
+    });
+    let mut output: BenchmarkOutput = parse_output(&raw).unwrap_or_else(|e| {
+        eprintln!("Failed to parse {path}: {e}");
+        process::exit(1);
+    });
+    if output.results.is_empty() && !output.artifacts.questions_path.is_empty() {
+        let base = std::path::Path::new(path)
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let questions_path = base.join(&output.artifacts.questions_path);
+        if questions_path.exists() {
+            let raw_questions = fs::read_to_string(&questions_path).unwrap_or_else(|e| {
+                eprintln!("Failed to read {}: {e}", questions_path.display());
+                process::exit(1);
+            });
+            output.results = raw_questions
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| {
+                    serde_json::from_str::<QuestionResult>(line).unwrap_or_else(|e| {
+                        eprintln!(
+                            "Failed to parse question record in {}: {e}",
+                            questions_path.display()
+                        );
+                        process::exit(1);
+                    })
+                })
+                .collect();
+        }
+    }
+    output
+}
+
+pub fn parse_summary_artifact(raw: &str) -> Result<(), serde_json::Error> {
+    parse_output(raw).map(|_| ())
+}
+
+pub fn render_compare_artifacts(
+    raw_a: &str,
+    raw_b: &str,
+    path_a: &str,
+    path_b: &str,
+) -> Result<String, serde_json::Error> {
+    let a = parse_output(raw_a)?;
+    let b = parse_output(raw_b)?;
+    Ok(render_compare(&a, &b, path_a, path_b))
+}
+
+fn filter_conv(mut output: BenchmarkOutput, conv: &str) -> BenchmarkOutput {
+    output.results.retain(|r| r.sample_id == conv);
+    output.total_questions = output.results.len();
+    output.accuracy = if output.results.is_empty() {
+        0.0
+    } else {
+        output.results.iter().filter(|r| r.judge_correct).count() as f64
+            / output.results.len() as f64
+    };
+    output.mean_f1 = avg(&output.results.iter().map(|r| r.f1).collect::<Vec<_>>());
+    output.mean_evidence_recall = avg(&output
+        .results
+        .iter()
+        .map(|r| r.evidence_recall)
+        .collect::<Vec<_>>());
+    output
+}
+
+fn main() {
+    let raw_args = env::args().collect::<Vec<_>>();
+
+    let mut conv_filter: Option<String> = None;
+    let mut files = Vec::new();
+    let mut index = 1;
+    while index < raw_args.len() {
+        if raw_args[index] == "--conv" {
+            index += 1;
+            if index >= raw_args.len() {
+                eprintln!("--conv requires a conversation ID");
+                process::exit(1);
+            }
+            conv_filter = Some(raw_args[index].clone());
+        } else {
+            files.push(raw_args[index].clone());
+        }
+        index += 1;
+    }
+
+    if files.len() == 1 {
+        let mut output = load_file(&files[0]);
+        if let Some(ref conv) = conv_filter {
+            output = filter_conv(output, conv);
+        }
+        view_single(&output, &files[0]);
+        return;
+    }
+    if files.len() != 2 {
+        eprintln!("Usage: view [--conv <id>] <file.json> [file2.json]");
+        process::exit(1);
+    }
+
+    let mut a = load_file(&files[0]);
+    let mut b = load_file(&files[1]);
+    if let Some(ref conv) = conv_filter {
+        a = filter_conv(a, conv);
+        b = filter_conv(b, conv);
+    }
+    print!("{}", render_compare(&a, &b, &files[0], &files[1]));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn cache_usage(
+        prompt_tokens: u64,
+        uncached_prompt_tokens: u64,
+        cache_hit_prompt_tokens: u64,
+        cache_write_prompt_tokens: u64,
+        completion_tokens: u64,
+        calls: u64,
+    ) -> CacheAwareStageUsage {
+        CacheAwareStageUsage {
+            prompt_tokens,
+            uncached_prompt_tokens,
+            cache_hit_prompt_tokens,
+            cache_write_prompt_tokens,
+            completion_tokens,
+            calls,
+            errors: 0,
+            latency_ms: 0,
+            cache_supported_calls: calls,
+            cache_hit_calls: u64::from(cache_hit_prompt_tokens > 0),
+            cache_write_calls: u64::from(cache_write_prompt_tokens > 0),
+            cache_unsupported_calls: 0,
+        }
+    }
+
+    fn sample_output_with_cache() -> BenchmarkOutput {
+        serde_json::from_value(json!({
+            "tag": "cachey",
+            "judge_model": "judge",
+            "retain_model": "retain",
+            "reflect_model": "reflect",
+            "embedding_model": "embed",
+            "reranker_model": "rerank",
+            "consolidation_strategy": "end",
+            "total_questions": 2,
+            "accuracy": 1.0,
+            "mean_f1": 1.0,
+            "total_time_s": 2.0,
+            "stage_metrics": {
+                "retain_extract": {
+                    "prompt_tokens": 12,
+                    "completion_tokens": 4,
+                    "calls": 2,
+                    "errors": 0,
+                    "latency_ms": 20
+                },
+                "retain_resolve": {
+                    "prompt_tokens": 8,
+                    "completion_tokens": 2,
+                    "calls": 1,
+                    "errors": 0,
+                    "latency_ms": 10
+                }
+            },
+            "total_stage_usage": {
+                "prompt_tokens": 20,
+                "completion_tokens": 6,
+                "calls": 3,
+                "errors": 0,
+                "latency_ms": 30
+            },
+            "cache_aware_stage_metrics": {
+                "retain_extract": {
+                    "prompt_tokens": 12,
+                    "uncached_prompt_tokens": 8,
+                    "cache_hit_prompt_tokens": 3,
+                    "cache_write_prompt_tokens": 1,
+                    "completion_tokens": 4,
+                    "calls": 2,
+                    "errors": 0,
+                    "latency_ms": 20,
+                    "cache_supported_calls": 2,
+                    "cache_hit_calls": 1,
+                    "cache_write_calls": 1,
+                    "cache_unsupported_calls": 0
+                },
+                "retain_resolve": {
+                    "prompt_tokens": 8,
+                    "uncached_prompt_tokens": 7,
+                    "cache_hit_prompt_tokens": 1,
+                    "cache_write_prompt_tokens": 0,
+                    "completion_tokens": 2,
+                    "calls": 1,
+                    "errors": 0,
+                    "latency_ms": 10,
+                    "cache_supported_calls": 1,
+                    "cache_hit_calls": 1,
+                    "cache_write_calls": 0,
+                    "cache_unsupported_calls": 0
+                },
+                "reflect": {
+                    "prompt_tokens": 9,
+                    "uncached_prompt_tokens": 7,
+                    "cache_hit_prompt_tokens": 1,
+                    "cache_write_prompt_tokens": 1,
+                    "completion_tokens": 3,
+                    "calls": 1,
+                    "errors": 0,
+                    "latency_ms": 11,
+                    "cache_supported_calls": 1,
+                    "cache_hit_calls": 1,
+                    "cache_write_calls": 1,
+                    "cache_unsupported_calls": 0
+                },
+                "consolidate": {
+                    "prompt_tokens": 10,
+                    "uncached_prompt_tokens": 8,
+                    "cache_hit_prompt_tokens": 1,
+                    "cache_write_prompt_tokens": 1,
+                    "completion_tokens": 4,
+                    "calls": 1,
+                    "errors": 0,
+                    "latency_ms": 12,
+                    "cache_supported_calls": 1,
+                    "cache_hit_calls": 1,
+                    "cache_write_calls": 1,
+                    "cache_unsupported_calls": 0
+                },
+                "opinion_merge": {
+                    "prompt_tokens": 11,
+                    "uncached_prompt_tokens": 9,
+                    "cache_hit_prompt_tokens": 1,
+                    "cache_write_prompt_tokens": 1,
+                    "completion_tokens": 5,
+                    "calls": 1,
+                    "errors": 0,
+                    "latency_ms": 13,
+                    "cache_supported_calls": 1,
+                    "cache_hit_calls": 1,
+                    "cache_write_calls": 1,
+                    "cache_unsupported_calls": 0
+                },
+                "judge": {
+                    "prompt_tokens": 7,
+                    "uncached_prompt_tokens": 5,
+                    "cache_hit_prompt_tokens": 1,
+                    "cache_write_prompt_tokens": 1,
+                    "completion_tokens": 2,
+                    "calls": 1,
+                    "errors": 0,
+                    "latency_ms": 9,
+                    "cache_supported_calls": 1,
+                    "cache_hit_calls": 1,
+                    "cache_write_calls": 1,
+                    "cache_unsupported_calls": 0
+                }
+            },
+            "cache_aware_total_stage_usage": {
+                "prompt_tokens": 57,
+                "uncached_prompt_tokens": 44,
+                "cache_hit_prompt_tokens": 8,
+                "cache_write_prompt_tokens": 5,
+                "completion_tokens": 20,
+                "calls": 7,
+                "errors": 0,
+                "latency_ms": 75,
+                "cache_supported_calls": 7,
+                "cache_hit_calls": 6,
+                "cache_write_calls": 5,
+                "cache_unsupported_calls": 0
+            }
+        }))
+        .expect("fixture should deserialize")
+    }
+
+    fn legacy_output() -> BenchmarkOutput {
+        serde_json::from_value(json!({
+            "tag": "legacy",
+            "judge_model": "judge",
+            "retain_model": "retain",
+            "reflect_model": "reflect",
+            "embedding_model": "embed",
+            "reranker_model": "rerank",
+            "consolidation_strategy": "end",
+            "total_questions": 1,
+            "accuracy": 1.0,
+            "mean_f1": 1.0,
+            "total_time_s": 1.0,
+            "stage_metrics": {
+                "retain_extract": {
+                    "prompt_tokens": 12,
+                    "completion_tokens": 4,
+                    "calls": 2,
+                    "errors": 0,
+                    "latency_ms": 20
+                }
+            },
+            "total_stage_usage": {
+                "prompt_tokens": 12,
+                "completion_tokens": 4,
+                "calls": 2,
+                "errors": 0,
+                "latency_ms": 20
+            }
+        }))
+        .expect("legacy fixture should deserialize")
+    }
+
+    #[test]
+    fn cache_aware_single_summary_deserializes_additive_fields() {
+        let output: BenchmarkOutput = serde_json::from_value(json!({
+            "judge_model": "judge",
+            "retain_model": "retain",
+            "reflect_model": "reflect",
+            "embedding_model": "embed",
+            "reranker_model": "rerank",
+            "consolidation_strategy": "end",
+            "total_questions": 1,
+            "total_time_s": 1.0,
+            "cache_aware_stage_metrics": {
+                "retain_extract": {
+                    "prompt_tokens": 12,
+                    "uncached_prompt_tokens": 8,
+                    "cache_hit_prompt_tokens": 3,
+                    "cache_write_prompt_tokens": 1,
+                    "completion_tokens": 5,
+                    "calls": 2,
+                    "cache_supported_calls": 2,
+                    "cache_hit_calls": 1,
+                    "cache_write_calls": 1
+                }
+            },
+            "cache_aware_total_stage_usage": {
+                "prompt_tokens": 50,
+                "uncached_prompt_tokens": 30,
+                "cache_hit_prompt_tokens": 15,
+                "cache_write_prompt_tokens": 5,
+                "completion_tokens": 9,
+                "calls": 4,
+                "cache_supported_calls": 4,
+                "cache_hit_calls": 2,
+                "cache_write_calls": 1
+            },
+            "per_conversation": {
+                "conv-1": {
+                    "bank_id": "bank-1",
+                    "cache_aware_stage_metrics": {
+                        "judge": {
+                            "prompt_tokens": 9,
+                            "uncached_prompt_tokens": 6,
+                            "cache_hit_prompt_tokens": 2,
+                            "cache_write_prompt_tokens": 1,
+                            "completion_tokens": 3,
+                            "calls": 1,
+                            "cache_supported_calls": 1,
+                            "cache_hit_calls": 1,
+                            "cache_write_calls": 1
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("cache-aware artifact should deserialize");
+
+        assert_eq!(output.cache_aware_total_stage_usage.cache_hit_prompt_tokens, 15);
+        assert_eq!(
+            output
+                .cache_aware_stage_metrics
+                .get("retain_extract")
+                .expect("retain_extract present")
+                .cache_write_prompt_tokens,
+            1
+        );
+        assert_eq!(
+            output
+                .per_conversation
+                .get("conv-1")
+                .expect("conv-1 present")
+                .cache_aware_stage_metrics
+                .get("judge")
+                .expect("judge present")
+                .cache_hit_prompt_tokens,
+            2
+        );
+        assert!(cache_usage_available(&output.cache_aware_total_stage_usage));
+    }
+
+    #[test]
+    fn cache_aware_single_summary_rolls_up_operator_cache_metrics() {
+        let stage_metrics = BTreeMap::from([
+            (
+                "retain_extract".to_string(),
+                cache_usage(12, 8, 3, 1, 5, 2),
+            ),
+            (
+                "retain_resolve".to_string(),
+                cache_usage(9, 7, 1, 1, 2, 1),
+            ),
+            ("reflect".to_string(), cache_usage(11, 9, 1, 1, 4, 1)),
+        ]);
+
+        let rollup = rollup_operator_cache_metrics(&stage_metrics);
+
+        assert_eq!(rollup.len(), 2);
+        assert_eq!(
+            rollup.get("retain").expect("retain row").prompt_tokens,
+            21
+        );
+        assert_eq!(
+            rollup
+                .get("retain")
+                .expect("retain row")
+                .uncached_prompt_tokens,
+            15
+        );
+        assert_eq!(
+            rollup
+                .get("retain")
+                .expect("retain row")
+                .cache_hit_prompt_tokens,
+            4
+        );
+        assert_eq!(
+            rollup.get("reflect").expect("reflect row").completion_tokens,
+            4
+        );
+    }
+
+    #[test]
+    fn cache_aware_single_summary_legacy_defaults_to_unavailable() {
+        let output: BenchmarkOutput = serde_json::from_value(json!({
+            "judge_model": "judge",
+            "retain_model": "retain",
+            "reflect_model": "reflect",
+            "embedding_model": "embed",
+            "reranker_model": "rerank",
+            "consolidation_strategy": "end",
+            "total_questions": 1,
+            "total_time_s": 1.0,
+            "per_conversation": {
+                "conv-1": {
+                    "bank_id": "bank-1"
+                }
+            }
+        }))
+        .expect("legacy artifact should deserialize");
+
+        assert!(!cache_usage_available(&output.cache_aware_total_stage_usage));
+        assert!(output.cache_aware_stage_metrics.is_empty());
+        assert!(
+            output
+                .per_conversation
+                .get("conv-1")
+                .expect("conv-1 present")
+                .cache_aware_stage_metrics
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn cache_aware_single_summary_reports_prompt_components() {
+        let rendered = render_single(&sample_output_with_cache(), "cachey.json");
+
+        assert!(rendered.contains("effective prompt tok"));
+        assert!(rendered.contains("cache hit tok"));
+        assert!(rendered.contains("cache write tok"));
+        assert!(rendered.contains("cache supported"));
+        assert!(rendered.contains("cache unsupported"));
+        assert!(rendered.contains("cache hit rate"));
+        assert!(rendered.contains("49"));
+        assert!(rendered.contains("8"));
+        assert!(rendered.contains("5"));
+    }
+
+    #[test]
+    fn cache_aware_single_rolls_up_operator_stages() {
+        let rendered = render_single(&sample_output_with_cache(), "cachey.json");
+
+        assert!(rendered.contains("retain"));
+        assert!(rendered.contains("reflect"));
+        assert!(rendered.contains("consolidate"));
+        assert!(rendered.contains("opinion_merge"));
+        assert!(rendered.contains("judge"));
+    }
+
+    #[test]
+    fn cache_aware_single_legacy_artifact_reports_unavailable() {
+        let rendered = render_single(&legacy_output(), "legacy.json");
+
+        assert!(rendered.contains("cache-aware metrics unavailable (legacy artifact)"));
+    }
+
+    fn compare_output_with_metadata() -> BenchmarkOutput {
+        let mut output = sample_output_with_cache();
+        output.manifest.dataset_fingerprint = "dataset-v1".into();
+        output.manifest.prompt_hashes = BenchmarkPromptHashes {
+            judge: "judge-hash".into(),
+            retain_extract: "retain-hash".into(),
+            reflect_agent: "reflect-hash".into(),
+            consolidate: "consolidate-hash".into(),
+        };
+        output.results = vec![QuestionResult {
+            question_id: "q1".into(),
+            sample_id: "conv-1".into(),
+            question: "Question?".into(),
+            category_name: "fact".into(),
+            judge_correct: true,
+            ground_truth: "yes".into(),
+            hypothesis: "yes".into(),
+            f1: 1.0,
+            evidence_recall: 1.0,
+            evidence_refs: vec![],
+            retrieved_turn_refs: vec![],
+            evidence_hit: false,
+            elapsed_s: 1.0,
+            status: "ok".into(),
+            error: None,
+        }];
+        output
+    }
+
+    #[test]
+    fn cache_aware_compare_reports_same_model_savings_signal() {
+        let baseline = compare_output_with_metadata();
+        let mut warm = compare_output_with_metadata();
+        warm.tag = Some("warm".into());
+        warm.cache_aware_total_stage_usage = CacheAwareStageUsage {
+            prompt_tokens: 57,
+            uncached_prompt_tokens: 30,
+            cache_hit_prompt_tokens: 20,
+            cache_write_prompt_tokens: 3,
+            completion_tokens: 20,
+            calls: 7,
+            errors: 0,
+            latency_ms: 70,
+            cache_supported_calls: 7,
+            cache_hit_calls: 7,
+            cache_write_calls: 3,
+            cache_unsupported_calls: 0,
+        };
+        warm.cache_aware_stage_metrics.insert(
+            "reflect".into(),
+            cache_usage(9, 3, 5, 1, 3, 1),
+        );
+
+        let rendered = render_compare(&baseline, &warm, "baseline.json", "warm.json");
+
+        assert!(rendered.contains("cache-aware comparison"));
+        assert!(rendered.contains("cache savings verification"));
+        assert!(rendered.contains("effective prompt tok"));
+        assert!(rendered.contains("cache hit tok"));
+        assert!(rendered.contains("retain"));
+        assert!(rendered.contains("reflect"));
+        assert!(rendered.contains("cache savings visible"));
+    }
+
+    #[test]
+    fn cache_aware_compare_blocks_mismatched_metadata() {
+        let baseline = compare_output_with_metadata();
+        let mut mismatch = compare_output_with_metadata();
+        mismatch.manifest.prompt_hashes.reflect_agent = "different-hash".into();
+
+        let rendered = render_compare(&baseline, &mismatch, "baseline.json", "mismatch.json");
+
+        assert!(rendered.contains("cache-aware comparison"));
+        assert!(rendered.contains("cache savings verification"));
+        assert!(rendered.contains("verification unavailable:"));
+    }
 }

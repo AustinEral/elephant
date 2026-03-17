@@ -90,12 +90,44 @@ The summary file is the canonical run manifest and aggregate metric record. Per-
     }
   },
 
+  "cache_aware_stage_metrics": {
+    "retain_extract": {
+      "prompt_tokens": 123,
+      "uncached_prompt_tokens": 100,
+      "cache_hit_prompt_tokens": 20,
+      "cache_write_prompt_tokens": 3,
+      "completion_tokens": 45,
+      "calls": 10,
+      "errors": 0,
+      "latency_ms": 2110,
+      "cache_supported_calls": 10,
+      "cache_hit_calls": 4,
+      "cache_write_calls": 2,
+      "cache_unsupported_calls": 0
+    }
+  },
+
   "total_stage_usage": {
     "prompt_tokens": 12345,
     "completion_tokens": 678,
     "calls": 300,
     "errors": 1,
     "latency_ms": 543210
+  },
+
+  "cache_aware_total_stage_usage": {
+    "prompt_tokens": 12345,
+    "uncached_prompt_tokens": 11000,
+    "cache_hit_prompt_tokens": 1100,
+    "cache_write_prompt_tokens": 245,
+    "completion_tokens": 678,
+    "calls": 300,
+    "errors": 1,
+    "latency_ms": 543210,
+    "cache_supported_calls": 250,
+    "cache_hit_calls": 120,
+    "cache_write_calls": 80,
+    "cache_unsupported_calls": 50
   },
 
   "bank_ids": {
@@ -140,6 +172,22 @@ The summary file is the canonical run manifest and aggregate metric record. Per-
           "calls": 10,
           "errors": 0,
           "latency_ms": 2110
+        }
+      },
+      "cache_aware_stage_metrics": {
+        "retain_extract": {
+          "prompt_tokens": 123,
+          "uncached_prompt_tokens": 100,
+          "cache_hit_prompt_tokens": 20,
+          "cache_write_prompt_tokens": 3,
+          "completion_tokens": 45,
+          "calls": 10,
+          "errors": 0,
+          "latency_ms": 2110,
+          "cache_supported_calls": 10,
+          "cache_hit_calls": 4,
+          "cache_write_calls": 2,
+          "cache_unsupported_calls": 0
         }
       }
     }
@@ -193,6 +241,36 @@ If merged source runs differed only in provenance-style fields, the merged manif
       "calls": 1,
       "errors": 0,
       "latency_ms": 420
+    }
+  },
+  "cache_aware_qa_stage_metrics": {
+    "reflect": {
+      "prompt_tokens": 321,
+      "uncached_prompt_tokens": 250,
+      "cache_hit_prompt_tokens": 64,
+      "cache_write_prompt_tokens": 7,
+      "completion_tokens": 44,
+      "calls": 2,
+      "errors": 0,
+      "latency_ms": 1840,
+      "cache_supported_calls": 2,
+      "cache_hit_calls": 1,
+      "cache_write_calls": 1,
+      "cache_unsupported_calls": 0
+    },
+    "judge": {
+      "prompt_tokens": 88,
+      "uncached_prompt_tokens": 88,
+      "cache_hit_prompt_tokens": 0,
+      "cache_write_prompt_tokens": 0,
+      "completion_tokens": 12,
+      "calls": 1,
+      "errors": 0,
+      "latency_ms": 420,
+      "cache_supported_calls": 0,
+      "cache_hit_calls": 0,
+      "cache_write_calls": 0,
+      "cache_unsupported_calls": 1
     }
   }
 }

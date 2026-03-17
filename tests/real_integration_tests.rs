@@ -41,6 +41,9 @@ use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use tower::util::ServiceExt;
 
+use elephant::llm::openai::openai_prompt_caching_supported_path;
+use elephant::types::llm::{CacheStatus, CompletionRequest, CompletionResponse, Message};
+
 // ---------------------------------------------------------------------------
 // Config helpers — read from .env with defaults matching main.rs
 // ---------------------------------------------------------------------------
@@ -72,9 +75,95 @@ fn make_test_llm() -> Arc<dyn LlmClient> {
             api_key: llm_api_key(),
             model: llm_model(),
             base_url: llm_base_url(),
+            prompt_caching: llm::PromptCachingConfig::default(),
         })
         .unwrap(),
     )
+}
+
+fn make_prompt_caching_test_llm() -> Arc<dyn LlmClient> {
+    Arc::from(
+        llm::build_client(&ProviderConfig {
+            provider: llm_provider(),
+            api_key: llm_api_key(),
+            model: llm_model(),
+            base_url: llm_base_url(),
+            prompt_caching: llm::PromptCachingConfig { enabled: true },
+        })
+        .unwrap(),
+    )
+}
+
+fn prompt_caching_base_url() -> String {
+    llm_base_url().unwrap_or_else(|| "https://api.openai.com/v1".into())
+}
+
+fn repeated_long_prompt(provider_name: &str) -> String {
+    let repeated_section = (0..320)
+        .map(|idx| {
+            format!(
+                "Prompt caching smoke for {provider_name}. Static benchmark prefix line {idx:03}: \
+                 Saturn's rings are made mostly of ice particles, Europa likely hides a saltwater ocean, \
+                 and rust ownership prevents use-after-free when code follows borrowing rules."
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        "{repeated_section}\n\nRepeat back only the exact string `CACHE-SMOKE-OK` and nothing else."
+    )
+}
+
+fn prompt_caching_request(provider_name: &str) -> CompletionRequest {
+    CompletionRequest {
+        model: String::new(),
+        messages: vec![Message::text("user", repeated_long_prompt(provider_name))],
+        max_tokens: Some(32),
+        temperature: Some(0.0),
+        system: Some(
+            "You are running a prompt-caching smoke test. Reply with the exact string CACHE-SMOKE-OK."
+                .into(),
+        ),
+        ..Default::default()
+    }
+}
+
+async fn run_prompt_caching_smoke(provider_name: &str) -> (CompletionResponse, CompletionResponse) {
+    let _ = dotenvy::dotenv();
+    let client = make_prompt_caching_test_llm();
+    let request = prompt_caching_request(provider_name);
+
+    let first = client
+        .complete(request.clone())
+        .await
+        .unwrap_or_else(|err| {
+            panic!(
+                "live prompt-caching smoke first request failed for provider={} model={} base_url={:?}: likely credential or config issue: {err}",
+                provider_name,
+                llm_model(),
+                llm_base_url(),
+            )
+        });
+    let second = client.complete(request).await.unwrap_or_else(|err| {
+        panic!(
+            "live prompt-caching smoke second request failed for provider={} model={} base_url={:?}: likely credential or config issue: {err}",
+            provider_name,
+            llm_model(),
+            llm_base_url(),
+        )
+    });
+
+    eprintln!(
+        "live_prompt_caching provider={} model={} base_url={:?} first_usage={:?} second_usage={:?}",
+        provider_name,
+        llm_model(),
+        llm_base_url(),
+        first.usage,
+        second.usage,
+    );
+
+    (first, second)
 }
 fn embedding_model_path() -> String {
     env("EMBEDDING_MODEL_PATH")
@@ -714,4 +803,82 @@ async fn openai_entity_resolution() {
         1,
         "Postgres/PostgreSQL should resolve to exactly one entity, got {pg_entities:?}"
     );
+}
+
+#[tokio::test]
+#[ignore = "requires LLM_PROVIDER, LLM_API_KEY, and LLM_MODEL"]
+async fn live_prompt_caching_anthropic_repeated_prompt() {
+    if llm_provider() != Provider::Anthropic {
+        eprintln!(
+            "skipping Anthropic prompt-caching smoke because LLM_PROVIDER is not anthropic: {:?}",
+            llm_provider()
+        );
+        return;
+    }
+
+    let (_first, second) = run_prompt_caching_smoke("anthropic").await;
+
+    match second.usage.cache_status {
+        CacheStatus::Hit | CacheStatus::WriteOnly | CacheStatus::HitAndWrite => {}
+        CacheStatus::Unsupported => {
+            panic!(
+                "Anthropic prompt caching stayed Unsupported for provider=anthropic model={} base_url={:?} usage={:?}. Phase 8 request wiring is missing or this provider path is not eligible for caching.",
+                llm_model(),
+                llm_base_url(),
+                second.usage,
+            );
+        }
+        CacheStatus::NoActivity => {
+            panic!(
+                "Anthropic prompt caching showed NoActivity for provider=anthropic model={} base_url={:?} usage={:?}. The repeated prompt likely missed Anthropic's cache threshold or model requirements.",
+                llm_model(),
+                llm_base_url(),
+                second.usage,
+            );
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires LLM_PROVIDER, LLM_API_KEY, and LLM_MODEL"]
+async fn live_prompt_caching_openai_repeated_prompt() {
+    if llm_provider() != Provider::OpenAi {
+        eprintln!(
+            "skipping OpenAI prompt-caching smoke because LLM_PROVIDER is not openai: {:?}",
+            llm_provider()
+        );
+        return;
+    }
+
+    let (_first, second) = run_prompt_caching_smoke("openai").await;
+    let base_url = prompt_caching_base_url();
+    let official_path = openai_prompt_caching_supported_path(&base_url);
+
+    match second.usage.cache_status {
+        CacheStatus::Hit | CacheStatus::NoActivity => {}
+        CacheStatus::Unsupported if official_path => {
+            panic!(
+                "OpenAI prompt caching stayed Unsupported on the official base URL for provider=openai model={} base_url={} usage={:?}. The supported-path assumption is wrong or the repeated prompt missed provider requirements.",
+                llm_model(),
+                base_url,
+                second.usage,
+            );
+        }
+        CacheStatus::Unsupported => {
+            eprintln!(
+                "OpenAI prompt caching remained Unsupported on a non-official base URL; treating this as expected for provider=openai model={} base_url={} usage={:?}",
+                llm_model(),
+                base_url,
+                second.usage,
+            );
+        }
+        CacheStatus::WriteOnly | CacheStatus::HitAndWrite => {
+            panic!(
+                "OpenAI prompt caching returned an unexpected cache status for provider=openai model={} base_url={} usage={:?}. This likely indicates provider semantics changed.",
+                llm_model(),
+                base_url,
+                second.usage,
+            );
+        }
+    }
 }

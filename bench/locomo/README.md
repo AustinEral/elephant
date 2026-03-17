@@ -144,6 +144,8 @@ cargo run --release --bin view -- \
   bench/locomo/results/canonical/ablation.json
 ```
 
+The `view` tool now keeps the legacy summary visible and adds cache-aware prompt-token summary and operator-stage metrics for a single artifact. Two-file compare adds `cache-aware comparison` output plus compare-only `cache savings verification` when dataset fingerprint, prompt hashes, and retain/reflect/judge models all match. That verification is artifact-derived prompt-token savings guidance, not live provider dollar accounting.
+
 By default:
 
 - `run` and `ingest` write to `bench/locomo/results/local/`

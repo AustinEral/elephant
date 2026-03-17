@@ -25,7 +25,9 @@ use common::io::{append_jsonl, atomic_write_json, sidecar_path};
 use dataset::load_dataset;
 use ingest::{ConsolidationMode, IngestConfig, IngestFormat};
 
-use elephant::metrics::{LlmStage, MetricsCollector, StageUsage, with_scoped_collector};
+use elephant::metrics::{
+    CacheAwareStageUsage, LlmStage, MetricsCollector, StageUsage, with_scoped_collector,
+};
 use elephant::runtime::{
     BuildRuntimeOptions, ElephantRuntime, RuntimePromptHashes as ElephantPromptHashes,
     RuntimeTuning as ElephantRuntimeTuning, build_runtime_from_env,
@@ -845,6 +847,8 @@ struct BenchmarkOutput {
     instance_status: HashMap<String, InstanceStatus>,
     #[serde(default)]
     stage_metrics: BTreeMap<LlmStage, StageUsage>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    cache_aware_stage_metrics: BTreeMap<LlmStage, CacheAwareStageUsage>,
     #[serde(default)]
     total_time_s: f64,
 }
@@ -950,6 +954,8 @@ struct QuestionResult {
     error: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     qa_stage_metrics: BTreeMap<LlmStage, StageUsage>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    cache_aware_qa_stage_metrics: BTreeMap<LlmStage, CacheAwareStageUsage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1244,6 +1250,7 @@ impl SharedState {
                 debug_path: self.debug_path.display().to_string(),
             },
             stage_metrics: self.metrics.snapshot(),
+            cache_aware_stage_metrics: self.metrics.cache_aware_snapshot(),
             total_time_s: self.bench_start.elapsed().as_secs_f64(),
         }
     }
@@ -1545,7 +1552,10 @@ fn merge_artifacts(
     let mut seen_debug_ids = BTreeSet::new();
 
     for bundle in &bundles {
-        metrics.extend_snapshot(&bundle.output.stage_metrics);
+        metrics.extend_cache_aware_or_legacy_snapshot(
+            &bundle.output.cache_aware_stage_metrics,
+            &bundle.output.stage_metrics,
+        );
         total_time_s += bundle.output.total_time_s;
 
         for (question_id, bank_id) in &bundle.output.banks {
@@ -1638,6 +1648,7 @@ fn merge_artifacts(
             debug_path: debug_path.display().to_string(),
         },
         stage_metrics: metrics.snapshot(),
+        cache_aware_stage_metrics: metrics.cache_aware_snapshot(),
         total_time_s,
     };
     let json = serde_json::to_string_pretty(&output).expect("serialize merged output");
@@ -2135,6 +2146,7 @@ async fn main() {
                         status: "bank_error".into(),
                         error: Some(err_msg.clone()),
                         qa_stage_metrics: BTreeMap::new(),
+                        cache_aware_qa_stage_metrics: BTreeMap::new(),
                     };
                     let dr = QuestionDebugRecord {
                         question_id: qid.clone(),
@@ -2192,6 +2204,7 @@ async fn main() {
                             status: "ingest_error".into(),
                             error: Some(err_msg.clone()),
                             qa_stage_metrics: BTreeMap::new(),
+                            cache_aware_qa_stage_metrics: BTreeMap::new(),
                         };
                         let dr = QuestionDebugRecord {
                             question_id: qid.clone(),
@@ -2286,6 +2299,7 @@ async fn main() {
                     status: "ingest-only".into(),
                     error: None,
                     qa_stage_metrics: BTreeMap::new(),
+                    cache_aware_qa_stage_metrics: BTreeMap::new(),
                 };
                 let dr = QuestionDebugRecord {
                     question_id: qid.clone(),
@@ -2316,16 +2330,20 @@ async fn main() {
             }
 
             let qa_start = Instant::now();
+            let question_metrics = Arc::new(MetricsCollector::new());
             eprintln!("  {qid} reflecting...");
 
             let reflect_result = with_scoped_collector(
-                metrics.clone(),
-                runtime.reflect.reflect(&ReflectQuery {
-                    bank_id: bank_id_str.parse().unwrap(),
-                    question: instance.question.clone(),
-                    budget_tokens: REFLECT_BUDGET_TOKENS,
-                    temporal_context: Some(instance.question_date.clone()),
-                }),
+                question_metrics.clone(),
+                with_scoped_collector(
+                    metrics.clone(),
+                    runtime.reflect.reflect(&ReflectQuery {
+                        bank_id: bank_id_str.parse().unwrap(),
+                        question: instance.question.clone(),
+                        budget_tokens: REFLECT_BUDGET_TOKENS,
+                        temporal_context: Some(instance.question_date.clone()),
+                    }),
+                ),
             )
             .await;
 
@@ -2385,7 +2403,12 @@ async fn main() {
                     &instance.answer_string(),
                     &hypothesis,
                 );
-                match common::judge::llm_judge(judge.as_ref().unwrap().as_ref(), &rendered).await {
+                match with_scoped_collector(
+                    question_metrics.clone(),
+                    common::judge::llm_judge(judge.as_ref().unwrap().as_ref(), &rendered),
+                )
+                .await
+                {
                     Ok((correct, reasoning)) => (correct, reasoning, "ok".into(), None),
                     Err(e) => {
                         eprintln!("  judge error ({qid}): {e}");
@@ -2407,7 +2430,8 @@ async fn main() {
                 elapsed_s: qa_elapsed,
                 status,
                 error,
-                qa_stage_metrics: BTreeMap::new(),
+                qa_stage_metrics: question_metrics.snapshot(),
+                cache_aware_qa_stage_metrics: question_metrics.cache_aware_snapshot(),
             };
             let dr = QuestionDebugRecord {
                 question_id: qid.clone(),
@@ -2478,6 +2502,32 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use elephant::types::llm::{CacheStatus, CompletionResponse, CompletionUsage};
+
+    fn response_with_usage(
+        prompt_tokens: usize,
+        uncached_prompt_tokens: usize,
+        cache_hit_prompt_tokens: usize,
+        cache_write_prompt_tokens: usize,
+        completion_tokens: usize,
+        cache_status: CacheStatus,
+    ) -> CompletionResponse {
+        CompletionResponse {
+            content: "ok".into(),
+            input_tokens: prompt_tokens,
+            output_tokens: completion_tokens,
+            usage: CompletionUsage {
+                prompt_tokens,
+                uncached_prompt_tokens,
+                cache_hit_prompt_tokens,
+                cache_write_prompt_tokens,
+                completion_tokens,
+                cache_status,
+            },
+            stop_reason: None,
+            tool_calls: vec![],
+        }
+    }
 
     fn s(v: &str) -> String {
         v.to_string()
@@ -2581,6 +2631,7 @@ mod tests {
             },
             artifacts: BenchmarkArtifacts::default(),
             stage_metrics: BTreeMap::new(),
+            cache_aware_stage_metrics: BTreeMap::new(),
             total_time_s: 0.0,
         };
         fs::write(&artifact, serde_json::to_string(&output).unwrap()).unwrap();
@@ -3228,6 +3279,7 @@ mod tests {
             manifest: BenchmarkManifest::default(),
             artifacts: BenchmarkArtifacts::default(),
             stage_metrics: BTreeMap::new(),
+            cache_aware_stage_metrics: BTreeMap::new(),
             total_time_s: 42.0,
         };
 
@@ -3294,6 +3346,7 @@ mod tests {
             status: "ok".into(),
             error: None,
             qa_stage_metrics: BTreeMap::new(),
+            cache_aware_qa_stage_metrics: BTreeMap::new(),
         };
         let json = serde_json::to_string(&qr).unwrap();
         let back: QuestionResult = serde_json::from_str(&json).unwrap();
@@ -3419,6 +3472,7 @@ mod tests {
             manifest: BenchmarkManifest::default(),
             artifacts: BenchmarkArtifacts::default(),
             stage_metrics: BTreeMap::new(),
+            cache_aware_stage_metrics: BTreeMap::new(),
             total_time_s: 0.0,
         };
 
@@ -3448,6 +3502,90 @@ mod tests {
         }"#;
         let output: BenchmarkOutput = serde_json::from_str(json).unwrap();
         assert!(output.instance_status.is_empty());
+    }
+
+    #[test]
+    fn cache_artifact_longmemeval_summary_serializes_cache_aware_fields() {
+        let metrics = MetricsCollector::new();
+        metrics.record_success(
+            LlmStage::Reflect,
+            &response_with_usage(18, 10, 8, 0, 4, CacheStatus::Hit),
+            15,
+        );
+
+        let output = BenchmarkOutput {
+            benchmark: "longmemeval".into(),
+            timestamp: "2026-03-16T00:00:00Z".into(),
+            commit: None,
+            tag: Some("cache-aware".into()),
+            retain_model: "m1".into(),
+            reflect_model: "m2".into(),
+            embedding_model: "m3".into(),
+            reranker_model: "m4".into(),
+            judge_model: "judge".into(),
+            consolidation_strategy: "end".into(),
+            total_questions: 1,
+            accuracy: 1.0,
+            per_category: HashMap::new(),
+            banks: HashMap::new(),
+            instance_status: HashMap::new(),
+            manifest: BenchmarkManifest::default(),
+            artifacts: BenchmarkArtifacts::default(),
+            stage_metrics: metrics.snapshot(),
+            cache_aware_stage_metrics: metrics.cache_aware_snapshot(),
+            total_time_s: 15.0,
+        };
+
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["stage_metrics"]["reflect"]["prompt_tokens"], 18);
+        assert_eq!(
+            json["cache_aware_stage_metrics"]["reflect"]["cache_hit_prompt_tokens"],
+            8
+        );
+        assert_eq!(
+            json["cache_aware_stage_metrics"]["reflect"]["cache_supported_calls"],
+            1
+        );
+    }
+
+    #[test]
+    fn cache_artifact_longmemeval_success_records_question_stage_metrics() {
+        let question_metrics = MetricsCollector::new();
+        question_metrics.record_success(
+            LlmStage::Reflect,
+            &response_with_usage(20, 12, 8, 0, 5, CacheStatus::Hit),
+            21,
+        );
+        question_metrics.record_success(
+            LlmStage::Judge,
+            &response_with_usage(14, 9, 0, 5, 3, CacheStatus::WriteOnly),
+            13,
+        );
+
+        let result = QuestionResult {
+            question_id: "q-cache".into(),
+            category: "multi-session".into(),
+            judge_correct: true,
+            judge_reasoning: "matched".into(),
+            hypothesis: "answer".into(),
+            ground_truth: "truth".into(),
+            bank_id: "bank-q-cache".into(),
+            elapsed_s: 1.2,
+            status: "ok".into(),
+            error: None,
+            qa_stage_metrics: question_metrics.snapshot(),
+            cache_aware_qa_stage_metrics: question_metrics.cache_aware_snapshot(),
+        };
+
+        let reflect = result.qa_stage_metrics.get(&LlmStage::Reflect).unwrap();
+        assert_eq!(reflect.prompt_tokens, 20);
+        let judge = result
+            .cache_aware_qa_stage_metrics
+            .get(&LlmStage::Judge)
+            .unwrap();
+        assert_eq!(judge.cache_write_prompt_tokens, 5);
+        assert_eq!(judge.cache_write_calls, 1);
+        assert_eq!(judge.cache_supported_calls, 1);
     }
 
     // --- ensure_output_paths_are_safe ---
@@ -3567,6 +3705,7 @@ mod tests {
             },
             artifacts: BenchmarkArtifacts::default(),
             stage_metrics: BTreeMap::new(),
+            cache_aware_stage_metrics: BTreeMap::new(),
             total_time_s: 10.0,
         };
         let json = serde_json::to_string_pretty(&output).unwrap();
@@ -3612,6 +3751,7 @@ mod tests {
             },
             artifacts: BenchmarkArtifacts::default(),
             stage_metrics: BTreeMap::new(),
+            cache_aware_stage_metrics: BTreeMap::new(),
             total_time_s: 10.0,
         };
 
@@ -3647,6 +3787,7 @@ mod tests {
                 status: "ok".into(),
                 error: None,
                 qa_stage_metrics: BTreeMap::new(),
+                cache_aware_qa_stage_metrics: BTreeMap::new(),
             },
             QuestionResult {
                 question_id: "q2".into(),
@@ -3660,6 +3801,7 @@ mod tests {
                 status: "ok".into(),
                 error: None,
                 qa_stage_metrics: BTreeMap::new(),
+                cache_aware_qa_stage_metrics: BTreeMap::new(),
             },
             QuestionResult {
                 question_id: "q3".into(),
@@ -3673,6 +3815,7 @@ mod tests {
                 status: "ok".into(),
                 error: None,
                 qa_stage_metrics: BTreeMap::new(),
+                cache_aware_qa_stage_metrics: BTreeMap::new(),
             },
         ];
 
@@ -3824,6 +3967,7 @@ mod tests {
             status: status.into(),
             error: None,
             qa_stage_metrics: BTreeMap::new(),
+            cache_aware_qa_stage_metrics: BTreeMap::new(),
         }
     }
 
@@ -4043,6 +4187,7 @@ mod tests {
                 debug_path: debug_rel,
             },
             stage_metrics: BTreeMap::new(),
+            cache_aware_stage_metrics: BTreeMap::new(),
             total_time_s: 10.0,
         };
 
@@ -4067,6 +4212,7 @@ mod tests {
             status: "ok".into(),
             error: None,
             qa_stage_metrics: BTreeMap::new(),
+            cache_aware_qa_stage_metrics: BTreeMap::new(),
         }
     }
 
@@ -4077,6 +4223,23 @@ mod tests {
             reflect_trace: vec![],
             final_done: None,
             retrieved_context: vec![],
+        }
+    }
+
+    fn cache_aware_judge_usage() -> CacheAwareStageUsage {
+        CacheAwareStageUsage {
+            prompt_tokens: 28,
+            uncached_prompt_tokens: 8,
+            cache_hit_prompt_tokens: 12,
+            cache_write_prompt_tokens: 8,
+            completion_tokens: 6,
+            calls: 2,
+            errors: 0,
+            latency_ms: 19,
+            cache_supported_calls: 2,
+            cache_hit_calls: 1,
+            cache_write_calls: 1,
+            cache_unsupported_calls: 0,
         }
     }
 
@@ -4126,6 +4289,77 @@ mod tests {
         // Banks merged
         assert_eq!(merged.banks.len(), 3);
         assert_eq!(merged.banks.get("q1").unwrap(), "bank-q1");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn cache_artifact_longmemeval_merge_preserves_cache_aware_mixed_inputs() {
+        let dir = env::temp_dir().join(format!(
+            "longmemeval-merge-cache-aware-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+
+        let art_a = make_test_artifact(
+            &dir,
+            "new-style",
+            &[make_test_qr("q1", true)],
+            &[make_test_debug("q1")],
+        );
+        let art_b = make_test_artifact(
+            &dir,
+            "legacy",
+            &[make_test_qr("q2", false)],
+            &[make_test_debug("q2")],
+        );
+
+        let mut new_style = load_benchmark_output(&art_a).unwrap();
+        new_style.stage_metrics = BTreeMap::from([(
+            LlmStage::Judge,
+            cache_aware_judge_usage().legacy_totals(),
+        )]);
+        new_style.cache_aware_stage_metrics =
+            BTreeMap::from([(LlmStage::Judge, cache_aware_judge_usage())]);
+        fs::write(&art_a, serde_json::to_string_pretty(&new_style).unwrap()).unwrap();
+
+        let mut legacy = load_benchmark_output(&art_b).unwrap();
+        legacy.stage_metrics = BTreeMap::from([(
+            LlmStage::Judge,
+            StageUsage {
+                prompt_tokens: 20,
+                completion_tokens: 4,
+                calls: 2,
+                errors: 1,
+                latency_ms: 17,
+            },
+        )]);
+        legacy.cache_aware_stage_metrics = BTreeMap::new();
+        fs::write(&art_b, serde_json::to_string_pretty(&legacy).unwrap()).unwrap();
+
+        let out = dir.join("merged.json");
+        merge_artifacts(&[art_a, art_b], &out, Some("merged".into())).unwrap();
+
+        let merged = load_benchmark_output(&out).unwrap();
+        let judge = merged
+            .cache_aware_stage_metrics
+            .get(&LlmStage::Judge)
+            .expect("judge stage present");
+        assert_eq!(judge.cache_hit_prompt_tokens, 12);
+        assert_eq!(judge.cache_write_prompt_tokens, 8);
+        assert_eq!(judge.cache_hit_calls, 1);
+        assert_eq!(judge.cache_write_calls, 1);
+        assert_eq!(judge.cache_unsupported_calls, 2);
+        assert_eq!(
+            merged.stage_metrics.get(&LlmStage::Judge),
+            Some(&StageUsage {
+                prompt_tokens: 48,
+                completion_tokens: 10,
+                calls: 4,
+                errors: 1,
+                latency_ms: 36,
+            })
+        );
 
         fs::remove_dir_all(&dir).ok();
     }

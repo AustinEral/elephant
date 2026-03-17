@@ -8,6 +8,9 @@ use crate::error::{Error, Result};
 use crate::llm::LlmClient;
 use crate::types::llm::{CompletionRequest, CompletionResponse};
 
+#[cfg(test)]
+use crate::types::llm::CompletionUsage;
+
 /// Configurable retry policy for LLM calls.
 #[derive(Debug, Clone)]
 pub struct RetryPolicy {
@@ -128,6 +131,7 @@ mod tests {
                     content: "ok".into(),
                     input_tokens: 1,
                     output_tokens: 1,
+                    usage: CompletionUsage::legacy_compat(1, 1),
                     stop_reason: None,
                     tool_calls: vec![],
                 })
