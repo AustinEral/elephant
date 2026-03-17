@@ -280,7 +280,7 @@ pub fn build_client(config: &ProviderConfig) -> crate::error::Result<Box<dyn Llm
     match config.provider {
         Provider::Anthropic => Ok(Box::new(
             anthropic::AnthropicClient::new(config.api_key.clone(), config.model.clone())?
-                .with_prompt_caching(config.prompt_caching.clone()),
+                .prompt_caching(config.prompt_caching.clone()),
         )),
         Provider::OpenAi => Ok(Box::new(openai::OpenAiClient::new(
             config.api_key.clone(),

@@ -65,7 +65,7 @@ impl AnthropicClient {
     }
 
     /// Override prompt-caching settings while keeping the default constructor minimal.
-    pub fn with_prompt_caching(mut self, prompt_caching: PromptCachingConfig) -> Self {
+    pub fn prompt_caching(mut self, prompt_caching: PromptCachingConfig) -> Self {
         self.prompt_caching = prompt_caching;
         self
     }
@@ -162,40 +162,43 @@ struct AnthropicUsage {
     cache_creation_input_tokens: Option<usize>,
 }
 
-fn normalize_anthropic_usage(usage: &AnthropicUsage) -> CompletionUsage {
-    let cache_hit_prompt_tokens = usage.cache_read_input_tokens.unwrap_or(0);
-    let cache_write_prompt_tokens = usage.cache_creation_input_tokens.unwrap_or(0);
-    let uncached_prompt_tokens = usage.input_tokens;
-    let prompt_tokens =
-        uncached_prompt_tokens + cache_hit_prompt_tokens + cache_write_prompt_tokens;
-    let has_cache_metadata =
-        usage.cache_read_input_tokens.is_some() || usage.cache_creation_input_tokens.is_some();
-    let cache_status = match (
-        has_cache_metadata,
-        cache_hit_prompt_tokens > 0,
-        cache_write_prompt_tokens > 0,
-    ) {
-        (false, _, _) => CacheStatus::Unsupported,
-        (true, false, false) => CacheStatus::NoActivity,
-        (true, false, true) => CacheStatus::WriteOnly,
-        (true, true, false) => CacheStatus::Hit,
-        (true, true, true) => CacheStatus::HitAndWrite,
-    };
+impl AnthropicUsage {
+    fn normalize(&self) -> CompletionUsage {
+        let cache_hit_prompt_tokens = self.cache_read_input_tokens.unwrap_or(0);
+        let cache_write_prompt_tokens = self.cache_creation_input_tokens.unwrap_or(0);
+        let uncached_prompt_tokens = self.input_tokens;
+        let prompt_tokens =
+            uncached_prompt_tokens + cache_hit_prompt_tokens + cache_write_prompt_tokens;
+        let has_cache_metadata =
+            self.cache_read_input_tokens.is_some() || self.cache_creation_input_tokens.is_some();
+        let cache_status = match (
+            has_cache_metadata,
+            cache_hit_prompt_tokens > 0,
+            cache_write_prompt_tokens > 0,
+        ) {
+            (false, _, _) => CacheStatus::Unsupported,
+            (true, false, false) => CacheStatus::NoActivity,
+            (true, false, true) => CacheStatus::WriteOnly,
+            (true, true, false) => CacheStatus::Hit,
+            (true, true, true) => CacheStatus::HitAndWrite,
+        };
 
-    CompletionUsage {
-        prompt_tokens,
-        uncached_prompt_tokens,
-        cache_hit_prompt_tokens,
-        cache_write_prompt_tokens,
-        completion_tokens: usage.output_tokens,
-        cache_status,
+        CompletionUsage {
+            prompt_tokens,
+            uncached_prompt_tokens,
+            cache_hit_prompt_tokens,
+            cache_write_prompt_tokens,
+            completion_tokens: self.output_tokens,
+            cache_status,
+        }
     }
 }
 
-fn anthropic_cache_control(prompt_caching: &PromptCachingConfig) -> Option<AnthropicCacheControl> {
-    prompt_caching
-        .enabled
-        .then_some(AnthropicCacheControl { kind: "ephemeral" })
+impl PromptCachingConfig {
+    fn anthropic_cache_control(&self) -> Option<AnthropicCacheControl> {
+        self.enabled
+            .then_some(AnthropicCacheControl { kind: "ephemeral" })
+    }
 }
 
 fn build_anthropic_request(
@@ -271,7 +274,7 @@ fn build_anthropic_request(
         messages,
         max_tokens: request.max_tokens.unwrap_or(4096),
         temperature: request.temperature,
-        cache_control: anthropic_cache_control(prompt_caching),
+        cache_control: prompt_caching.anthropic_cache_control(),
         system: request.system,
         tools,
         tool_choice,
@@ -339,7 +342,7 @@ impl LlmClient for AnthropicClient {
             }
         }
 
-        let usage = normalize_anthropic_usage(&parsed.usage);
+        let usage = parsed.usage.normalize();
 
         Ok(CompletionResponse {
             content,
@@ -368,7 +371,7 @@ mod tests {
             }],
             max_tokens: 256,
             temperature: Some(0.0),
-            cache_control: anthropic_cache_control(&prompt_caching),
+            cache_control: prompt_caching.anthropic_cache_control(),
             system: Some("You are helpful.".into()),
             tools: None,
             tool_choice: None,
@@ -398,7 +401,7 @@ mod tests {
             cache_creation_input_tokens: Some(13),
         };
 
-        let normalized = normalize_anthropic_usage(&usage);
+        let normalized = usage.normalize();
         assert_eq!(normalized.prompt_tokens, 31);
         assert_eq!(normalized.uncached_prompt_tokens, 7);
         assert_eq!(normalized.cache_hit_prompt_tokens, 11);
@@ -416,7 +419,7 @@ mod tests {
             cache_creation_input_tokens: None,
         };
 
-        let normalized = normalize_anthropic_usage(&usage);
+        let normalized = usage.normalize();
         assert_eq!(normalized.prompt_tokens, 7);
         assert_eq!(normalized.uncached_prompt_tokens, 7);
         assert_eq!(normalized.cache_hit_prompt_tokens, 0);

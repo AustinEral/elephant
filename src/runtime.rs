@@ -164,7 +164,7 @@ fn make_llm(config: &LlmConfig) -> Result<Box<dyn LlmClient>> {
         )?)),
         _ => Ok(Box::new(
             AnthropicClient::new(config.api_key.clone(), config.model.clone())?
-                .with_prompt_caching(config.prompt_caching.clone()),
+                .prompt_caching(config.prompt_caching.clone()),
         )),
     }
 }
