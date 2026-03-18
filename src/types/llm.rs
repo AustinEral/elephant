@@ -2,6 +2,72 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Prompt caching configuration for a concrete provider client.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum PromptCacheConfig {
+    /// Disable prompt caching.
+    Disabled,
+    /// OpenAI prompt caching configuration.
+    OpenAi(OpenAiPromptCacheConfig),
+    /// Anthropic prompt caching configuration.
+    Anthropic(AnthropicPromptCacheConfig),
+}
+
+/// OpenAI prompt caching settings.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OpenAiPromptCacheConfig {
+    /// Optional routing hint to improve cache locality.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// Optional prompt cache retention policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention: Option<OpenAiPromptCacheRetention>,
+}
+
+/// OpenAI prompt cache retention policy.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenAiPromptCacheRetention {
+    /// Retain in memory.
+    InMemory,
+    /// Retain for 24 hours.
+    #[serde(rename = "24h")]
+    Hours24,
+}
+
+/// Anthropic prompt caching settings.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AnthropicPromptCacheConfig {
+    /// Optional Anthropic cache TTL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<AnthropicPromptCacheTtl>,
+}
+
+/// Anthropic prompt cache TTL.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AnthropicPromptCacheTtl {
+    /// Five minute TTL.
+    #[serde(rename = "5m")]
+    Minutes5,
+    /// One hour TTL.
+    #[serde(rename = "1h")]
+    Hours1,
+}
+
+/// Prompt caching usage returned by a provider.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PromptCacheUsage {
+    /// OpenAI cached prompt tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_tokens: Option<usize>,
+    /// Anthropic cache-hit input tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<usize>,
+    /// Anthropic cache-write input tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_input_tokens: Option<usize>,
+}
+
 /// A message in a conversation with an LLM.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Message {
@@ -124,6 +190,9 @@ pub struct CompletionResponse {
     /// Tool calls requested by the LLM.
     #[serde(default)]
     pub tool_calls: Vec<ToolCall>,
+    /// Prompt caching usage, when reported by the provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache: Option<PromptCacheUsage>,
 }
 
 #[cfg(test)]
@@ -153,9 +222,25 @@ mod tests {
             output_tokens: 6,
             stop_reason: None,
             tool_calls: vec![],
+            prompt_cache: Some(PromptCacheUsage {
+                cached_tokens: Some(4),
+                cache_read_input_tokens: None,
+                cache_creation_input_tokens: None,
+            }),
         };
         let json = serde_json::to_string(&resp).unwrap();
         let back: CompletionResponse = serde_json::from_str(&json).unwrap();
         assert_eq!(resp, back);
+    }
+
+    #[test]
+    fn prompt_cache_config_roundtrip() {
+        let config = PromptCacheConfig::OpenAi(OpenAiPromptCacheConfig {
+            key: Some("elephant:reflect".into()),
+            retention: Some(OpenAiPromptCacheRetention::InMemory),
+        });
+        let json = serde_json::to_string(&config).unwrap();
+        let back: PromptCacheConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(config, back);
     }
 }

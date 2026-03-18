@@ -99,6 +99,7 @@ pub fn build_judge_client(
         base_url: env::var("JUDGE_BASE_URL")
             .ok()
             .or_else(|| env::var("LLM_BASE_URL").ok()),
+        prompt_cache: llm::prompt_cache_config_from_env(&judge_provider_str).unwrap(),
     };
     let inner: Arc<dyn LlmClient> = Arc::from(llm::build_client(&judge_config).unwrap());
     let metered: Arc<dyn LlmClient> =

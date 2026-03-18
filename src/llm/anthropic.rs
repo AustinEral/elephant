@@ -6,7 +6,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 use crate::llm::LlmClient;
-use crate::types::llm::{CompletionRequest, CompletionResponse, ToolCall, ToolChoice};
+use crate::types::llm::{
+    AnthropicPromptCacheConfig, AnthropicPromptCacheTtl, CompletionRequest, CompletionResponse,
+    PromptCacheConfig, PromptCacheUsage, ToolCall, ToolChoice,
+};
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -38,11 +41,12 @@ pub struct AnthropicClient {
     client: Client,
     auth: AnthropicAuth,
     default_model: String,
+    prompt_cache: Option<AnthropicPromptCacheConfig>,
 }
 
 impl AnthropicClient {
     /// Create a new Anthropic client. Auto-detects OAuth from token prefix.
-    pub fn new(api_key: String, model: String) -> Result<Self> {
+    pub fn new(api_key: String, model: String, prompt_cache: PromptCacheConfig) -> Result<Self> {
         let auth = AnthropicAuth::from_token(api_key);
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(
@@ -57,6 +61,10 @@ impl AnthropicClient {
             client,
             auth,
             default_model: model,
+            prompt_cache: match prompt_cache {
+                PromptCacheConfig::Anthropic(config) => Some(config),
+                _ => None,
+            },
         })
     }
 }
@@ -76,6 +84,16 @@ struct AnthropicRequest {
     tools: Option<Vec<AnthropicTool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<AnthropicToolChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<AnthropicCacheControl>,
+}
+
+#[derive(Serialize)]
+struct AnthropicCacheControl {
+    #[serde(rename = "type")]
+    cache_type: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ttl: Option<AnthropicPromptCacheTtl>,
 }
 
 #[derive(Serialize)]
@@ -138,6 +156,31 @@ struct AnthropicResponse {
 struct AnthropicUsage {
     input_tokens: usize,
     output_tokens: usize,
+    #[serde(default)]
+    cache_read_input_tokens: Option<usize>,
+    #[serde(default)]
+    cache_creation_input_tokens: Option<usize>,
+}
+
+impl From<&AnthropicUsage> for PromptCacheUsage {
+    fn from(usage: &AnthropicUsage) -> Self {
+        Self {
+            cached_tokens: None,
+            cache_read_input_tokens: usage.cache_read_input_tokens,
+            cache_creation_input_tokens: usage.cache_creation_input_tokens,
+        }
+    }
+}
+
+impl AnthropicUsage {
+    fn prompt_cache_usage(&self) -> Option<PromptCacheUsage> {
+        let usage = PromptCacheUsage::from(self);
+        if usage.cache_read_input_tokens.is_some() || usage.cache_creation_input_tokens.is_some() {
+            Some(usage)
+        } else {
+            None
+        }
+    }
 }
 
 #[async_trait]
@@ -218,6 +261,7 @@ impl LlmClient for AnthropicClient {
             system,
             tools,
             tool_choice,
+            cache_control: self.prompt_cache.as_ref().map(AnthropicCacheControl::from),
         };
 
         let mut req = self.client.post(ANTHROPIC_API_URL);
@@ -269,7 +313,17 @@ impl LlmClient for AnthropicClient {
             output_tokens: parsed.usage.output_tokens,
             stop_reason: parsed.stop_reason,
             tool_calls,
+            prompt_cache: parsed.usage.prompt_cache_usage(),
         })
+    }
+}
+
+impl From<&AnthropicPromptCacheConfig> for AnthropicCacheControl {
+    fn from(config: &AnthropicPromptCacheConfig) -> Self {
+        Self {
+            cache_type: "ephemeral",
+            ttl: config.ttl,
+        }
     }
 }
 
@@ -288,6 +342,7 @@ mod tests {
             std::env::var("LLM_MODEL")
                 .or_else(|_| std::env::var("RETAIN_LLM_MODEL"))
                 .expect("LLM_MODEL or RETAIN_LLM_MODEL must be set"),
+            PromptCacheConfig::Disabled,
         )
         .unwrap();
 
@@ -319,6 +374,7 @@ mod tests {
             std::env::var("LLM_MODEL")
                 .or_else(|_| std::env::var("RETAIN_LLM_MODEL"))
                 .expect("LLM_MODEL or RETAIN_LLM_MODEL must be set"),
+            PromptCacheConfig::Disabled,
         )
         .unwrap();
 
@@ -354,7 +410,12 @@ mod tests {
             api_key.starts_with("sk-ant-oat"),
             "this test requires an OAuth token (sk-ant-oat...)"
         );
-        let client = AnthropicClient::new(api_key, "claude-sonnet-4-20250514".into()).unwrap();
+        let client = AnthropicClient::new(
+            api_key,
+            "claude-sonnet-4-20250514".into(),
+            PromptCacheConfig::Disabled,
+        )
+        .unwrap();
 
         let request = CompletionRequest {
             model: String::new(),

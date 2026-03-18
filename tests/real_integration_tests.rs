@@ -34,6 +34,7 @@ use elephant::retain::resolver::LayeredEntityResolver;
 use elephant::server::{AppState, router};
 use elephant::storage::pg::PgMemoryStore;
 use elephant::types::*;
+use elephant::types::llm::PromptCacheConfig;
 
 use axum::Router;
 use axum::body::Body;
@@ -72,6 +73,7 @@ fn make_test_llm() -> Arc<dyn LlmClient> {
             api_key: llm_api_key(),
             model: llm_model(),
             base_url: llm_base_url(),
+            prompt_cache: PromptCacheConfig::Disabled,
         })
         .unwrap(),
     )

@@ -5,6 +5,8 @@ pub mod mock;
 pub mod openai;
 pub mod retry;
 
+use std::env;
+
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 
@@ -12,7 +14,10 @@ use serde::de::DeserializeOwned;
 pub const DEFAULT_TIMEOUT_SECS: u64 = 600;
 
 use crate::error::{Error, Result};
-use crate::types::llm::{CompletionRequest, CompletionResponse};
+use crate::types::llm::{
+    AnthropicPromptCacheConfig, AnthropicPromptCacheTtl, CompletionRequest, CompletionResponse,
+    OpenAiPromptCacheConfig, OpenAiPromptCacheRetention, PromptCacheConfig,
+};
 
 /// Trait abstraction over LLM providers.
 ///
@@ -250,6 +255,69 @@ pub struct ProviderConfig {
     pub model: String,
     /// Optional base URL override for OpenAI-compatible providers.
     pub base_url: Option<String>,
+    /// Prompt caching configuration for this provider.
+    pub prompt_cache: PromptCacheConfig,
+}
+
+fn env_bool(name: &str, default: bool) -> Result<bool> {
+    match env::var(name) {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Ok(true),
+            "0" | "false" | "no" | "off" => Ok(false),
+            other => Err(Error::Internal(format!(
+                "{name} must be a boolean, got: {other}"
+            ))),
+        },
+        Err(_) => Ok(default),
+    }
+}
+
+/// Read prompt-cache config from environment for a specific provider.
+pub fn prompt_cache_config_from_env(provider: &str) -> Result<PromptCacheConfig> {
+    if !env_bool("LLM_PROMPT_CACHE_ENABLED", false)? {
+        return Ok(PromptCacheConfig::Disabled);
+    }
+
+    match provider {
+        "openai" => {
+            let retention = match env::var("OPENAI_PROMPT_CACHE_RETENTION") {
+                Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+                    "in_memory" => Some(OpenAiPromptCacheRetention::InMemory),
+                    "24h" => Some(OpenAiPromptCacheRetention::Hours24),
+                    other => {
+                        return Err(Error::Internal(format!(
+                            "OPENAI_PROMPT_CACHE_RETENTION must be one of: in_memory, 24h; got: {other}"
+                        )));
+                    }
+                },
+                Err(_) => None,
+            };
+
+            Ok(PromptCacheConfig::OpenAi(OpenAiPromptCacheConfig {
+                key: env::var("OPENAI_PROMPT_CACHE_KEY").ok(),
+                retention,
+            }))
+        }
+        "anthropic" => {
+            let ttl = match env::var("ANTHROPIC_PROMPT_CACHE_TTL") {
+                Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+                    "5m" => Some(AnthropicPromptCacheTtl::Minutes5),
+                    "1h" => Some(AnthropicPromptCacheTtl::Hours1),
+                    other => {
+                        return Err(Error::Internal(format!(
+                            "ANTHROPIC_PROMPT_CACHE_TTL must be one of: 5m, 1h; got: {other}"
+                        )));
+                    }
+                },
+                Err(_) => None,
+            };
+
+            Ok(PromptCacheConfig::Anthropic(AnthropicPromptCacheConfig {
+                ttl,
+            }))
+        }
+        _ => Ok(PromptCacheConfig::Disabled),
+    }
 }
 
 /// Configuration for LLM usage across the system.
@@ -272,11 +340,13 @@ pub fn build_client(config: &ProviderConfig) -> crate::error::Result<Box<dyn Llm
         Provider::Anthropic => Ok(Box::new(anthropic::AnthropicClient::new(
             config.api_key.clone(),
             config.model.clone(),
+            config.prompt_cache.clone(),
         )?)),
         Provider::OpenAi => Ok(Box::new(openai::OpenAiClient::new(
             config.api_key.clone(),
             config.model.clone(),
             config.base_url.clone(),
+            config.prompt_cache.clone(),
         )?)),
     }
 }

@@ -3556,8 +3556,8 @@ async fn main() {
     );
     println!(
         "Stage usage: {} prompt + {} completion = {} total tokens across {} calls",
-        total_stage_usage.prompt_tokens,
-        total_stage_usage.completion_tokens,
+        total_stage_usage.input_tokens,
+        total_stage_usage.output_tokens,
         total_stage_usage.total_tokens(),
         total_stage_usage.calls,
     );
@@ -3611,8 +3611,11 @@ mod tests {
             qa_stage_metrics: BTreeMap::from([(
                 LlmStage::Reflect,
                 StageUsage {
-                    prompt_tokens: 10,
-                    completion_tokens: 5,
+                    input_tokens: 10,
+                    cached_prompt_tokens: 0,
+                    cache_read_input_tokens: 0,
+                    cache_creation_input_tokens: 0,
+                    output_tokens: 5,
                     calls: 1,
                     errors: 0,
                     latency_ms: 100,
@@ -3658,8 +3661,11 @@ mod tests {
         );
 
         let stage_usage = StageUsage {
-            prompt_tokens: 10,
-            completion_tokens: 5,
+            input_tokens: 10,
+            cached_prompt_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            output_tokens: 5,
             calls: 1,
             errors: 0,
             latency_ms: 100,

@@ -6,7 +6,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 use crate::llm::LlmClient;
-use crate::types::llm::{CompletionRequest, CompletionResponse, ToolCall, ToolChoice};
+use crate::types::llm::{
+    CompletionRequest, CompletionResponse, OpenAiPromptCacheConfig, OpenAiPromptCacheRetention,
+    PromptCacheConfig, PromptCacheUsage, ToolCall, ToolChoice,
+};
 
 const API_URL: &str = "https://api.openai.com/v1";
 
@@ -16,11 +19,17 @@ pub struct OpenAiClient {
     api_key: String,
     default_model: String,
     base_url: String,
+    prompt_cache: Option<OpenAiPromptCacheConfig>,
 }
 
 impl OpenAiClient {
     /// Create a new OpenAI client with optional base URL for compatible providers.
-    pub fn new(api_key: String, model: String, base_url: Option<String>) -> Result<Self> {
+    pub fn new(
+        api_key: String,
+        model: String,
+        base_url: Option<String>,
+        prompt_cache: PromptCacheConfig,
+    ) -> Result<Self> {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(
                 std::env::var("LLM_TIMEOUT_SECS")
@@ -35,6 +44,10 @@ impl OpenAiClient {
             api_key,
             default_model: model,
             base_url: base_url.unwrap_or_else(|| API_URL.to_string()),
+            prompt_cache: match prompt_cache {
+                PromptCacheConfig::OpenAi(config) => Some(config),
+                _ => None,
+            },
         })
     }
 }
@@ -53,6 +66,10 @@ struct OpenAiRequest {
     tools: Option<Vec<OpenAiTool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<OpenAiToolChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_retention: Option<OpenAiPromptCacheRetention>,
 }
 
 #[derive(Serialize, Default)]
@@ -148,6 +165,24 @@ struct OpenAiRespFunctionCall {
 struct OpenAiUsage {
     prompt_tokens: usize,
     completion_tokens: usize,
+    #[serde(default)]
+    prompt_tokens_details: Option<OpenAiPromptTokensDetails>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiPromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: usize,
+}
+
+impl From<OpenAiPromptTokensDetails> for PromptCacheUsage {
+    fn from(details: OpenAiPromptTokensDetails) -> Self {
+        Self {
+            cached_tokens: Some(details.cached_tokens),
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+        }
+    }
 }
 
 #[async_trait]
@@ -243,6 +278,8 @@ impl LlmClient for OpenAiClient {
             temperature: request.temperature,
             tools,
             tool_choice,
+            prompt_cache_key: self.prompt_cache.as_ref().and_then(|config| config.key.clone()),
+            prompt_cache_retention: self.prompt_cache.as_ref().and_then(|config| config.retention),
         };
 
         let url = format!("{}/chat/completions", self.base_url);
@@ -286,10 +323,13 @@ impl LlmClient for OpenAiClient {
             })
             .unwrap_or_default();
 
-        let (input_tokens, output_tokens) = parsed
+        let (input_tokens, output_tokens, prompt_cache) = parsed
             .usage
-            .map(|u| (u.prompt_tokens, u.completion_tokens))
-            .unwrap_or((0, 0));
+            .map(|u| {
+                let prompt_cache = u.prompt_tokens_details.map(PromptCacheUsage::from);
+                (u.prompt_tokens, u.completion_tokens, prompt_cache)
+            })
+            .unwrap_or((0, 0, None));
 
         Ok(CompletionResponse {
             content,
@@ -297,6 +337,7 @@ impl LlmClient for OpenAiClient {
             output_tokens,
             stop_reason,
             tool_calls,
+            prompt_cache,
         })
     }
 }
@@ -315,6 +356,7 @@ mod tests {
             api_key,
             std::env::var("LLM_MODEL").expect("LLM_MODEL must be set"),
             None,
+            PromptCacheConfig::Disabled,
         )
         .unwrap();
 
@@ -341,6 +383,7 @@ mod tests {
             api_key,
             std::env::var("LLM_MODEL").expect("LLM_MODEL must be set"),
             None,
+            PromptCacheConfig::Disabled,
         )
         .unwrap();
 

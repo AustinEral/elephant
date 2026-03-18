@@ -889,6 +889,7 @@ mod tests {
                 name: "search_observations".into(),
                 arguments: serde_json::json!({"query": "Rust memory", "reason": "overview"}),
             }],
+            prompt_cache: None,
         });
 
         // Iteration 1: forced recall
@@ -902,6 +903,7 @@ mod tests {
                 name: "recall".into(),
                 arguments: serde_json::json!({"query": "Rust memory safety", "reason": "details"}),
             }],
+            prompt_cache: None,
         });
 
         // Iteration 2: done
@@ -918,6 +920,7 @@ mod tests {
                     "source_ids": [fact_id.to_string()]
                 }),
             }],
+            prompt_cache: None,
         });
 
         let pipeline = h.build_pipeline();
@@ -959,6 +962,7 @@ mod tests {
                 name: "search_observations".into(),
                 arguments: serde_json::json!({"query": "fallback", "reason": "overview"}),
             }],
+            prompt_cache: None,
         });
         h.llm.push_response_full(CompletionResponse {
             content: String::new(),
@@ -970,6 +974,7 @@ mod tests {
                 name: "recall".into(),
                 arguments: serde_json::json!({"query": "fallback", "reason": "details"}),
             }],
+            prompt_cache: None,
         });
         h.llm.push_response_full(CompletionResponse {
             content: "Synthesizing".into(),
@@ -984,6 +989,7 @@ mod tests {
                     "source_ids": "not-an-array"
                 }),
             }],
+            prompt_cache: None,
         });
 
         let pipeline = h.build_pipeline();
@@ -1062,6 +1068,7 @@ mod tests {
                 name: "search_observations".into(),
                 arguments: serde_json::json!({"query": "project timeline", "reason": "overview"}),
             }],
+            prompt_cache: None,
         });
         h.llm.push_response_full(CompletionResponse {
             content: String::new(),
@@ -1073,6 +1080,7 @@ mod tests {
                 name: "recall".into(),
                 arguments: serde_json::json!({"query": "project timeline", "reason": "details"}),
             }],
+            prompt_cache: None,
         });
         h.llm.push_response_full(CompletionResponse {
             content: String::new(),
@@ -1087,6 +1095,7 @@ mod tests {
                     "source_ids": [observation_id.to_string()]
                 }),
             }],
+            prompt_cache: None,
         });
 
         let pipeline = h.build_pipeline();
@@ -1152,6 +1161,7 @@ mod tests {
                 name: "search_observations".into(),
                 arguments: serde_json::json!({"query": "launch plan", "reason": "overview"}),
             }],
+            prompt_cache: None,
         });
         h.llm.push_response_full(CompletionResponse {
             content: String::new(),
@@ -1163,6 +1173,7 @@ mod tests {
                 name: "recall".into(),
                 arguments: serde_json::json!({"query": "Avery launch plan", "reason": "details"}),
             }],
+            prompt_cache: None,
         });
         h.llm.push_response_full(CompletionResponse {
             content: String::new(),
@@ -1178,6 +1189,7 @@ mod tests {
                     "reason": "Find when the memory was originally said"
                 }),
             }],
+            prompt_cache: None,
         });
         h.llm.push_response_full(CompletionResponse {
             content: String::new(),
@@ -1192,6 +1204,7 @@ mod tests {
                     "source_ids": [fact_id.to_string()]
                 }),
             }],
+            prompt_cache: None,
         });
 
         let pipeline = h.build_pipeline();
@@ -1278,6 +1291,7 @@ mod tests {
                 name: "search_observations".into(),
                 arguments: serde_json::json!({"query": "launch plan", "reason": "overview"}),
             }],
+            prompt_cache: None,
         });
         h.llm.push_response_full(CompletionResponse {
             content: String::new(),
@@ -1289,6 +1303,7 @@ mod tests {
                 name: "recall".into(),
                 arguments: serde_json::json!({"query": "Avery July review", "reason": "details"}),
             }],
+            prompt_cache: None,
         });
         h.llm.push_response_full(CompletionResponse {
             content: String::new(),
@@ -1304,6 +1319,7 @@ mod tests {
                     "reason": "Verify the source context for the first fact"
                 }),
             }],
+            prompt_cache: None,
         });
         h.llm.push_response_full(CompletionResponse {
             content: String::new(),
@@ -1321,6 +1337,7 @@ mod tests {
                     "source_ids": [fact_a_id.to_string(), fact_b_id.to_string()]
                 }),
             }],
+            prompt_cache: None,
         });
 
         let pipeline = h.build_pipeline();
@@ -1426,6 +1443,7 @@ mod tests {
                 name: "search_observations".into(),
                 arguments: serde_json::json!({"query": "data", "reason": "overview"}),
             }],
+            prompt_cache: None,
         });
 
         // Iteration 1: forced recall
@@ -1439,6 +1457,7 @@ mod tests {
                 name: "recall".into(),
                 arguments: serde_json::json!({"query": "data", "reason": "details"}),
             }],
+            prompt_cache: None,
         });
 
         // Iteration 2 (last): forced done — LLM must synthesize
@@ -1455,6 +1474,7 @@ mod tests {
                     "source_ids": []
                 }),
             }],
+            prompt_cache: None,
         });
 
         // Build pipeline with max_iterations=3
@@ -1517,6 +1537,7 @@ mod tests {
                 name: "search_observations".into(),
                 arguments: serde_json::json!({"query": "testing", "reason": "overview"}),
             }],
+            prompt_cache: None,
         });
 
         // Iteration 1: recall (finds the world fact)
@@ -1530,6 +1551,7 @@ mod tests {
                 name: "recall".into(),
                 arguments: serde_json::json!({"query": "testing", "reason": "details"}),
             }],
+            prompt_cache: None,
         });
 
         // Iteration 2: done with one real ID and one hallucinated ID
@@ -1546,6 +1568,7 @@ mod tests {
                     "source_ids": [fact_id.to_string(), FactId::new().to_string()]
                 }),
             }],
+            prompt_cache: None,
         });
 
         let pipeline = h.build_pipeline();
@@ -1579,6 +1602,7 @@ mod tests {
                 name: "search_observations".into(),
                 arguments: serde_json::json!({"query": "meaning of life", "reason": "overview"}),
             }],
+            prompt_cache: None,
         });
 
         // Iteration 1: forced recall (empty bank)
@@ -1592,6 +1616,7 @@ mod tests {
                 name: "recall".into(),
                 arguments: serde_json::json!({"query": "meaning of life", "reason": "details"}),
             }],
+            prompt_cache: None,
         });
 
         // Iteration 2: done (empty bank, nothing found)
@@ -1608,6 +1633,7 @@ mod tests {
                     "source_ids": []
                 }),
             }],
+            prompt_cache: None,
         });
 
         let pipeline = h.build_pipeline();
@@ -1653,6 +1679,7 @@ mod tests {
                 name: "search_observations".into(),
                 arguments: serde_json::json!({"query": "analysis", "reason": "overview"}),
             }],
+            prompt_cache: None,
         });
         // Iteration 1: recall
         h.llm.push_response_full(CompletionResponse {
@@ -1665,6 +1692,7 @@ mod tests {
                 name: "recall".into(),
                 arguments: serde_json::json!({"query": "analysis", "reason": "details"}),
             }],
+            prompt_cache: None,
         });
         // Iteration 2: done
         h.llm.push_response_full(CompletionResponse {
@@ -1680,6 +1708,7 @@ mod tests {
                     "source_ids": []
                 }),
             }],
+            prompt_cache: None,
         });
 
         let pipeline = h.build_pipeline();
@@ -1762,6 +1791,7 @@ mod tests {
                 name: "search_observations".into(),
                 arguments: serde_json::json!({"query": "data", "reason": "overview"}),
             }],
+            prompt_cache: None,
         });
         // Iteration 1: forced recall (finds World facts)
         h.llm.push_response_full(CompletionResponse {
@@ -1774,6 +1804,7 @@ mod tests {
                 name: "recall".into(),
                 arguments: serde_json::json!({"query": "first data", "reason": "details"}),
             }],
+            prompt_cache: None,
         });
         // Iteration 2: another recall to cover second angle
         h.llm.push_response_full(CompletionResponse {
@@ -1786,6 +1817,7 @@ mod tests {
                 name: "recall".into(),
                 arguments: serde_json::json!({"query": "second data", "reason": "more details"}),
             }],
+            prompt_cache: None,
         });
         // Iteration 3: done
         h.llm.push_response_full(CompletionResponse {
@@ -1801,6 +1833,7 @@ mod tests {
                     "source_ids": [id1.to_string(), id2.to_string()]
                 }),
             }],
+            prompt_cache: None,
         });
 
         let pipeline = h.build_pipeline();

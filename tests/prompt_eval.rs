@@ -11,7 +11,7 @@
 
 use elephant::llm::anthropic::AnthropicClient;
 use elephant::llm::complete_structured;
-use elephant::types::llm::{CompletionRequest, Message};
+use elephant::types::llm::{CompletionRequest, Message, PromptCacheConfig};
 use elephant::types::pipeline::ExtractedFact;
 
 use serde::Deserialize;
@@ -32,7 +32,7 @@ fn llm_client() -> AnthropicClient {
     let model = std::env::var("LLM_MODEL")
         .or_else(|_| std::env::var("RETAIN_LLM_MODEL"))
         .unwrap_or_else(|_| panic!("LLM_MODEL or RETAIN_LLM_MODEL must be set in .env"));
-    AnthropicClient::new(env("LLM_API_KEY"), model).unwrap()
+    AnthropicClient::new(env("LLM_API_KEY"), model, PromptCacheConfig::Disabled).unwrap()
 }
 
 fn extraction_request(content: &str, speaker: Option<&str>) -> CompletionRequest {

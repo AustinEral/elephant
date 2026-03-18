@@ -167,9 +167,11 @@ struct ConversationBankStats {
 #[derive(Debug, Clone, Default, Deserialize)]
 struct StageUsage {
     #[serde(default)]
-    prompt_tokens: u64,
+    #[serde(alias = "prompt_tokens")]
+    input_tokens: u64,
     #[serde(default)]
-    completion_tokens: u64,
+    #[serde(alias = "completion_tokens")]
+    output_tokens: u64,
     #[serde(default)]
     calls: u64,
     #[serde(default)]
@@ -180,7 +182,7 @@ struct StageUsage {
 
 impl StageUsage {
     fn total_tokens(&self) -> u64 {
-        self.prompt_tokens + self.completion_tokens
+        self.input_tokens + self.output_tokens
     }
 }
 

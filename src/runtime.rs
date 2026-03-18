@@ -10,7 +10,7 @@ use crate::consolidation::opinion_merger;
 use crate::consolidation::{DefaultConsolidator, DefaultOpinionMerger};
 use crate::embedding::{self, EmbeddingClient, EmbeddingConfig, EmbeddingProvider};
 use crate::error::{Error, Result};
-use crate::llm::LlmClient;
+use crate::llm::{self, LlmClient};
 use crate::llm::anthropic::AnthropicClient;
 use crate::llm::openai::OpenAiClient;
 use crate::llm::retry::{RetryPolicy, RetryingLlmClient};
@@ -31,6 +31,7 @@ use crate::retain::resolver::{self, LayeredEntityResolver};
 use crate::retain::{self, DefaultRetainPipeline, RetainPipeline};
 use crate::storage::MemoryStore;
 use crate::storage::pg::PgMemoryStore;
+use crate::types::llm::PromptCacheConfig;
 use crate::types::ChunkConfig;
 
 use crate::consolidation::{Consolidator, OpinionMerger};
@@ -41,6 +42,7 @@ struct LlmConfig {
     api_key: String,
     model: String,
     base_url: Option<String>,
+    prompt_cache: PromptCacheConfig,
 }
 
 /// Stable prompt-template hash bundle for publication provenance.
@@ -160,10 +162,12 @@ fn make_llm(config: &LlmConfig) -> Result<Box<dyn LlmClient>> {
             config.api_key.clone(),
             config.model.clone(),
             config.base_url.clone(),
+            config.prompt_cache.clone(),
         )?)),
         _ => Ok(Box::new(AnthropicClient::new(
             config.api_key.clone(),
             config.model.clone(),
+            config.prompt_cache.clone(),
         )?)),
     }
 }
@@ -263,18 +267,21 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
         .await?;
     let store = Arc::new(PgMemoryStore::new(pool.clone()));
     store.migrate().await?;
+    let prompt_cache = llm::prompt_cache_config_from_env(&llm_provider)?;
 
     let retain_config = LlmConfig {
         provider: llm_provider.clone(),
         api_key: llm_api_key.clone(),
         model: retain_model.clone(),
         base_url: llm_base_url.clone(),
+        prompt_cache: prompt_cache.clone(),
     };
     let reflect_config = LlmConfig {
         provider: llm_provider.clone(),
         api_key: llm_api_key,
         model: reflect_model.clone(),
         base_url: llm_base_url,
+        prompt_cache,
     };
 
     let emb_config = EmbeddingConfig {
