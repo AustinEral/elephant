@@ -169,14 +169,14 @@ pub struct CompletionUsage {
 }
 
 impl CompletionUsage {
-    /// Mirror the legacy prompt/completion counts for callers that do not expose cache details.
-    pub(crate) fn legacy_compat(input_tokens: usize, output_tokens: usize) -> Self {
+    /// Build usage for provider paths that do not expose cache-aware details.
+    pub(crate) fn unsupported(prompt_tokens: usize, completion_tokens: usize) -> Self {
         Self {
-            prompt_tokens: input_tokens,
-            uncached_prompt_tokens: input_tokens,
+            prompt_tokens,
+            uncached_prompt_tokens: prompt_tokens,
             cache_hit_prompt_tokens: 0,
             cache_write_prompt_tokens: 0,
-            completion_tokens: output_tokens,
+            completion_tokens,
             cache_status: CacheStatus::Unsupported,
         }
     }

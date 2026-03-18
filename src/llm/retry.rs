@@ -131,7 +131,7 @@ mod tests {
                     content: "ok".into(),
                     input_tokens: 1,
                     output_tokens: 1,
-                    usage: CompletionUsage::legacy_compat(1, 1),
+                    usage: CompletionUsage::unsupported(1, 1),
                     stop_reason: None,
                     tool_calls: vec![],
                 })

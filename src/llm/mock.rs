@@ -35,7 +35,7 @@ impl MockLlmClient {
                 content: text.into(),
                 input_tokens: 10,
                 output_tokens: 20,
-                usage: CompletionUsage::legacy_compat(10, 20),
+                usage: CompletionUsage::unsupported(10, 20),
                 stop_reason: None,
                 tool_calls: vec![],
             });
