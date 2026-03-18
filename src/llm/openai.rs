@@ -2,13 +2,14 @@
 
 use async_trait::async_trait;
 use reqwest::Client;
+use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 use crate::llm::LlmClient;
 use crate::types::llm::{
-    CompletionRequest, CompletionResponse, OpenAiPromptCacheConfig, OpenAiPromptCacheRetention,
-    PromptCacheConfig, PromptCacheUsage, ToolCall, ToolChoice,
+    CompletionRequest, CompletionResponse, OpenAiPromptCacheConfig,
+    OpenAiPromptCacheRetention, PromptCacheConfig, PromptCacheUsage, ToolCall, ToolChoice,
 };
 
 const API_URL: &str = "https://api.openai.com/v1";
@@ -50,31 +51,70 @@ impl OpenAiClient {
 
 // --- OpenAI API request/response types ---
 
-#[derive(Serialize)]
 struct OpenAiRequest {
     model: String,
     messages: Vec<OpenAiMessage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_completion_tokens: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<OpenAiTool>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<OpenAiToolChoice>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     prompt_cache_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     prompt_cache_retention: Option<OpenAiPromptCacheRetention>,
 }
 
-fn openai_uses_max_completion_tokens(model: &str) -> bool {
-    model.starts_with("gpt-5")
-        || model.starts_with("o1")
-        || model.starts_with("o3")
-        || model.starts_with("o4")
+impl OpenAiRequest {
+    fn uses_max_completion_tokens(model: &str) -> bool {
+        model.starts_with("gpt-5")
+            || model.starts_with("o1")
+            || model.starts_with("o3")
+            || model.starts_with("o4")
+    }
+
+    fn temperature_for_model(model: &str, temperature: Option<f32>) -> Option<f32> {
+        if model.starts_with("gpt-5")
+            && !model.starts_with("gpt-5.1")
+            && !model.starts_with("gpt-5.2")
+        {
+            None
+        } else {
+            temperature
+        }
+    }
+}
+
+impl Serialize for OpenAiRequest {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let uses_max_completion_tokens = Self::uses_max_completion_tokens(&self.model);
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("model", &self.model)?;
+        map.serialize_entry("messages", &self.messages)?;
+        if uses_max_completion_tokens {
+            if let Some(max_tokens) = self.max_tokens {
+                map.serialize_entry("max_completion_tokens", &max_tokens)?;
+            }
+        } else if let Some(max_tokens) = self.max_tokens {
+            map.serialize_entry("max_tokens", &max_tokens)?;
+        }
+        if let Some(temperature) = Self::temperature_for_model(&self.model, self.temperature) {
+            map.serialize_entry("temperature", &temperature)?;
+        }
+        if let Some(tools) = &self.tools {
+            map.serialize_entry("tools", tools)?;
+        }
+        if let Some(tool_choice) = &self.tool_choice {
+            map.serialize_entry("tool_choice", tool_choice)?;
+        }
+        if let Some(prompt_cache_key) = &self.prompt_cache_key {
+            map.serialize_entry("prompt_cache_key", prompt_cache_key)?;
+        }
+        if let Some(prompt_cache_retention) = self.prompt_cache_retention {
+            map.serialize_entry("prompt_cache_retention", &prompt_cache_retention)?;
+        }
+        map.end()
+    }
 }
 
 #[derive(Serialize, Default)]
@@ -149,9 +189,28 @@ struct OpenAiChoice {
 
 #[derive(Deserialize)]
 struct OpenAiMessageResp {
-    content: Option<String>,
+    content: Option<OpenAiMessageContent>,
+    #[serde(default)]
+    refusal: Option<String>,
     #[serde(default)]
     tool_calls: Vec<OpenAiRespToolCall>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum OpenAiMessageContent {
+    Text(String),
+    Parts(Vec<OpenAiContentPart>),
+}
+
+#[derive(Deserialize)]
+struct OpenAiContentPart {
+    #[serde(rename = "type")]
+    part_type: String,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    refusal: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -195,9 +254,17 @@ impl OpenAiResponse {
         let choice = self.choices.into_iter().next();
         let content = choice
             .as_ref()
-            .and_then(|c| c.message.content.clone())
+            .map(|c| c.message.content_text())
+            .filter(|content| !content.is_empty())
+            .or_else(|| choice.as_ref().and_then(|c| c.message.refusal_text()))
             .unwrap_or_default();
-        let stop_reason = choice.as_ref().and_then(|c| c.finish_reason.clone());
+        let stop_reason = choice.as_ref().and_then(|c| {
+            if c.message.refusal_text().is_some() {
+                Some("refusal".into())
+            } else {
+                c.finish_reason.clone()
+            }
+        });
 
         let tool_calls: Vec<ToolCall> = choice
             .map(|c| {
@@ -236,6 +303,38 @@ impl OpenAiResponse {
     }
 }
 
+impl OpenAiMessageResp {
+    fn content_text(&self) -> String {
+        match &self.content {
+            Some(OpenAiMessageContent::Text(text)) => text.clone(),
+            Some(OpenAiMessageContent::Parts(parts)) => parts
+                .iter()
+                .filter_map(|part| (part.part_type == "text").then_some(part.text.as_deref()))
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(""),
+            None => String::new(),
+        }
+    }
+
+    fn refusal_text(&self) -> Option<String> {
+        self.refusal.clone().or_else(|| match &self.content {
+            Some(OpenAiMessageContent::Parts(parts)) => {
+                let refusal = parts
+                    .iter()
+                    .filter_map(|part| {
+                        (part.part_type == "refusal").then_some(part.refusal.as_deref())
+                    })
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join("");
+                (!refusal.is_empty()).then_some(refusal)
+            }
+            _ => None,
+        })
+    }
+}
+
 #[async_trait]
 impl LlmClient for OpenAiClient {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
@@ -268,16 +367,20 @@ impl LlmClient for OpenAiClient {
                         .collect(),
                 )
             };
-            messages.push(OpenAiMessage {
-                role: m.role.clone(),
-                content: if m.content.is_empty() {
-                    None
-                } else {
-                    Some(m.content.clone())
-                },
-                tool_calls,
-                ..Default::default()
-            });
+            let should_emit_message =
+                !m.content.is_empty() || tool_calls.is_some() || m.tool_results.is_empty();
+            if should_emit_message {
+                messages.push(OpenAiMessage {
+                    role: m.role.clone(),
+                    content: if m.content.is_empty() {
+                        None
+                    } else {
+                        Some(m.content.clone())
+                    },
+                    tool_calls,
+                    ..Default::default()
+                });
+            }
             // OpenAI requires tool_results as separate role="tool" messages
             for tr in &m.tool_results {
                 messages.push(OpenAiMessage {
@@ -325,16 +428,7 @@ impl LlmClient for OpenAiClient {
         let body = OpenAiRequest {
             model: model.clone(),
             messages,
-            max_tokens: if openai_uses_max_completion_tokens(&model) {
-                None
-            } else {
-                request.max_tokens
-            },
-            max_completion_tokens: if openai_uses_max_completion_tokens(&model) {
-                request.max_tokens
-            } else {
-                None
-            },
+            max_tokens: request.max_tokens,
             temperature: request.temperature,
             tools,
             tool_choice,
@@ -384,7 +478,6 @@ mod tests {
                 ..Default::default()
             }],
             max_tokens: Some(128),
-            max_completion_tokens: None,
             temperature: Some(0.0),
             tools: None,
             tool_choice: None,
@@ -406,8 +499,7 @@ mod tests {
                 content: Some("hello".into()),
                 ..Default::default()
             }],
-            max_tokens: None,
-            max_completion_tokens: Some(128),
+            max_tokens: Some(128),
             temperature: Some(0.0),
             tools: None,
             tool_choice: None,
@@ -416,11 +508,73 @@ mod tests {
         };
 
         let value = serde_json::to_value(&body).unwrap();
-        assert!(openai_uses_max_completion_tokens("gpt-5"));
-        assert!(openai_uses_max_completion_tokens("o3"));
-        assert!(!openai_uses_max_completion_tokens("gpt-4o"));
+        assert!(OpenAiRequest::uses_max_completion_tokens("gpt-5"));
+        assert!(OpenAiRequest::uses_max_completion_tokens("o3"));
+        assert!(!OpenAiRequest::uses_max_completion_tokens("gpt-4o"));
         assert_eq!(value["max_completion_tokens"], 128);
         assert!(value.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn uses_max_tokens_for_legacy_chat_models() {
+        let body = OpenAiRequest {
+            model: "gpt-4o".into(),
+            messages: vec![OpenAiMessage {
+                role: "user".into(),
+                content: Some("hello".into()),
+                ..Default::default()
+            }],
+            max_tokens: Some(128),
+            temperature: Some(0.0),
+            tools: None,
+            tool_choice: None,
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
+        };
+
+        let value = serde_json::to_value(&body).unwrap();
+        assert!(!OpenAiRequest::uses_max_completion_tokens("gpt-4o"));
+        assert_eq!(value["max_tokens"], 128);
+        assert!(value.get("max_completion_tokens").is_none());
+    }
+
+    #[test]
+    fn routes_token_limits_by_model_family() {
+        assert!(!OpenAiRequest::uses_max_completion_tokens("gpt-4o"));
+        assert!(OpenAiRequest::uses_max_completion_tokens("gpt-5"));
+        assert!(OpenAiRequest::uses_max_completion_tokens("o3"));
+    }
+
+    #[test]
+    fn omits_temperature_for_older_gpt5_chat_models() {
+        assert_eq!(
+            OpenAiRequest::temperature_for_model("gpt-5", Some(0.1)),
+            None
+        );
+        assert_eq!(
+            OpenAiRequest::temperature_for_model("gpt-5-mini", Some(0.0)),
+            None
+        );
+        assert_eq!(
+            OpenAiRequest::temperature_for_model("gpt-5-chat-latest", Some(1.0)),
+            None
+        );
+    }
+
+    #[test]
+    fn preserves_temperature_for_supported_chat_models() {
+        assert_eq!(
+            OpenAiRequest::temperature_for_model("gpt-4o", Some(0.3)),
+            Some(0.3)
+        );
+        assert_eq!(
+            OpenAiRequest::temperature_for_model("gpt-5.1", Some(0.3)),
+            Some(0.3)
+        );
+        assert_eq!(
+            OpenAiRequest::temperature_for_model("gpt-5.2", Some(0.3)),
+            Some(0.3)
+        );
     }
 
     #[test]
@@ -465,6 +619,107 @@ mod tests {
                 cache_creation_input_tokens: None,
             })
         );
+    }
+
+    #[test]
+    fn parses_refusal_message_as_refusal_stop_reason() {
+        let parsed: OpenAiResponse = serde_json::from_value(json!({
+            "choices": [{
+                "message": {
+                    "content": null,
+                    "refusal": "I can't help with that."
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 4
+            }
+        }))
+        .unwrap();
+
+        let response = parsed.into_completion_response();
+        assert_eq!(response.stop_reason.as_deref(), Some("refusal"));
+        assert_eq!(response.content, "I can't help with that.");
+    }
+
+    #[test]
+    fn parses_text_content_parts() {
+        let parsed: OpenAiResponse = serde_json::from_value(json!({
+            "choices": [{
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "hello "},
+                        {"type": "text", "text": "world"}
+                    ]
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 2
+            }
+        }))
+        .unwrap();
+
+        let response = parsed.into_completion_response();
+        assert_eq!(response.stop_reason.as_deref(), Some("stop"));
+        assert_eq!(response.content, "hello world");
+    }
+
+    #[test]
+    fn tool_results_are_emitted_as_tool_messages_without_placeholder_user_message() {
+        let mut messages = vec![OpenAiMessage {
+            role: "assistant".into(),
+            content: None,
+            tool_call_id: None,
+            tool_calls: Some(vec![OpenAiReqToolCall {
+                id: "call_123".into(),
+                tool_type: "function".into(),
+                function: OpenAiReqFunctionCall {
+                    name: "recall".into(),
+                    arguments: "{\"query\":\"hi\"}".into(),
+                },
+            }]),
+        }];
+
+        let message = Message {
+            role: "user".into(),
+            content: String::new(),
+            tool_calls: vec![],
+            tool_results: vec![crate::types::llm::ToolResult {
+                tool_call_id: "call_123".into(),
+                content: "result".into(),
+            }],
+        };
+        let tool_calls = if message.tool_calls.is_empty() {
+            None
+        } else {
+            unreachable!()
+        };
+        let should_emit_message =
+            !message.content.is_empty() || tool_calls.is_some() || message.tool_results.is_empty();
+        if should_emit_message {
+            messages.push(OpenAiMessage {
+                role: message.role.clone(),
+                content: Some(message.content.clone()),
+                tool_calls,
+                ..Default::default()
+            });
+        }
+        for tr in &message.tool_results {
+            messages.push(OpenAiMessage {
+                role: "tool".into(),
+                content: Some(tr.content.clone()),
+                tool_call_id: Some(tr.tool_call_id.clone()),
+                ..Default::default()
+            });
+        }
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1].role, "tool");
+        assert_eq!(messages[1].tool_call_id.as_deref(), Some("call_123"));
+        assert_eq!(messages[1].content.as_deref(), Some("result"));
     }
 
     #[tokio::test]

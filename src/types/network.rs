@@ -29,8 +29,8 @@ pub enum ExtractedNetworkType {
     /// User experiences and compatible semantic categories like plans/intentions.
     #[serde(
         alias = "experiences",
-        alias = "plan",
         alias = "plans",
+        alias = "plan",
         alias = "intention",
         alias = "intentions",
         alias = "plans and intentions"
@@ -85,6 +85,7 @@ mod tests {
     #[test]
     fn normalizes_plan_like_labels_to_experience() {
         for label in [
+            "experiences",
             "plan",
             "plans",
             "intention",
