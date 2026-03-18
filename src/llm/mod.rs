@@ -366,6 +366,49 @@ pub fn build_client(config: &ProviderConfig) -> crate::error::Result<Box<dyn Llm
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn with_env_vars<F>(overrides: &[(&str, Option<&str>)], test: F)
+    where
+        F: FnOnce(),
+    {
+        let _guard = env_lock().lock().unwrap();
+        let keys = [
+            "LLM_PROMPT_CACHE_ENABLED",
+            "OPENAI_PROMPT_CACHE_KEY",
+            "OPENAI_PROMPT_CACHE_RETENTION",
+            "ANTHROPIC_PROMPT_CACHE_TTL",
+            "LLM_TIMEOUT_SECS",
+        ];
+
+        let mut original = BTreeMap::new();
+        for key in keys {
+            original.insert(key, std::env::var(key).ok());
+            unsafe { std::env::remove_var(key) };
+        }
+
+        for (key, value) in overrides {
+            match value {
+                Some(value) => unsafe { std::env::set_var(key, value) },
+                None => unsafe { std::env::remove_var(key) },
+            }
+        }
+
+        test();
+
+        for (key, value) in original {
+            match value {
+                Some(value) => unsafe { std::env::set_var(key, value) },
+                None => unsafe { std::env::remove_var(key) },
+            }
+        }
+    }
 
     #[test]
     fn extract_json_clean() {
@@ -414,5 +457,90 @@ mod tests {
         let input = r#"{"msg": "hello {world}"}"#;
         let result = extract_json(input).unwrap();
         assert_eq!(result, input);
+    }
+
+    #[test]
+    fn prompt_cache_config_defaults_to_disabled() {
+        with_env_vars(&[], || {
+            assert_eq!(
+                prompt_cache_config_from_env("openai").unwrap(),
+                PromptCacheConfig::Disabled
+            );
+        });
+    }
+
+    #[test]
+    fn prompt_cache_config_parses_openai_values() {
+        with_env_vars(
+            &[
+                ("LLM_PROMPT_CACHE_ENABLED", Some("1")),
+                ("OPENAI_PROMPT_CACHE_KEY", Some("elephant:reflect")),
+                ("OPENAI_PROMPT_CACHE_RETENTION", Some("24h")),
+            ],
+            || {
+                assert_eq!(
+                    prompt_cache_config_from_env("openai").unwrap(),
+                    PromptCacheConfig::OpenAi(OpenAiPromptCacheConfig {
+                        key: Some("elephant:reflect".into()),
+                        retention: Some(OpenAiPromptCacheRetention::Hours24),
+                    })
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn prompt_cache_config_parses_anthropic_values() {
+        with_env_vars(
+            &[
+                ("LLM_PROMPT_CACHE_ENABLED", Some("true")),
+                ("ANTHROPIC_PROMPT_CACHE_TTL", Some("1h")),
+            ],
+            || {
+                assert_eq!(
+                    prompt_cache_config_from_env("anthropic").unwrap(),
+                    PromptCacheConfig::Anthropic(AnthropicPromptCacheConfig {
+                        ttl: Some(AnthropicPromptCacheTtl::Hours1),
+                    })
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn prompt_cache_config_rejects_invalid_openai_retention() {
+        with_env_vars(
+            &[
+                ("LLM_PROMPT_CACHE_ENABLED", Some("1")),
+                ("OPENAI_PROMPT_CACHE_RETENTION", Some("forever")),
+            ],
+            || {
+                assert!(prompt_cache_config_from_env("openai").is_err());
+            },
+        );
+    }
+
+    #[test]
+    fn prompt_cache_config_rejects_invalid_anthropic_ttl() {
+        with_env_vars(
+            &[
+                ("LLM_PROMPT_CACHE_ENABLED", Some("1")),
+                ("ANTHROPIC_PROMPT_CACHE_TTL", Some("24h")),
+            ],
+            || {
+                assert!(prompt_cache_config_from_env("anthropic").is_err());
+            },
+        );
+    }
+
+    #[test]
+    fn timeout_secs_from_env_uses_default_and_override() {
+        with_env_vars(&[], || {
+            assert_eq!(timeout_secs_from_env(), DEFAULT_TIMEOUT_SECS);
+        });
+
+        with_env_vars(&[("LLM_TIMEOUT_SECS", Some("42"))], || {
+            assert_eq!(timeout_secs_from_env(), 42);
+        });
     }
 }

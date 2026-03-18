@@ -46,19 +46,25 @@ pub struct StageUsage {
     #[serde(default, alias = "prompt_tokens")]
     pub input_tokens: u64,
     /// Total prompt tokens served from cache.
+    #[serde(default)]
     pub cached_prompt_tokens: u64,
     /// Total Anthropic cache-hit input tokens.
+    #[serde(default)]
     pub cache_read_input_tokens: u64,
     /// Total Anthropic cache-write input tokens.
+    #[serde(default)]
     pub cache_creation_input_tokens: u64,
     /// Total output/completion tokens.
     #[serde(default, alias = "completion_tokens")]
     pub output_tokens: u64,
     /// Number of LLM calls attempted.
+    #[serde(default)]
     pub calls: u64,
     /// Number of calls that returned an error.
+    #[serde(default)]
     pub errors: u64,
     /// Wall-clock latency across all calls.
+    #[serde(default)]
     pub latency_ms: u64,
 }
 
@@ -254,5 +260,101 @@ impl LlmClient for MeteredLlmClient {
             }
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::llm::PromptCacheUsage;
+
+    #[test]
+    fn stage_usage_deserializes_legacy_token_names() {
+        let usage: StageUsage = serde_json::from_str(
+            r#"{
+                "prompt_tokens": 10,
+                "completion_tokens": 4,
+                "calls": 1,
+                "errors": 0,
+                "latency_ms": 25
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(usage.input_tokens, 10);
+        assert_eq!(usage.output_tokens, 4);
+        assert_eq!(usage.total_tokens(), 14);
+    }
+
+    #[test]
+    fn record_success_accumulates_cache_fields() {
+        let collector = MetricsCollector::new();
+        let response = CompletionResponse {
+            content: "ok".into(),
+            input_tokens: 100,
+            output_tokens: 20,
+            stop_reason: None,
+            tool_calls: vec![],
+            prompt_cache: Some(PromptCacheUsage {
+                cached_tokens: Some(80),
+                cache_read_input_tokens: Some(60),
+                cache_creation_input_tokens: Some(10),
+            }),
+        };
+
+        collector.record_success(LlmStage::Reflect, &response, 50);
+        let snapshot = collector.snapshot();
+        let usage = snapshot.get(&LlmStage::Reflect).unwrap();
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.cached_prompt_tokens, 80);
+        assert_eq!(usage.cache_read_input_tokens, 60);
+        assert_eq!(usage.cache_creation_input_tokens, 10);
+        assert_eq!(usage.output_tokens, 20);
+        assert_eq!(usage.calls, 1);
+        assert_eq!(usage.errors, 0);
+        assert_eq!(usage.latency_ms, 50);
+    }
+
+    #[test]
+    fn extend_snapshot_and_total_usage_include_cache_fields() {
+        let collector = MetricsCollector::new();
+        let mut prior = BTreeMap::new();
+        prior.insert(
+            LlmStage::Reflect,
+            StageUsage {
+                input_tokens: 40,
+                cached_prompt_tokens: 30,
+                cache_read_input_tokens: 20,
+                cache_creation_input_tokens: 5,
+                output_tokens: 8,
+                calls: 1,
+                errors: 0,
+                latency_ms: 10,
+            },
+        );
+        prior.insert(
+            LlmStage::Judge,
+            StageUsage {
+                input_tokens: 10,
+                cached_prompt_tokens: 0,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+                output_tokens: 2,
+                calls: 1,
+                errors: 0,
+                latency_ms: 3,
+            },
+        );
+
+        collector.extend_snapshot(&prior);
+        let total = collector.total_usage();
+        assert_eq!(total.input_tokens, 50);
+        assert_eq!(total.cached_prompt_tokens, 30);
+        assert_eq!(total.cache_read_input_tokens, 20);
+        assert_eq!(total.cache_creation_input_tokens, 5);
+        assert_eq!(total.output_tokens, 10);
+        assert_eq!(total.calls, 2);
+        assert_eq!(total.errors, 0);
+        assert_eq!(total.latency_ms, 13);
     }
 }

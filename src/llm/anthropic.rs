@@ -183,6 +183,41 @@ impl AnthropicUsage {
     }
 }
 
+impl AnthropicResponse {
+    fn into_completion_response(self) -> CompletionResponse {
+        let mut content = String::new();
+        let mut tool_calls = Vec::new();
+
+        for block in self.content {
+            match block {
+                ContentBlock::Text { text } => {
+                    if !content.is_empty() {
+                        content.push('\n');
+                    }
+                    content.push_str(&text);
+                }
+                ContentBlock::ToolUse { id, name, input } => {
+                    tool_calls.push(ToolCall {
+                        id,
+                        name,
+                        arguments: input,
+                    });
+                }
+                ContentBlock::ToolResult { .. } => {}
+            }
+        }
+
+        CompletionResponse {
+            content,
+            input_tokens: self.usage.input_tokens,
+            output_tokens: self.usage.output_tokens,
+            stop_reason: self.stop_reason,
+            tool_calls,
+            prompt_cache: self.usage.prompt_cache_usage(),
+        }
+    }
+}
+
 #[async_trait]
 impl LlmClient for AnthropicClient {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
@@ -285,36 +320,7 @@ impl LlmClient for AnthropicClient {
             crate::error::Error::Llm(format!("failed to parse Anthropic response: {e}"))
         })?;
 
-        let mut content = String::new();
-        let mut tool_calls = Vec::new();
-
-        for block in parsed.content {
-            match block {
-                ContentBlock::Text { text } => {
-                    if !content.is_empty() {
-                        content.push('\n');
-                    }
-                    content.push_str(&text);
-                }
-                ContentBlock::ToolUse { id, name, input } => {
-                    tool_calls.push(ToolCall {
-                        id,
-                        name,
-                        arguments: input,
-                    });
-                }
-                ContentBlock::ToolResult { .. } => {}
-            }
-        }
-
-        Ok(CompletionResponse {
-            content,
-            input_tokens: parsed.usage.input_tokens,
-            output_tokens: parsed.usage.output_tokens,
-            stop_reason: parsed.stop_reason,
-            tool_calls,
-            prompt_cache: parsed.usage.prompt_cache_usage(),
-        })
+        Ok(parsed.into_completion_response())
     }
 }
 
@@ -331,6 +337,83 @@ impl From<&AnthropicPromptCacheConfig> for AnthropicCacheControl {
 mod tests {
     use super::*;
     use crate::types::llm::Message;
+    use serde_json::json;
+
+    #[test]
+    fn serializes_cache_control_on_request() {
+        let body = AnthropicRequest {
+            model: "claude-sonnet".into(),
+            messages: vec![AnthropicMessage {
+                role: "user".into(),
+                content: AnthropicContent::Blocks(vec![ContentBlock::Text {
+                    text: "hello".into(),
+                }]),
+            }],
+            max_tokens: 128,
+            temperature: Some(0.0),
+            system: None,
+            tools: None,
+            tool_choice: None,
+            cache_control: Some(AnthropicCacheControl::from(&AnthropicPromptCacheConfig {
+                ttl: Some(AnthropicPromptCacheTtl::Hours1),
+            })),
+        };
+
+        let value = serde_json::to_value(&body).unwrap();
+        assert_eq!(value["cache_control"]["type"], "ephemeral");
+        assert_eq!(value["cache_control"]["ttl"], "1h");
+    }
+
+    #[test]
+    fn parses_response_with_cache_usage_and_tool_calls() {
+        let parsed: AnthropicResponse = serde_json::from_value(json!({
+            "content": [
+                { "type": "text", "text": "done" },
+                {
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "lookup",
+                    "input": { "q": "hi" }
+                }
+            ],
+            "usage": {
+                "input_tokens": 1500,
+                "output_tokens": 55,
+                "cache_read_input_tokens": 1200,
+                "cache_creation_input_tokens": 300
+            },
+            "stop_reason": "tool_use"
+        }))
+        .unwrap();
+
+        let response = parsed.into_completion_response();
+        assert_eq!(response.content, "done");
+        assert_eq!(response.input_tokens, 1500);
+        assert_eq!(response.output_tokens, 55);
+        assert_eq!(response.stop_reason.as_deref(), Some("tool_use"));
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].id, "toolu_1");
+        assert_eq!(
+            response.prompt_cache,
+            Some(PromptCacheUsage {
+                cached_tokens: None,
+                cache_read_input_tokens: Some(1200),
+                cache_creation_input_tokens: Some(300),
+            })
+        );
+    }
+
+    #[test]
+    fn omits_prompt_cache_when_usage_has_no_cache_fields() {
+        let usage = AnthropicUsage {
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+        };
+
+        assert_eq!(usage.prompt_cache_usage(), None);
+    }
 
     #[tokio::test]
     #[ignore = "requires LLM_API_KEY"]

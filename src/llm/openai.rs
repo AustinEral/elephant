@@ -181,6 +181,52 @@ impl From<OpenAiPromptTokensDetails> for PromptCacheUsage {
     }
 }
 
+impl OpenAiResponse {
+    fn into_completion_response(self) -> CompletionResponse {
+        let choice = self.choices.into_iter().next();
+        let content = choice
+            .as_ref()
+            .and_then(|c| c.message.content.clone())
+            .unwrap_or_default();
+        let stop_reason = choice.as_ref().and_then(|c| c.finish_reason.clone());
+
+        let tool_calls: Vec<ToolCall> = choice
+            .map(|c| {
+                c.message
+                    .tool_calls
+                    .into_iter()
+                    .filter_map(|tc| {
+                        let arguments: serde_json::Value =
+                            serde_json::from_str(&tc.function.arguments).ok()?;
+                        Some(ToolCall {
+                            id: tc.id,
+                            name: tc.function.name,
+                            arguments,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let (input_tokens, output_tokens, prompt_cache) = self
+            .usage
+            .map(|u| {
+                let prompt_cache = u.prompt_tokens_details.map(PromptCacheUsage::from);
+                (u.prompt_tokens, u.completion_tokens, prompt_cache)
+            })
+            .unwrap_or((0, 0, None));
+
+        CompletionResponse {
+            content,
+            input_tokens,
+            output_tokens,
+            stop_reason,
+            tool_calls,
+            prompt_cache,
+        }
+    }
+}
+
 #[async_trait]
 impl LlmClient for OpenAiClient {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
@@ -294,47 +340,7 @@ impl LlmClient for OpenAiClient {
             crate::error::Error::Llm(format!("failed to parse OpenAI response: {e}"))
         })?;
 
-        let choice = parsed.choices.into_iter().next();
-        let content = choice
-            .as_ref()
-            .and_then(|c| c.message.content.clone())
-            .unwrap_or_default();
-        let stop_reason = choice.as_ref().and_then(|c| c.finish_reason.clone());
-
-        let tool_calls: Vec<ToolCall> = choice
-            .map(|c| {
-                c.message
-                    .tool_calls
-                    .into_iter()
-                    .filter_map(|tc| {
-                        let arguments: serde_json::Value =
-                            serde_json::from_str(&tc.function.arguments).ok()?;
-                        Some(ToolCall {
-                            id: tc.id,
-                            name: tc.function.name,
-                            arguments,
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let (input_tokens, output_tokens, prompt_cache) = parsed
-            .usage
-            .map(|u| {
-                let prompt_cache = u.prompt_tokens_details.map(PromptCacheUsage::from);
-                (u.prompt_tokens, u.completion_tokens, prompt_cache)
-            })
-            .unwrap_or((0, 0, None));
-
-        Ok(CompletionResponse {
-            content,
-            input_tokens,
-            output_tokens,
-            stop_reason,
-            tool_calls,
-            prompt_cache,
-        })
+        Ok(parsed.into_completion_response())
     }
 }
 
@@ -342,6 +348,73 @@ impl LlmClient for OpenAiClient {
 mod tests {
     use super::*;
     use crate::types::llm::Message;
+    use serde_json::json;
+
+    #[test]
+    fn serializes_prompt_cache_fields_on_request() {
+        let body = OpenAiRequest {
+            model: "gpt-5".into(),
+            messages: vec![OpenAiMessage {
+                role: "user".into(),
+                content: Some("hello".into()),
+                ..Default::default()
+            }],
+            max_tokens: Some(128),
+            temperature: Some(0.0),
+            tools: None,
+            tool_choice: None,
+            prompt_cache_key: Some("elephant:reflect".into()),
+            prompt_cache_retention: Some(OpenAiPromptCacheRetention::Hours24),
+        };
+
+        let value = serde_json::to_value(&body).unwrap();
+        assert_eq!(value["prompt_cache_key"], "elephant:reflect");
+        assert_eq!(value["prompt_cache_retention"], "24h");
+    }
+
+    #[test]
+    fn parses_response_with_cached_tokens_and_tool_calls() {
+        let parsed: OpenAiResponse = serde_json::from_value(json!({
+            "choices": [{
+                "message": {
+                    "content": "done",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "function": {
+                            "name": "lookup",
+                            "arguments": "{\"q\":\"hi\"}"
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {
+                "prompt_tokens": 1200,
+                "completion_tokens": 42,
+                "prompt_tokens_details": {
+                    "cached_tokens": 1024
+                }
+            }
+        }))
+        .unwrap();
+
+        let response = parsed.into_completion_response();
+        assert_eq!(response.content, "done");
+        assert_eq!(response.input_tokens, 1200);
+        assert_eq!(response.output_tokens, 42);
+        assert_eq!(response.stop_reason.as_deref(), Some("tool_calls"));
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].name, "lookup");
+        assert_eq!(response.tool_calls[0].arguments, json!({"q": "hi"}));
+        assert_eq!(
+            response.prompt_cache,
+            Some(PromptCacheUsage {
+                cached_tokens: Some(1024),
+                cache_read_input_tokens: None,
+                cache_creation_input_tokens: None,
+            })
+        );
+    }
 
     #[tokio::test]
     #[ignore = "requires OPENAI_API_KEY"]
