@@ -62,6 +62,8 @@ struct ViewBenchmarkOutput {
     #[serde(default)]
     stage_metrics: BTreeMap<String, ViewStageUsage>,
     #[serde(default)]
+    total_stage_usage: ViewStageUsage,
+    #[serde(default)]
     total_time_s: f64,
 }
 
@@ -142,16 +144,35 @@ struct ViewCategoryResult {
 #[derive(Debug, Default, Deserialize)]
 struct ViewStageUsage {
     #[serde(default)]
+    #[serde(alias = "prompt_tokens")]
     input_tokens: u64,
     #[serde(default)]
+    cached_prompt_tokens: u64,
+    #[serde(default)]
+    cache_read_input_tokens: u64,
+    #[serde(default)]
+    cache_creation_input_tokens: u64,
+    #[serde(default)]
+    #[serde(alias = "completion_tokens")]
     output_tokens: u64,
     #[serde(default)]
-    requests: u64,
+    #[serde(alias = "requests")]
+    calls: u64,
+    #[serde(default)]
+    errors: u64,
+    #[serde(default)]
+    latency_ms: u64,
 }
 
 impl ViewStageUsage {
     fn total_tokens(&self) -> u64 {
         self.input_tokens + self.output_tokens
+    }
+
+    fn has_cache_usage(&self) -> bool {
+        self.cached_prompt_tokens > 0
+            || self.cache_read_input_tokens > 0
+            || self.cache_creation_input_tokens > 0
     }
 }
 
@@ -224,22 +245,23 @@ struct CompareCategoryRow {
 #[derive(Tabled)]
 struct StageRow {
     stage: String,
-    requests: u64,
+    calls: u64,
     input_tok: u64,
     output_tok: u64,
+    cached_tok: u64,
+    cache_read: u64,
+    cache_write: u64,
+    errors: u64,
+    latency: String,
 }
 
 #[derive(Tabled)]
 struct CompareStageRow {
     stage: String,
-    #[tabled(rename = "req(A)")]
-    req_a: u64,
-    #[tabled(rename = "req(B)")]
-    req_b: u64,
-    #[tabled(rename = "tok(A)")]
-    tok_a: u64,
-    #[tabled(rename = "tok(B)")]
-    tok_b: u64,
+    #[tabled(rename = "A")]
+    val_a: String,
+    #[tabled(rename = "B")]
+    val_b: String,
     #[tabled(rename = "\u{0394} tok")]
     delta_tok: String,
 }
@@ -306,6 +328,10 @@ fn fmt_time(seconds: f64) -> String {
     }
 }
 
+fn fmt_ms(ms: u64) -> String {
+    fmt_time(ms as f64 / 1000.0)
+}
+
 fn file_label(output: &ViewBenchmarkOutput, path: &str) -> String {
     if let Some(ref tag) = output.tag {
         tag.clone()
@@ -323,6 +349,22 @@ fn question_mark(correct: bool) -> String {
         "\x1b[32m\u{2713}\x1b[0m".into()
     } else {
         "\x1b[31m\u{2717}\x1b[0m".into()
+    }
+}
+
+fn fmt_stage_value(usage: &ViewStageUsage) -> String {
+    if usage.calls == 0 {
+        "-".into()
+    } else {
+        format!(
+            "{} in / {} out / {} cached / {} read / {} write / {} calls",
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cached_prompt_tokens,
+            usage.cache_read_input_tokens,
+            usage.cache_creation_input_tokens,
+            usage.calls,
+        )
     }
 }
 
@@ -483,12 +525,17 @@ fn build_stage_rows(output: &ViewBenchmarkOutput) -> Vec<StageRow> {
     let mut rows: Vec<StageRow> = output
         .stage_metrics
         .iter()
-        .filter(|(_, usage)| usage.requests > 0)
+        .filter(|(_, usage)| usage.calls > 0)
         .map(|(stage, usage)| StageRow {
             stage: stage.clone(),
-            requests: usage.requests,
+            calls: usage.calls,
             input_tok: usage.input_tokens,
             output_tok: usage.output_tokens,
+            cached_tok: usage.cached_prompt_tokens,
+            cache_read: usage.cache_read_input_tokens,
+            cache_write: usage.cache_creation_input_tokens,
+            errors: usage.errors,
+            latency: fmt_ms(usage.latency_ms),
         })
         .collect();
     rows.sort_by(|a, b| a.stage.cmp(&b.stage));
@@ -533,6 +580,55 @@ fn view_single(output: &ViewBenchmarkOutput, path: &str, verbose: bool) {
         println!();
     }
 
+    if output.total_stage_usage.calls > 0 {
+        let mut total_rows = vec![
+            SingleConfigRow {
+                key: "input tok".into(),
+                value: output.total_stage_usage.input_tokens.to_string(),
+            },
+            SingleConfigRow {
+                key: "output tok".into(),
+                value: output.total_stage_usage.output_tokens.to_string(),
+            },
+            SingleConfigRow {
+                key: "total tok".into(),
+                value: output.total_stage_usage.total_tokens().to_string(),
+            },
+        ];
+        if output.total_stage_usage.has_cache_usage() {
+            total_rows.push(SingleConfigRow {
+                key: "cached tok".into(),
+                value: output.total_stage_usage.cached_prompt_tokens.to_string(),
+            });
+            total_rows.push(SingleConfigRow {
+                key: "cache read".into(),
+                value: output.total_stage_usage.cache_read_input_tokens.to_string(),
+            });
+            total_rows.push(SingleConfigRow {
+                key: "cache write".into(),
+                value: output
+                    .total_stage_usage
+                    .cache_creation_input_tokens
+                    .to_string(),
+            });
+        }
+        total_rows.push(SingleConfigRow {
+            key: "calls".into(),
+            value: output.total_stage_usage.calls.to_string(),
+        });
+        total_rows.push(SingleConfigRow {
+            key: "errors".into(),
+            value: output.total_stage_usage.errors.to_string(),
+        });
+        total_rows.push(SingleConfigRow {
+            key: "latency".into(),
+            value: fmt_ms(output.total_stage_usage.latency_ms),
+        });
+
+        println!("{}", Table::new(&total_rows).with(Style::rounded()));
+        println!();
+    }
+
     // Total time
     println!("Total time: {}", fmt_time(output.total_time_s));
 
@@ -544,7 +640,11 @@ fn view_single(output: &ViewBenchmarkOutput, path: &str, verbose: bool) {
             println!("(no question sidecar found)");
         } else {
             let mut sorted = questions;
-            sorted.sort_by(|a, b| a.category.cmp(&b.category).then(a.question_id.cmp(&b.question_id)));
+            sorted.sort_by(|a, b| {
+                a.category
+                    .cmp(&b.category)
+                    .then(a.question_id.cmp(&b.question_id))
+            });
             let q_rows: Vec<QuestionRow> = sorted
                 .iter()
                 .map(|q| QuestionRow {
@@ -588,17 +688,57 @@ fn view_compare(
 
     // Config comparison table
     let config_pairs: Vec<(&str, String, String)> = vec![
-        ("profile", a.manifest.profile.clone(), b.manifest.profile.clone()),
-        ("dataset", a.manifest.dataset_fingerprint.clone(), b.manifest.dataset_fingerprint.clone()),
-        ("consolidation", a.consolidation_strategy.clone(), b.consolidation_strategy.clone()),
-        ("instance_jobs", a.manifest.instance_concurrency.to_string(), b.manifest.instance_concurrency.to_string()),
-        ("retain_model", a.retain_model.clone(), b.retain_model.clone()),
-        ("reflect_model", a.reflect_model.clone(), b.reflect_model.clone()),
-        ("embedding_model", a.embedding_model.clone(), b.embedding_model.clone()),
-        ("reranker_model", a.reranker_model.clone(), b.reranker_model.clone()),
+        (
+            "profile",
+            a.manifest.profile.clone(),
+            b.manifest.profile.clone(),
+        ),
+        (
+            "dataset",
+            a.manifest.dataset_fingerprint.clone(),
+            b.manifest.dataset_fingerprint.clone(),
+        ),
+        (
+            "consolidation",
+            a.consolidation_strategy.clone(),
+            b.consolidation_strategy.clone(),
+        ),
+        (
+            "instance_jobs",
+            a.manifest.instance_concurrency.to_string(),
+            b.manifest.instance_concurrency.to_string(),
+        ),
+        (
+            "retain_model",
+            a.retain_model.clone(),
+            b.retain_model.clone(),
+        ),
+        (
+            "reflect_model",
+            a.reflect_model.clone(),
+            b.reflect_model.clone(),
+        ),
+        (
+            "embedding_model",
+            a.embedding_model.clone(),
+            b.embedding_model.clone(),
+        ),
+        (
+            "reranker_model",
+            a.reranker_model.clone(),
+            b.reranker_model.clone(),
+        ),
         ("judge_model", a.judge_model.clone(), b.judge_model.clone()),
-        ("tag", a.tag.clone().unwrap_or_default(), b.tag.clone().unwrap_or_default()),
-        ("commit", a.commit.clone().unwrap_or_default(), b.commit.clone().unwrap_or_default()),
+        (
+            "tag",
+            a.tag.clone().unwrap_or_default(),
+            b.tag.clone().unwrap_or_default(),
+        ),
+        (
+            "commit",
+            a.commit.clone().unwrap_or_default(),
+            b.commit.clone().unwrap_or_default(),
+        ),
         ("timestamp", a.timestamp.clone(), b.timestamp.clone()),
     ];
 
@@ -685,17 +825,15 @@ fn view_compare(
         .filter(|stage| {
             let sa = a.stage_metrics.get(*stage).unwrap_or(&default_stage);
             let sb = b.stage_metrics.get(*stage).unwrap_or(&default_stage);
-            sa.requests > 0 || sb.requests > 0
+            sa.calls > 0 || sb.calls > 0
         })
         .map(|stage| {
             let sa = a.stage_metrics.get(stage).unwrap_or(&default_stage);
             let sb = b.stage_metrics.get(stage).unwrap_or(&default_stage);
             CompareStageRow {
                 stage: stage.clone(),
-                req_a: sa.requests,
-                req_b: sb.requests,
-                tok_a: sa.total_tokens(),
-                tok_b: sb.total_tokens(),
+                val_a: fmt_stage_value(sa),
+                val_b: fmt_stage_value(sb),
                 delta_tok: fmt_cost_delta_u64(sa.total_tokens(), sb.total_tokens()),
             }
         })
@@ -708,6 +846,61 @@ fn view_compare(
                 .with(Style::rounded())
                 .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
         );
+        println!();
+    }
+
+    if a.total_stage_usage.calls > 0 || b.total_stage_usage.calls > 0 {
+        let mut total_rows = vec![
+            CompareConfigRow {
+                key: "input tok".into(),
+                val_a: a.total_stage_usage.input_tokens.to_string(),
+                val_b: b.total_stage_usage.input_tokens.to_string(),
+            },
+            CompareConfigRow {
+                key: "output tok".into(),
+                val_a: a.total_stage_usage.output_tokens.to_string(),
+                val_b: b.total_stage_usage.output_tokens.to_string(),
+            },
+            CompareConfigRow {
+                key: "total tok".into(),
+                val_a: a.total_stage_usage.total_tokens().to_string(),
+                val_b: b.total_stage_usage.total_tokens().to_string(),
+            },
+        ];
+        if a.total_stage_usage.has_cache_usage() || b.total_stage_usage.has_cache_usage() {
+            total_rows.push(CompareConfigRow {
+                key: "cached tok".into(),
+                val_a: a.total_stage_usage.cached_prompt_tokens.to_string(),
+                val_b: b.total_stage_usage.cached_prompt_tokens.to_string(),
+            });
+            total_rows.push(CompareConfigRow {
+                key: "cache read".into(),
+                val_a: a.total_stage_usage.cache_read_input_tokens.to_string(),
+                val_b: b.total_stage_usage.cache_read_input_tokens.to_string(),
+            });
+            total_rows.push(CompareConfigRow {
+                key: "cache write".into(),
+                val_a: a.total_stage_usage.cache_creation_input_tokens.to_string(),
+                val_b: b.total_stage_usage.cache_creation_input_tokens.to_string(),
+            });
+        }
+        total_rows.push(CompareConfigRow {
+            key: "calls".into(),
+            val_a: a.total_stage_usage.calls.to_string(),
+            val_b: b.total_stage_usage.calls.to_string(),
+        });
+        total_rows.push(CompareConfigRow {
+            key: "errors".into(),
+            val_a: a.total_stage_usage.errors.to_string(),
+            val_b: b.total_stage_usage.errors.to_string(),
+        });
+        total_rows.push(CompareConfigRow {
+            key: "latency".into(),
+            val_a: fmt_ms(a.total_stage_usage.latency_ms),
+            val_b: fmt_ms(b.total_stage_usage.latency_ms),
+        });
+
+        println!("{}", Table::new(&total_rows).with(Style::rounded()));
         println!();
     }
 
@@ -727,11 +920,17 @@ fn view_compare(
             println!();
             println!("(no question sidecars found)");
         } else {
-            let map_b: BTreeMap<&str, &ViewQuestionResult> =
-                questions_b.iter().map(|q| (q.question_id.as_str(), q)).collect();
+            let map_b: BTreeMap<&str, &ViewQuestionResult> = questions_b
+                .iter()
+                .map(|q| (q.question_id.as_str(), q))
+                .collect();
 
             let mut sorted_a = questions_a.iter().collect::<Vec<_>>();
-            sorted_a.sort_by(|x, y| x.category.cmp(&y.category).then(x.question_id.cmp(&y.question_id)));
+            sorted_a.sort_by(|x, y| {
+                x.category
+                    .cmp(&y.category)
+                    .then(x.question_id.cmp(&y.question_id))
+            });
 
             let q_rows: Vec<CompareQuestionRow> = sorted_a
                 .iter()
@@ -741,7 +940,9 @@ fn view_compare(
                         question_id: qa.question_id.clone(),
                         category: qa.category.clone(),
                         a: question_mark(qa.judge_correct),
-                        b: qb.map(|q| question_mark(q.judge_correct)).unwrap_or_else(|| "-".into()),
+                        b: qb
+                            .map(|q| question_mark(q.judge_correct))
+                            .unwrap_or_else(|| "-".into()),
                     }
                 })
                 .collect();
@@ -914,24 +1115,39 @@ mod tests {
             "reflect".into(),
             ViewStageUsage {
                 input_tokens: 600000,
+                cached_prompt_tokens: 500000,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
                 output_tokens: 25000,
-                requests: 500,
+                calls: 500,
+                errors: 0,
+                latency_ms: 120000,
             },
         );
         stage_metrics.insert(
             "judge".into(),
             ViewStageUsage {
                 input_tokens: 200000,
+                cached_prompt_tokens: 0,
+                cache_read_input_tokens: 150000,
+                cache_creation_input_tokens: 10000,
                 output_tokens: 10000,
-                requests: 500,
+                calls: 500,
+                errors: 0,
+                latency_ms: 45000,
             },
         );
         stage_metrics.insert(
             "unused".into(),
             ViewStageUsage {
                 input_tokens: 0,
+                cached_prompt_tokens: 0,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
                 output_tokens: 0,
-                requests: 0,
+                calls: 0,
+                errors: 0,
+                latency_ms: 0,
             },
         );
 
@@ -947,6 +1163,8 @@ mod tests {
         assert_eq!(rows[1].stage, "reflect");
         assert_eq!(rows[1].input_tok, 600000);
         assert_eq!(rows[1].output_tok, 25000);
+        assert_eq!(rows[1].cached_tok, 500000);
+        assert_eq!(rows[1].calls, 500);
     }
 
     #[test]
@@ -966,10 +1184,16 @@ mod tests {
     fn test_view_stage_usage_total_tokens() {
         let usage = ViewStageUsage {
             input_tokens: 1000,
+            cached_prompt_tokens: 600,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
             output_tokens: 200,
-            requests: 5,
+            calls: 5,
+            errors: 0,
+            latency_ms: 1000,
         };
         assert_eq!(usage.total_tokens(), 1200);
+        assert!(usage.has_cache_usage());
     }
 
     #[test]
@@ -1005,8 +1229,18 @@ mod tests {
                 "abstention": {"accuracy": 0.80, "count": 50}
             },
             "stage_metrics": {
-                "retain_extract": {"input_tokens": 1000, "output_tokens": 200, "requests": 10},
-                "reflect": {"input_tokens": 500, "output_tokens": 100, "requests": 5}
+                "retain_extract": {"input_tokens": 1000, "cached_prompt_tokens": 800, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, "output_tokens": 200, "calls": 10, "errors": 0, "latency_ms": 1000},
+                "reflect": {"input_tokens": 500, "cached_prompt_tokens": 0, "cache_read_input_tokens": 300, "cache_creation_input_tokens": 20, "output_tokens": 100, "calls": 5, "errors": 1, "latency_ms": 500}
+            },
+            "total_stage_usage": {
+                "input_tokens": 1500,
+                "cached_prompt_tokens": 800,
+                "cache_read_input_tokens": 300,
+                "cache_creation_input_tokens": 20,
+                "output_tokens": 300,
+                "calls": 15,
+                "errors": 1,
+                "latency_ms": 1500
             },
             "total_time_s": 120.5
         }"#;
@@ -1016,7 +1250,31 @@ mod tests {
         assert_eq!(output.accuracy, 0.85);
         assert_eq!(output.per_category.len(), 2);
         assert_eq!(output.stage_metrics.len(), 2);
+        assert_eq!(output.total_stage_usage.calls, 15);
+        assert_eq!(
+            output.stage_metrics["retain_extract"].cached_prompt_tokens,
+            800
+        );
         assert_eq!(output.total_time_s, 120.5);
+    }
+
+    #[test]
+    fn test_deserialize_stage_usage_legacy_aliases() {
+        let json = r#"{
+            "stage_metrics": {
+                "reflect": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 20,
+                    "requests": 3
+                }
+            }
+        }"#;
+
+        let output: ViewBenchmarkOutput = serde_json::from_str(json).unwrap();
+        let usage = &output.stage_metrics["reflect"];
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.output_tokens, 20);
+        assert_eq!(usage.calls, 3);
     }
 
     #[test]

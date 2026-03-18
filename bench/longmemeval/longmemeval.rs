@@ -773,7 +773,9 @@ fn print_help() {
     );
     eprintln!();
     eprintln!("Options:");
-    eprintln!("  --profile <NAME>                Named profile for `run`/`ingest` [default: full-s]");
+    eprintln!(
+        "  --profile <NAME>                Named profile for `run`/`ingest` [default: full-s]"
+    );
     eprintln!("                                  Profiles: smoke, full-s, full-m");
     eprintln!("  --config <PATH>                 JSON config file for `run`/`ingest`");
     eprintln!(
@@ -795,12 +797,8 @@ fn print_help() {
     eprintln!(
         "  --session-limit <N>             Limit sessions per instance (`run`/`ingest` only)"
     );
-    eprintln!(
-        "  --instance-limit <N>            Limit number of instances (`run`/`ingest` only)"
-    );
-    eprintln!(
-        "  --instance-offset <N>           Skip first N instances (`run`/`ingest` only)"
-    );
+    eprintln!("  --instance-limit <N>            Limit number of instances (`run`/`ingest` only)");
+    eprintln!("  --instance-offset <N>           Skip first N instances (`run`/`ingest` only)");
 }
 
 // --- Artifact types ---
@@ -845,6 +843,8 @@ struct BenchmarkOutput {
     instance_status: HashMap<String, InstanceStatus>,
     #[serde(default)]
     stage_metrics: BTreeMap<LlmStage, StageUsage>,
+    #[serde(default)]
+    total_stage_usage: StageUsage,
     #[serde(default)]
     total_time_s: f64,
 }
@@ -1012,9 +1012,11 @@ fn git_dirty_worktree() -> Option<bool> {
         return None;
     }
     let stdout = String::from_utf8(output.stdout).ok()?;
-    Some(stdout.lines().any(|line| {
-        !line.trim().is_empty() && !is_generated_bench_artifact_path(&line[3..])
-    }))
+    Some(
+        stdout
+            .lines()
+            .any(|line| !line.trim().is_empty() && !is_generated_bench_artifact_path(&line[3..])),
+    )
 }
 
 // --- Output safety ---
@@ -1100,7 +1102,9 @@ fn run_config_from_artifact(artifact: &BenchmarkOutput) -> Result<RunConfig, Str
         "per-session" => ConsolidationMode::PerSession,
         "off" => ConsolidationMode::Off,
         other => {
-            return Err(format!("unknown consolidation strategy in artifact: {other}"))
+            return Err(format!(
+                "unknown consolidation strategy in artifact: {other}"
+            ));
         }
     };
 
@@ -1211,8 +1215,7 @@ impl SharedState {
     fn update_instance_status(&mut self, question_id: &str, status: InstanceStatus) {
         self.banks
             .insert(question_id.to_string(), status.bank_id.clone());
-        self.instance_status
-            .insert(question_id.to_string(), status);
+        self.instance_status.insert(question_id.to_string(), status);
         self.flush();
     }
 
@@ -1244,6 +1247,7 @@ impl SharedState {
                 debug_path: self.debug_path.display().to_string(),
             },
             stage_metrics: self.metrics.snapshot(),
+            total_stage_usage: self.metrics.total_usage(),
             total_time_s: self.bench_start.elapsed().as_secs_f64(),
         }
     }
@@ -1638,6 +1642,7 @@ fn merge_artifacts(
             debug_path: debug_path.display().to_string(),
         },
         stage_metrics: metrics.snapshot(),
+        total_stage_usage: metrics.total_usage(),
         total_time_s,
     };
     let json = serde_json::to_string_pretty(&output).expect("serialize merged output");
@@ -1716,7 +1721,10 @@ async fn main() {
         });
         let sa = SourceArtifact {
             path: path.display().to_string(),
-            fingerprint: format!("{:016x}", common::fingerprint::fnv1a64(&fs::read(path).unwrap_or_default())),
+            fingerprint: format!(
+                "{:016x}",
+                common::fingerprint::fnv1a64(&fs::read(path).unwrap_or_default())
+            ),
             mode: art.manifest.mode.clone(),
             tag: art.tag.clone(),
             commit: art.commit.clone(),
@@ -1736,11 +1744,10 @@ async fn main() {
     }
 
     // Load dataset
-    let (mut instances, dataset_fingerprint) =
-        load_dataset(&config.dataset).unwrap_or_else(|e| {
-            eprintln!("{e}");
-            std::process::exit(1);
-        });
+    let (mut instances, dataset_fingerprint) = load_dataset(&config.dataset).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(1);
+    });
 
     // Filter by --instance
     if !config.instances.is_empty() {
@@ -1854,7 +1861,9 @@ async fn main() {
         if let Ok(bytes) = fs::read(&output_path) {
             if let Ok(existing) = serde_json::from_slice::<BenchmarkOutput>(&bytes) {
                 for (qid, bid) in &existing.banks {
-                    existing_banks.entry(qid.clone()).or_insert_with(|| bid.clone());
+                    existing_banks
+                        .entry(qid.clone())
+                        .or_insert_with(|| bid.clone());
                 }
                 resume_instance_status = existing.instance_status;
             }
@@ -2228,9 +2237,7 @@ async fn main() {
                 .map(|s| !s.consolidation_complete)
                 .unwrap_or(true);
 
-            if need_consolidation
-                && consolidation.enabled()
-                && !matches!(command, BenchCommand::Qa)
+            if need_consolidation && consolidation.enabled() && !matches!(command, BenchCommand::Qa)
             {
                 let bid: elephant::types::id::BankId = bank_id_str
                     .parse()
@@ -2581,6 +2588,7 @@ mod tests {
             },
             artifacts: BenchmarkArtifacts::default(),
             stage_metrics: BTreeMap::new(),
+            total_stage_usage: StageUsage::default(),
             total_time_s: 0.0,
         };
         fs::write(&artifact, serde_json::to_string(&output).unwrap()).unwrap();
@@ -2694,9 +2702,7 @@ mod tests {
         let raw = vec![s("bin"), s("run"), s("--resume"), s("--force")];
         let result = parse_args_from(&raw);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .contains("mutually exclusive"));
+        assert!(result.unwrap_err().contains("mutually exclusive"));
     }
 
     #[test]
@@ -3228,6 +3234,7 @@ mod tests {
             manifest: BenchmarkManifest::default(),
             artifacts: BenchmarkArtifacts::default(),
             stage_metrics: BTreeMap::new(),
+            total_stage_usage: StageUsage::default(),
             total_time_s: 42.0,
         };
 
@@ -3419,6 +3426,7 @@ mod tests {
             manifest: BenchmarkManifest::default(),
             artifacts: BenchmarkArtifacts::default(),
             stage_metrics: BTreeMap::new(),
+            total_stage_usage: StageUsage::default(),
             total_time_s: 0.0,
         };
 
@@ -3480,32 +3488,21 @@ mod tests {
 
     #[test]
     fn safety_allows_nonexistent_output() {
-        let dir = env::temp_dir().join(format!(
-            "longmemeval-safety-nofile-{}",
-            std::process::id()
-        ));
+        let dir = env::temp_dir().join(format!("longmemeval-safety-nofile-{}", std::process::id()));
         let output = dir.join("nonexistent.json");
         assert!(ensure_output_paths_are_safe(BenchCommand::Run, &output, None, &[], false).is_ok());
     }
 
     #[test]
     fn safety_qa_blocks_overwriting_source_artifact() {
-        let dir = env::temp_dir().join(format!(
-            "longmemeval-safety-qa-{}",
-            std::process::id()
-        ));
+        let dir = env::temp_dir().join(format!("longmemeval-safety-qa-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let artifact = dir.join("artifact.json");
         fs::write(&artifact, "{}").unwrap();
 
-        let err = ensure_output_paths_are_safe(
-            BenchCommand::Qa,
-            &artifact,
-            Some(&artifact),
-            &[],
-            false,
-        )
-        .unwrap_err();
+        let err =
+            ensure_output_paths_are_safe(BenchCommand::Qa, &artifact, Some(&artifact), &[], false)
+                .unwrap_err();
         assert!(err.contains("source artifact"));
 
         fs::remove_dir_all(&dir).ok();
@@ -3533,10 +3530,7 @@ mod tests {
 
     #[test]
     fn load_benchmark_output_parses_valid_json() {
-        let dir = env::temp_dir().join(format!(
-            "longmemeval-load-artifact-{}",
-            std::process::id()
-        ));
+        let dir = env::temp_dir().join(format!("longmemeval-load-artifact-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("test-artifact.json");
 
@@ -3567,6 +3561,7 @@ mod tests {
             },
             artifacts: BenchmarkArtifacts::default(),
             stage_metrics: BTreeMap::new(),
+            total_stage_usage: StageUsage::default(),
             total_time_s: 10.0,
         };
         let json = serde_json::to_string_pretty(&output).unwrap();
@@ -3612,6 +3607,7 @@ mod tests {
             },
             artifacts: BenchmarkArtifacts::default(),
             stage_metrics: BTreeMap::new(),
+            total_stage_usage: StageUsage::default(),
             total_time_s: 10.0,
         };
 
@@ -3749,12 +3745,8 @@ mod tests {
 
     #[test]
     fn render_judge_prompt_replaces_placeholders() {
-        let rendered = render_judge_prompt(
-            JUDGE_FACTUAL,
-            "What color?",
-            "blue",
-            "The color is blue.",
-        );
+        let rendered =
+            render_judge_prompt(JUDGE_FACTUAL, "What color?", "blue", "The color is blue.");
         assert!(rendered.contains("What color?"));
         assert!(rendered.contains("blue"));
         assert!(rendered.contains("The color is blue."));
@@ -3919,10 +3911,7 @@ mod tests {
         ];
         let parsed = parse_cli_overrides(&raw).unwrap();
         assert_eq!(parsed.command, BenchCommand::Merge);
-        assert_eq!(
-            parsed.overrides.output,
-            Some(PathBuf::from("out.json"))
-        );
+        assert_eq!(parsed.overrides.output, Some(PathBuf::from("out.json")));
     }
 
     #[test]
@@ -4043,6 +4032,7 @@ mod tests {
                 debug_path: debug_rel,
             },
             stage_metrics: BTreeMap::new(),
+            total_stage_usage: StageUsage::default(),
             total_time_s: 10.0,
         };
 
@@ -4082,10 +4072,8 @@ mod tests {
 
     #[test]
     fn merge_combines_disjoint_subset_artifacts() {
-        let dir = env::temp_dir().join(format!(
-            "longmemeval-merge-disjoint-{}",
-            std::process::id()
-        ));
+        let dir =
+            env::temp_dir().join(format!("longmemeval-merge-disjoint-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
 
         let q1 = make_test_qr("q1", true);
@@ -4132,10 +4120,7 @@ mod tests {
 
     #[test]
     fn merge_rejects_overlapping_questions() {
-        let dir = env::temp_dir().join(format!(
-            "longmemeval-merge-overlap-{}",
-            std::process::id()
-        ));
+        let dir = env::temp_dir().join(format!("longmemeval-merge-overlap-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
 
         let q1 = make_test_qr("q1", true);
@@ -4158,10 +4143,7 @@ mod tests {
 
     #[test]
     fn merge_output_must_differ_from_inputs_without_force() {
-        let dir = env::temp_dir().join(format!(
-            "longmemeval-merge-safety-{}",
-            std::process::id()
-        ));
+        let dir = env::temp_dir().join(format!("longmemeval-merge-safety-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let input_a = dir.join("a.json");
         fs::write(&input_a, "{}").unwrap();

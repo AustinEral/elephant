@@ -170,6 +170,12 @@ struct StageUsage {
     #[serde(alias = "prompt_tokens")]
     input_tokens: u64,
     #[serde(default)]
+    cached_prompt_tokens: u64,
+    #[serde(default)]
+    cache_read_input_tokens: u64,
+    #[serde(default)]
+    cache_creation_input_tokens: u64,
+    #[serde(default)]
     #[serde(alias = "completion_tokens")]
     output_tokens: u64,
     #[serde(default)]
@@ -183,6 +189,12 @@ struct StageUsage {
 impl StageUsage {
     fn total_tokens(&self) -> u64 {
         self.input_tokens + self.output_tokens
+    }
+
+    fn has_cache_usage(&self) -> bool {
+        self.cached_prompt_tokens > 0
+            || self.cache_read_input_tokens > 0
+            || self.cache_creation_input_tokens > 0
     }
 }
 
@@ -350,7 +362,15 @@ fn fmt_stage_value(usage: &StageUsage) -> String {
     if usage.calls == 0 {
         "-".into()
     } else {
-        format!("{} tok / {} calls", usage.total_tokens(), usage.calls)
+        format!(
+            "{} in / {} out / {} cached / {} read / {} write / {} calls",
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cached_prompt_tokens,
+            usage.cache_read_input_tokens,
+            usage.cache_creation_input_tokens,
+            usage.calls,
+        )
     }
 }
 
@@ -609,7 +629,11 @@ struct SingleQuestionRow {
 #[derive(Tabled)]
 struct StageRow {
     stage: String,
-    tokens: String,
+    input_tok: u64,
+    output_tok: u64,
+    cached_tok: u64,
+    cache_read: u64,
+    cache_write: u64,
     calls: u64,
     errors: u64,
     latency: String,
@@ -968,9 +992,34 @@ fn view_single(output: &BenchmarkOutput, path: &str) {
     });
     if output.total_stage_usage.calls > 0 {
         metrics_rows.push(SingleConfigRow {
-            key: "tokens".into(),
+            key: "input tok".into(),
+            value: output.total_stage_usage.input_tokens.to_string(),
+        });
+        metrics_rows.push(SingleConfigRow {
+            key: "output tok".into(),
+            value: output.total_stage_usage.output_tokens.to_string(),
+        });
+        metrics_rows.push(SingleConfigRow {
+            key: "total tok".into(),
             value: output.total_stage_usage.total_tokens().to_string(),
         });
+        if output.total_stage_usage.has_cache_usage() {
+            metrics_rows.push(SingleConfigRow {
+                key: "cached tok".into(),
+                value: output.total_stage_usage.cached_prompt_tokens.to_string(),
+            });
+            metrics_rows.push(SingleConfigRow {
+                key: "cache read".into(),
+                value: output.total_stage_usage.cache_read_input_tokens.to_string(),
+            });
+            metrics_rows.push(SingleConfigRow {
+                key: "cache write".into(),
+                value: output
+                    .total_stage_usage
+                    .cache_creation_input_tokens
+                    .to_string(),
+            });
+        }
         metrics_rows.push(SingleConfigRow {
             key: "calls".into(),
             value: output.total_stage_usage.calls.to_string(),
@@ -1002,7 +1051,11 @@ fn view_single(output: &BenchmarkOutput, path: &str) {
             .iter()
             .map(|(stage, usage)| StageRow {
                 stage: stage.clone(),
-                tokens: usage.total_tokens().to_string(),
+                input_tok: usage.input_tokens,
+                output_tok: usage.output_tokens,
+                cached_tok: usage.cached_prompt_tokens,
+                cache_read: usage.cache_read_input_tokens,
+                cache_write: usage.cache_creation_input_tokens,
                 calls: usage.calls,
                 errors: usage.errors,
                 latency: fmt_ms(usage.latency_ms),
@@ -1613,7 +1666,25 @@ fn main() {
 
     if a.total_stage_usage.calls > 0 || b.total_stage_usage.calls > 0 {
         metrics_rows.push(MetricsRow {
-            metric: "tokens".into(),
+            metric: "input tok".into(),
+            val_a: a.total_stage_usage.input_tokens.to_string(),
+            val_b: b.total_stage_usage.input_tokens.to_string(),
+            delta: fmt_cost_delta_u64(
+                a.total_stage_usage.input_tokens,
+                b.total_stage_usage.input_tokens,
+            ),
+        });
+        metrics_rows.push(MetricsRow {
+            metric: "output tok".into(),
+            val_a: a.total_stage_usage.output_tokens.to_string(),
+            val_b: b.total_stage_usage.output_tokens.to_string(),
+            delta: fmt_cost_delta_u64(
+                a.total_stage_usage.output_tokens,
+                b.total_stage_usage.output_tokens,
+            ),
+        });
+        metrics_rows.push(MetricsRow {
+            metric: "total tok".into(),
             val_a: a.total_stage_usage.total_tokens().to_string(),
             val_b: b.total_stage_usage.total_tokens().to_string(),
             delta: fmt_cost_delta_u64(
@@ -1621,6 +1692,35 @@ fn main() {
                 b.total_stage_usage.total_tokens(),
             ),
         });
+        if a.total_stage_usage.has_cache_usage() || b.total_stage_usage.has_cache_usage() {
+            metrics_rows.push(MetricsRow {
+                metric: "cached tok".into(),
+                val_a: a.total_stage_usage.cached_prompt_tokens.to_string(),
+                val_b: b.total_stage_usage.cached_prompt_tokens.to_string(),
+                delta: fmt_cost_delta_u64(
+                    a.total_stage_usage.cached_prompt_tokens,
+                    b.total_stage_usage.cached_prompt_tokens,
+                ),
+            });
+            metrics_rows.push(MetricsRow {
+                metric: "cache read".into(),
+                val_a: a.total_stage_usage.cache_read_input_tokens.to_string(),
+                val_b: b.total_stage_usage.cache_read_input_tokens.to_string(),
+                delta: fmt_cost_delta_u64(
+                    a.total_stage_usage.cache_read_input_tokens,
+                    b.total_stage_usage.cache_read_input_tokens,
+                ),
+            });
+            metrics_rows.push(MetricsRow {
+                metric: "cache write".into(),
+                val_a: a.total_stage_usage.cache_creation_input_tokens.to_string(),
+                val_b: b.total_stage_usage.cache_creation_input_tokens.to_string(),
+                delta: fmt_cost_delta_u64(
+                    a.total_stage_usage.cache_creation_input_tokens,
+                    b.total_stage_usage.cache_creation_input_tokens,
+                ),
+            });
+        }
         metrics_rows.push(MetricsRow {
             metric: "calls".into(),
             val_a: a.total_stage_usage.calls.to_string(),

@@ -64,10 +64,26 @@ Implement automatic prompt caching support for OpenAI and Anthropic across all L
 
 ### Benchmark support
 
-- extend benchmark stage metrics output
-- extend benchmark view output
-- show cache counters by stage
+- persist the full `StageUsage` shape anywhere benchmark stage usage is already stored
+- keep benchmark metrics additive and mergeable at every existing scope:
+  - per-conversation
+  - per-run stage totals
+  - overall run totals
+- preserve raw cache metric types in artifacts:
+  - `cached_prompt_tokens`
+  - `cache_read_input_tokens`
+  - `cache_creation_input_tokens`
+- render cache usage in benchmark views alongside the existing token/call metrics
+- update benchmark readers to deserialize the full `StageUsage` shape with defaults
 - keep old artifacts readable
+
+### Phase 3 contract
+
+- benchmark artifacts must carry the same token/call/cache metrics at every level that already stores stage usage
+- benchmark views must be able to merge and display cache metrics the same way they already handle other stage-usage fields
+- token counts must remain available both per stage and in aggregates
+- cache metric type must be preserved; do not collapse provider-specific cache fields into a single synthetic metric
+- storage keeps the raw metrics, and the views surface them directly
 
 ## Implementation order
 

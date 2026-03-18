@@ -31,8 +31,8 @@ use elephant::runtime::{
     RuntimeTuning as ElephantRuntimeTuning, build_runtime_from_env,
 };
 use elephant::types::{
-    BankId, Disposition, MemoryBank, NetworkType, ReflectDoneTrace,
-    ReflectQuery, RetainInput, RetrievalSource, TurnId,
+    BankId, Disposition, MemoryBank, NetworkType, ReflectDoneTrace, ReflectQuery, RetainInput,
+    RetrievalSource, TurnId,
 };
 
 // --- LoCoMo dataset types ---
@@ -3555,12 +3555,23 @@ async fn main() {
         fmt_elapsed(total_qa_time_s),
     );
     println!(
-        "Stage usage: {} prompt + {} completion = {} total tokens across {} calls",
+        "Stage usage: {} input + {} output = {} total tokens across {} calls",
         total_stage_usage.input_tokens,
         total_stage_usage.output_tokens,
         total_stage_usage.total_tokens(),
         total_stage_usage.calls,
     );
+    if total_stage_usage.cached_prompt_tokens > 0
+        || total_stage_usage.cache_read_input_tokens > 0
+        || total_stage_usage.cache_creation_input_tokens > 0
+    {
+        println!(
+            "Cache usage: {} cached prompt | {} cache read | {} cache write",
+            total_stage_usage.cached_prompt_tokens,
+            total_stage_usage.cache_read_input_tokens,
+            total_stage_usage.cache_creation_input_tokens,
+        );
+    }
     if total_correct > 0 {
         println!(
             "Tokens per correct: {:.1}",
@@ -3612,9 +3623,9 @@ mod tests {
                 LlmStage::Reflect,
                 StageUsage {
                     input_tokens: 10,
-                    cached_prompt_tokens: 0,
-                    cache_read_input_tokens: 0,
-                    cache_creation_input_tokens: 0,
+                    cached_prompt_tokens: 7,
+                    cache_read_input_tokens: 5,
+                    cache_creation_input_tokens: 2,
                     output_tokens: 5,
                     calls: 1,
                     errors: 0,
@@ -3662,9 +3673,9 @@ mod tests {
 
         let stage_usage = StageUsage {
             input_tokens: 10,
-            cached_prompt_tokens: 0,
-            cache_read_input_tokens: 0,
-            cache_creation_input_tokens: 0,
+            cached_prompt_tokens: 7,
+            cache_read_input_tokens: 5,
+            cache_creation_input_tokens: 2,
             output_tokens: 5,
             calls: 1,
             errors: 0,
@@ -4205,6 +4216,28 @@ mod tests {
         assert_eq!(merged_bundle.output.manifest.source_artifacts.len(), 2);
         assert!((merged_bundle.output.accuracy - 0.5).abs() < f64::EPSILON);
         assert_eq!(merged_bundle.output.total_stage_usage.total_tokens(), 30);
+        assert_eq!(
+            merged_bundle.output.total_stage_usage.cached_prompt_tokens,
+            14
+        );
+        assert_eq!(
+            merged_bundle
+                .output
+                .total_stage_usage
+                .cache_read_input_tokens,
+            10
+        );
+        assert_eq!(
+            merged_bundle
+                .output
+                .total_stage_usage
+                .cache_creation_input_tokens,
+            4
+        );
+        assert_eq!(
+            merged_bundle.questions[0].qa_stage_metrics[&LlmStage::Reflect].cached_prompt_tokens,
+            7
+        );
 
         fs::remove_dir_all(&test_dir).ok();
     }
