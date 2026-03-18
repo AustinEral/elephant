@@ -21,7 +21,7 @@ pub use llm::{
     Message, OpenAiPromptCacheConfig, OpenAiPromptCacheRetention, PromptCacheConfig,
     PromptCacheUsage,
 };
-pub use network::NetworkType;
+pub use network::{ExtractedNetworkType, NetworkType};
 pub use pipeline::{
     AssembledContext, BankPromptContext, Chunk, ChunkConfig, ConsolidationReport, ExtractedFact,
     ExtractionInput, FactFilter, OpinionMergeReport, RecallQuery, RecallResult, ReflectDoneTrace,

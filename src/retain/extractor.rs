@@ -114,7 +114,7 @@ mod tests {
 
     use super::*;
     use crate::llm::mock::MockLlmClient;
-    use crate::types::{BankId, FactType, NetworkType};
+    use crate::types::{BankId, ExtractedNetworkType, FactType};
 
     #[tokio::test]
     async fn extract_parses_valid_json() {
@@ -122,7 +122,7 @@ mod tests {
             ExtractedFact {
                 content: "Rust uses ownership for memory safety".into(),
                 fact_type: FactType::World,
-                network: NetworkType::World,
+                network: ExtractedNetworkType::World,
                 entity_mentions: vec!["Rust".into()],
                 temporal_range: None,
                 confidence: None,
@@ -130,7 +130,7 @@ mod tests {
             ExtractedFact {
                 content: "The team chose Postgres over MongoDB".into(),
                 fact_type: FactType::Experience,
-                network: NetworkType::Experience,
+                network: ExtractedNetworkType::Experience,
                 entity_mentions: vec!["Postgres".into(), "MongoDB".into()],
                 temporal_range: None,
                 confidence: None,
@@ -163,7 +163,7 @@ mod tests {
         let json = serde_json::to_string(&vec![ExtractedFact {
             content: "Python is popular".into(),
             fact_type: FactType::World,
-            network: NetworkType::World,
+            network: ExtractedNetworkType::World,
             entity_mentions: vec!["Python".into()],
             temporal_range: None,
             confidence: None,

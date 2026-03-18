@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use super::entity::EntityType;
 use super::fact::{Fact, FactType, RetrievalSource, ScoredFact};
 use super::id::{BankId, EntityId, FactId, SourceId, TurnId};
-use super::network::NetworkType;
+use super::network::{ExtractedNetworkType, NetworkType};
 use super::temporal::TemporalRange;
 
 // --- Retain pipeline ---
@@ -112,7 +112,7 @@ pub struct ExtractedFact {
     /// Extracted fact type.
     pub fact_type: FactType,
     /// Which network this should be stored in.
-    pub network: NetworkType,
+    pub network: ExtractedNetworkType,
     /// Entity names mentioned (not yet resolved to IDs).
     pub entity_mentions: Vec<String>,
     /// Optional temporal range.
@@ -452,7 +452,7 @@ mod tests {
         let ef = ExtractedFact {
             content: "Rust uses ownership for memory safety".into(),
             fact_type: FactType::World,
-            network: NetworkType::World,
+            network: ExtractedNetworkType::World,
             entity_mentions: vec!["Rust".into()],
             temporal_range: None,
             confidence: None,

@@ -57,6 +57,8 @@ struct OpenAiRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    max_completion_tokens: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<OpenAiTool>>,
@@ -66,6 +68,13 @@ struct OpenAiRequest {
     prompt_cache_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     prompt_cache_retention: Option<OpenAiPromptCacheRetention>,
+}
+
+fn openai_uses_max_completion_tokens(model: &str) -> bool {
+    model.starts_with("gpt-5")
+        || model.starts_with("o1")
+        || model.starts_with("o3")
+        || model.starts_with("o4")
 }
 
 #[derive(Serialize, Default)]
@@ -314,9 +323,18 @@ impl LlmClient for OpenAiClient {
         });
 
         let body = OpenAiRequest {
-            model,
+            model: model.clone(),
             messages,
-            max_tokens: request.max_tokens,
+            max_tokens: if openai_uses_max_completion_tokens(&model) {
+                None
+            } else {
+                request.max_tokens
+            },
+            max_completion_tokens: if openai_uses_max_completion_tokens(&model) {
+                request.max_tokens
+            } else {
+                None
+            },
             temperature: request.temperature,
             tools,
             tool_choice,
@@ -366,6 +384,7 @@ mod tests {
                 ..Default::default()
             }],
             max_tokens: Some(128),
+            max_completion_tokens: None,
             temperature: Some(0.0),
             tools: None,
             tool_choice: None,
@@ -376,6 +395,32 @@ mod tests {
         let value = serde_json::to_value(&body).unwrap();
         assert_eq!(value["prompt_cache_key"], "elephant:reflect");
         assert_eq!(value["prompt_cache_retention"], "24h");
+    }
+
+    #[test]
+    fn uses_max_completion_tokens_for_gpt5_models() {
+        let body = OpenAiRequest {
+            model: "gpt-5".into(),
+            messages: vec![OpenAiMessage {
+                role: "user".into(),
+                content: Some("hello".into()),
+                ..Default::default()
+            }],
+            max_tokens: None,
+            max_completion_tokens: Some(128),
+            temperature: Some(0.0),
+            tools: None,
+            tool_choice: None,
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
+        };
+
+        let value = serde_json::to_value(&body).unwrap();
+        assert!(openai_uses_max_completion_tokens("gpt-5"));
+        assert!(openai_uses_max_completion_tokens("o3"));
+        assert!(!openai_uses_max_completion_tokens("gpt-4o"));
+        assert_eq!(value["max_completion_tokens"], 128);
+        assert!(value.get("max_tokens").is_none());
     }
 
     #[test]
