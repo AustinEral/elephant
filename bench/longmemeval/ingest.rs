@@ -283,7 +283,11 @@ pub async fn ingest_instance(
         let content = match config.format {
             IngestFormat::Text => format_session_text(session, date_str),
             IngestFormat::Json => {
-                format!("{}\n\n{}", parse_date_prefix(date_str), format_session_json(session))
+                format!(
+                    "{}\n\n{}",
+                    parse_date_prefix(date_str),
+                    format_session_json(session)
+                )
             }
         };
         let timestamp = parse_haystack_date(date_str);
@@ -321,7 +325,9 @@ pub async fn ingest_instance(
             Err(e) => {
                 eprintln!(
                     "  {} ingest [{}/{}] FAILED: {e}",
-                    instance.question_id, idx + 1, ingest_count,
+                    instance.question_id,
+                    idx + 1,
+                    ingest_count,
                 );
                 stats.session_failures += 1;
             }
@@ -385,10 +391,7 @@ pub async fn ingest_instance(
 
         let qid = &instance.question_id;
         while let Some(p) = rx.recv().await {
-            if p.batch_index == 1
-                || p.batch_index == p.total_batches
-                || p.batch_index % 10 == 0
-            {
+            if p.batch_index == 1 || p.batch_index == p.total_batches || p.batch_index % 10 == 0 {
                 eprintln!(
                     "  {} consolidate [{}/{}] | {} facts | {} created | {} updated | {:.1}s",
                     qid,

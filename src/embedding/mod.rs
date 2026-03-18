@@ -59,7 +59,11 @@ pub fn config_from_env() -> Result<EmbeddingConfig> {
     {
         "openai" => EmbeddingProvider::OpenAi,
         "local" => EmbeddingProvider::Local,
-        other => return Err(Error::Internal(format!("unknown EMBEDDING_PROVIDER: {other}"))),
+        other => {
+            return Err(Error::Internal(format!(
+                "unknown EMBEDDING_PROVIDER: {other}"
+            )));
+        }
     };
 
     Ok(EmbeddingConfig {

@@ -10,10 +10,10 @@ use crate::consolidation::opinion_merger;
 use crate::consolidation::{ConsolidationConfig, DefaultConsolidator, DefaultOpinionMerger};
 use crate::embedding::{self, EmbeddingClient, EmbeddingConfig, EmbeddingProvider};
 use crate::error::{Error, Result};
-use crate::llm::{self, LlmClient};
 use crate::llm::anthropic::AnthropicClient;
 use crate::llm::openai::OpenAiClient;
 use crate::llm::retry::{RetryPolicy, RetryingLlmClient};
+use crate::llm::{self, LlmClient};
 use crate::metrics::{LlmStage, MeteredLlmClient, MetricsCollector};
 use crate::recall::DefaultRecallPipeline;
 use crate::recall::RecallPipeline;
@@ -31,8 +31,8 @@ use crate::retain::resolver::{self, LayeredEntityResolver};
 use crate::retain::{self, DefaultRetainPipeline, RetainPipeline};
 use crate::storage::MemoryStore;
 use crate::storage::pg::PgMemoryStore;
-use crate::types::llm::PromptCacheConfig;
 use crate::types::ChunkConfig;
+use crate::types::llm::PromptCacheConfig;
 
 use crate::consolidation::{Consolidator, OpinionMerger};
 

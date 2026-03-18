@@ -45,7 +45,11 @@ pub fn config_from_env() -> Result<RerankerConfig> {
         "local" => RerankerProvider::Local,
         "api" => RerankerProvider::Api,
         "none" => RerankerProvider::None,
-        other => return Err(Error::Internal(format!("unknown RERANKER_PROVIDER: {other}"))),
+        other => {
+            return Err(Error::Internal(format!(
+                "unknown RERANKER_PROVIDER: {other}"
+            )));
+        }
     };
 
     Ok(RerankerConfig {

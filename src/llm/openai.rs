@@ -320,8 +320,14 @@ impl LlmClient for OpenAiClient {
             temperature: request.temperature,
             tools,
             tool_choice,
-            prompt_cache_key: self.prompt_cache.as_ref().and_then(|config| config.key.clone()),
-            prompt_cache_retention: self.prompt_cache.as_ref().and_then(|config| config.retention),
+            prompt_cache_key: self
+                .prompt_cache
+                .as_ref()
+                .and_then(|config| config.key.clone()),
+            prompt_cache_retention: self
+                .prompt_cache
+                .as_ref()
+                .and_then(|config| config.retention),
         };
 
         let url = format!("{}/chat/completions", self.base_url);

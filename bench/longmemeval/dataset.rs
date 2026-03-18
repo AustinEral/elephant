@@ -121,7 +121,10 @@ pub fn validate_dataset(instances: &[LongMemEvalInstance]) -> Result<(), Vec<Val
 
         // answer must be a string or number (not null, object, or array)
         if inst.answer.is_null() || inst.answer.is_object() || inst.answer.is_array() {
-            errors.push(format!("answer is not a string or number: {:?}", inst.answer));
+            errors.push(format!(
+                "answer is not a string or number: {:?}",
+                inst.answer
+            ));
         }
 
         // question_date must not be empty

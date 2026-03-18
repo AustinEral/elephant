@@ -33,8 +33,8 @@ use elephant::retain::graph_builder::{DefaultGraphBuilder, GraphConfig};
 use elephant::retain::resolver::LayeredEntityResolver;
 use elephant::server::{AppState, router};
 use elephant::storage::pg::PgMemoryStore;
-use elephant::types::*;
 use elephant::types::llm::PromptCacheConfig;
+use elephant::types::*;
 
 use axum::Router;
 use axum::body::Body;
@@ -162,9 +162,10 @@ impl RealTestHarness {
             let model_name = self.embeddings.model_name().to_string();
             if model_name.contains("bge") {
                 Box::new(
-                    elephant::embedding::local::LocalEmbeddings::new(std::path::Path::new(
-                        &embedding_model_path(),
-                    ), 512)
+                    elephant::embedding::local::LocalEmbeddings::new(
+                        std::path::Path::new(&embedding_model_path()),
+                        512,
+                    )
                     .expect("local embeddings"),
                 )
             } else {
