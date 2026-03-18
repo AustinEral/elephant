@@ -255,6 +255,8 @@ pub struct ProviderConfig {
     pub model: String,
     /// Optional base URL override for OpenAI-compatible providers.
     pub base_url: Option<String>,
+    /// HTTP timeout for provider requests.
+    pub timeout_secs: u64,
     /// Prompt caching configuration for this provider.
     pub prompt_cache: PromptCacheConfig,
 }
@@ -270,6 +272,14 @@ fn env_bool(name: &str, default: bool) -> Result<bool> {
         },
         Err(_) => Ok(default),
     }
+}
+
+/// Read the shared LLM HTTP timeout from environment.
+pub fn timeout_secs_from_env() -> u64 {
+    env::var("LLM_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_TIMEOUT_SECS)
 }
 
 /// Read prompt-cache config from environment for a specific provider.
@@ -340,12 +350,14 @@ pub fn build_client(config: &ProviderConfig) -> crate::error::Result<Box<dyn Llm
         Provider::Anthropic => Ok(Box::new(anthropic::AnthropicClient::new(
             config.api_key.clone(),
             config.model.clone(),
+            config.timeout_secs,
             config.prompt_cache.clone(),
         )?)),
         Provider::OpenAi => Ok(Box::new(openai::OpenAiClient::new(
             config.api_key.clone(),
             config.model.clone(),
             config.base_url.clone(),
+            config.timeout_secs,
             config.prompt_cache.clone(),
         )?)),
     }

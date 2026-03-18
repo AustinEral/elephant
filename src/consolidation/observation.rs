@@ -25,6 +25,45 @@ use crate::types::{
     ConsolidationReport, Fact, FactFilter, FactType, NetworkType, RecallQuery, TemporalRange,
 };
 
+/// Static configuration for observation consolidation.
+#[derive(Debug, Clone, Copy)]
+pub struct ConsolidationConfig {
+    /// Number of unconsolidated facts per LLM batch.
+    pub batch_size: usize,
+    /// Completion cap for the consolidation prompt.
+    pub max_tokens: usize,
+    /// Recall token budget while consolidating observations.
+    pub recall_budget: usize,
+}
+
+impl Default for ConsolidationConfig {
+    fn default() -> Self {
+        Self {
+            batch_size: 8,
+            max_tokens: 4096,
+            recall_budget: 512,
+        }
+    }
+}
+
+/// Read consolidation configuration from environment.
+pub fn config_from_env() -> ConsolidationConfig {
+    ConsolidationConfig {
+        batch_size: std::env::var("CONSOLIDATION_BATCH_SIZE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(ConsolidationConfig::default().batch_size),
+        max_tokens: std::env::var("CONSOLIDATION_MAX_TOKENS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(ConsolidationConfig::default().max_tokens),
+        recall_budget: std::env::var("CONSOLIDATION_RECALL_BUDGET")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(ConsolidationConfig::default().recall_budget),
+    }
+}
+
 /// Consolidates raw facts into topic-scoped observations.
 #[async_trait]
 pub trait Consolidator: Send + Sync {
@@ -64,6 +103,7 @@ pub struct DefaultConsolidator {
     llm: Arc<dyn LlmClient>,
     embeddings: Arc<dyn EmbeddingClient>,
     recall: Arc<dyn RecallPipeline>,
+    config: ConsolidationConfig,
 }
 
 impl DefaultConsolidator {
@@ -73,12 +113,14 @@ impl DefaultConsolidator {
         llm: Arc<dyn LlmClient>,
         embeddings: Arc<dyn EmbeddingClient>,
         recall: Arc<dyn RecallPipeline>,
+        config: ConsolidationConfig,
     ) -> Self {
         Self {
             store,
             llm,
             embeddings,
             recall,
+            config,
         }
     }
 }
@@ -100,30 +142,6 @@ struct ConsolidateAction {
 pub const CONSOLIDATE_PROMPT: &str = include_str!("../../prompts/consolidate_topics.txt");
 /// Consolidation temperature.
 pub const CONSOLIDATE_TEMPERATURE: f32 = 0.3;
-
-/// Consolidation batch size.
-pub fn batch_size() -> usize {
-    std::env::var("CONSOLIDATION_BATCH_SIZE")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(8)
-}
-
-/// Consolidation completion cap.
-pub fn max_tokens() -> usize {
-    std::env::var("CONSOLIDATION_MAX_TOKENS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(4096)
-}
-
-/// Recall token budget used while consolidating observations.
-pub fn recall_budget() -> usize {
-    std::env::var("CONSOLIDATION_RECALL_BUDGET")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(512)
-}
 
 /// Format a temporal range as a pipe-separated suffix for consolidation prompts.
 /// Returns e.g. `" | occurred: 2022-01-01 to 2022-12-31"` or empty string if no range.
@@ -217,7 +235,7 @@ impl DefaultConsolidator {
         debug!(facts = unconsolidated.len(), "fetched unconsolidated facts");
 
         // 2. Process in batches
-        let bs = batch_size();
+        let bs = self.config.batch_size;
         let total_batches = unconsolidated.len().div_ceil(bs);
         for (batch_idx, batch) in unconsolidated.chunks(bs).enumerate() {
             debug!(
@@ -228,7 +246,7 @@ impl DefaultConsolidator {
             );
             // 3a. Per-fact recall: full pipeline (semantic + keyword + graph + temporal)
             // for each fact in parallel, then union/dedup the results.
-            let budget = recall_budget();
+            let budget = self.config.recall_budget;
             let recall_futures: Vec<_> = batch
                 .iter()
                 .map(|fact| {
@@ -288,7 +306,7 @@ impl DefaultConsolidator {
             let request = CompletionRequest {
                 model: String::new(),
                 messages: vec![Message::text("user", prompt)],
-                max_tokens: Some(max_tokens()),
+                max_tokens: Some(self.config.max_tokens),
                 temperature: Some(CONSOLIDATE_TEMPERATURE),
                 system: None,
                 ..Default::default()
@@ -503,6 +521,7 @@ mod tests {
             Arc::new(MockRecallPipeline {
                 store: store.clone(),
             }) as Arc<dyn RecallPipeline>,
+            ConsolidationConfig::default(),
         )
     }
 

@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tracing::warn;
 
-use elephant::consolidation::{ConsolidationProgress, observation};
 use elephant::error::Result;
 use elephant::metrics::{LlmStage, StageUsage};
 use elephant::runtime::ElephantRuntime;
@@ -368,7 +367,7 @@ pub async fn ingest_instance(
         let total_batches = if total_facts == 0 {
             0
         } else {
-            total_facts.div_ceil(observation::batch_size())
+            total_facts.div_ceil(runtime.info.tuning.consolidation_batch_size)
         };
         eprintln!(
             "  {} consolidating {} facts in {} batches...",

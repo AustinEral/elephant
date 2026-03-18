@@ -77,6 +77,7 @@ fn build_llm() -> Result<Arc<dyn LlmClient>, String> {
         api_key,
         model,
         base_url,
+        timeout_secs: llm::DEFAULT_TIMEOUT_SECS,
         prompt_cache: PromptCacheConfig::Disabled,
     };
     let base: Arc<dyn LlmClient> = Arc::from(

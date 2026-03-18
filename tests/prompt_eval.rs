@@ -32,7 +32,13 @@ fn llm_client() -> AnthropicClient {
     let model = std::env::var("LLM_MODEL")
         .or_else(|_| std::env::var("RETAIN_LLM_MODEL"))
         .unwrap_or_else(|_| panic!("LLM_MODEL or RETAIN_LLM_MODEL must be set in .env"));
-    AnthropicClient::new(env("LLM_API_KEY"), model, PromptCacheConfig::Disabled).unwrap()
+    AnthropicClient::new(
+        env("LLM_API_KEY"),
+        model,
+        elephant::llm::DEFAULT_TIMEOUT_SECS,
+        PromptCacheConfig::Disabled,
+    )
+    .unwrap()
 }
 
 fn extraction_request(content: &str, speaker: Option<&str>) -> CompletionRequest {

@@ -28,15 +28,11 @@ impl OpenAiClient {
         api_key: String,
         model: String,
         base_url: Option<String>,
+        timeout_secs: u64,
         prompt_cache: PromptCacheConfig,
     ) -> Result<Self> {
         let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(
-                std::env::var("LLM_TIMEOUT_SECS")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(super::DEFAULT_TIMEOUT_SECS),
-            ))
+            .timeout(std::time::Duration::from_secs(timeout_secs))
             .build()
             .map_err(|e| crate::error::Error::Internal(e.to_string()))?;
         Ok(Self {
@@ -356,6 +352,7 @@ mod tests {
             api_key,
             std::env::var("LLM_MODEL").expect("LLM_MODEL must be set"),
             None,
+            crate::llm::DEFAULT_TIMEOUT_SECS,
             PromptCacheConfig::Disabled,
         )
         .unwrap();
@@ -383,6 +380,7 @@ mod tests {
             api_key,
             std::env::var("LLM_MODEL").expect("LLM_MODEL must be set"),
             None,
+            crate::llm::DEFAULT_TIMEOUT_SECS,
             PromptCacheConfig::Disabled,
         )
         .unwrap();

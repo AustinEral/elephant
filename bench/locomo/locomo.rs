@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, Semaphore, mpsc};
 
 use elephant::MemoryStore;
-use elephant::consolidation::{ConsolidationProgress, observation};
+use elephant::consolidation::ConsolidationProgress;
 use elephant::llm::LlmClient;
 use elephant::metrics::{LlmStage, MetricsCollector, StageUsage, with_scoped_collector};
 use elephant::runtime::{
@@ -2352,7 +2352,7 @@ async fn consolidate_with_bench_progress(
     let total_batches = if total_facts == 0 {
         0
     } else {
-        total_facts.div_ceil(observation::batch_size())
+        total_facts.div_ceil(runtime.info.tuning.consolidation_batch_size)
     };
     println!(
         "[{tag}] Consolidating {total_facts} fact{} in {total_batches} batch{}...",

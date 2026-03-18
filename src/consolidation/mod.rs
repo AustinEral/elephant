@@ -7,7 +7,9 @@
 pub mod observation;
 pub mod opinion_merger;
 
-pub use observation::{ConsolidationProgress, Consolidator, DefaultConsolidator};
+pub use observation::{
+    ConsolidationConfig, ConsolidationProgress, Consolidator, DefaultConsolidator,
+};
 pub use opinion_merger::{DefaultOpinionMerger, OpinionMerger};
 
 use crate::util::cosine_similarity;

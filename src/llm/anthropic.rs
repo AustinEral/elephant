@@ -46,15 +46,15 @@ pub struct AnthropicClient {
 
 impl AnthropicClient {
     /// Create a new Anthropic client. Auto-detects OAuth from token prefix.
-    pub fn new(api_key: String, model: String, prompt_cache: PromptCacheConfig) -> Result<Self> {
+    pub fn new(
+        api_key: String,
+        model: String,
+        timeout_secs: u64,
+        prompt_cache: PromptCacheConfig,
+    ) -> Result<Self> {
         let auth = AnthropicAuth::from_token(api_key);
         let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(
-                std::env::var("LLM_TIMEOUT_SECS")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(super::DEFAULT_TIMEOUT_SECS),
-            ))
+            .timeout(std::time::Duration::from_secs(timeout_secs))
             .build()
             .map_err(|e| crate::error::Error::Internal(e.to_string()))?;
         Ok(Self {
@@ -342,6 +342,7 @@ mod tests {
             std::env::var("LLM_MODEL")
                 .or_else(|_| std::env::var("RETAIN_LLM_MODEL"))
                 .expect("LLM_MODEL or RETAIN_LLM_MODEL must be set"),
+            crate::llm::DEFAULT_TIMEOUT_SECS,
             PromptCacheConfig::Disabled,
         )
         .unwrap();
@@ -374,6 +375,7 @@ mod tests {
             std::env::var("LLM_MODEL")
                 .or_else(|_| std::env::var("RETAIN_LLM_MODEL"))
                 .expect("LLM_MODEL or RETAIN_LLM_MODEL must be set"),
+            crate::llm::DEFAULT_TIMEOUT_SECS,
             PromptCacheConfig::Disabled,
         )
         .unwrap();
@@ -413,6 +415,7 @@ mod tests {
         let client = AnthropicClient::new(
             api_key,
             "claude-sonnet-4-20250514".into(),
+            crate::llm::DEFAULT_TIMEOUT_SECS,
             PromptCacheConfig::Disabled,
         )
         .unwrap();
