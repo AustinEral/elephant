@@ -5,7 +5,9 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
-use crate::llm::{LlmClient, PromptCacheRetention, PromptCachingConfig};
+use crate::llm::{
+    ExplicitPromptCachingConfig, LlmClient, PromptCacheRetention, PromptCachingConfig,
+};
 use crate::types::llm::{
     CacheStatus, CompletionRequest, CompletionResponse, CompletionUsage, ToolCall, ToolChoice,
 };
@@ -178,6 +180,35 @@ struct OpenAiPromptCachingRequest {
     prompt_cache_key: Option<String>,
 }
 
+impl PromptCacheRetention {
+    fn openai_request_value(self) -> &'static str {
+        match self {
+            PromptCacheRetention::Standard => "in_memory",
+            PromptCacheRetention::Extended => "24h",
+        }
+    }
+}
+
+impl OpenAiPromptCachingRequest {
+    fn from_prompt_caching(base_url: &str, prompt_caching: &PromptCachingConfig) -> Self {
+        if !is_official_openai_api_base_url(base_url) {
+            return Self::default();
+        }
+
+        prompt_caching
+            .explicit_config()
+            .map(Self::from_explicit)
+            .unwrap_or_default()
+    }
+
+    fn from_explicit(explicit: &ExplicitPromptCachingConfig) -> Self {
+        Self {
+            prompt_cache_retention: Some(explicit.retention.openai_request_value()),
+            prompt_cache_key: explicit.scope_key.clone(),
+        }
+    }
+}
+
 fn normalize_openai_usage(usage: &OpenAiUsage) -> CompletionUsage {
     let cache_hit_prompt_tokens = usage
         .prompt_tokens_details
@@ -207,26 +238,6 @@ fn normalize_openai_usage(usage: &OpenAiUsage) -> CompletionUsage {
 
 fn is_official_openai_api_base_url(base_url: &str) -> bool {
     base_url.trim_end_matches('/') == API_URL
-}
-
-fn openai_prompt_caching_request(
-    base_url: &str,
-    prompt_caching: &PromptCachingConfig,
-) -> OpenAiPromptCachingRequest {
-    if !is_official_openai_api_base_url(base_url) {
-        return OpenAiPromptCachingRequest::default();
-    }
-
-    match prompt_caching {
-        PromptCachingConfig::ProviderDefault => OpenAiPromptCachingRequest::default(),
-        PromptCachingConfig::Explicit(explicit) => OpenAiPromptCachingRequest {
-            prompt_cache_retention: Some(match explicit.retention {
-                PromptCacheRetention::Standard => "in_memory",
-                PromptCacheRetention::Extended => "24h",
-            }),
-            prompt_cache_key: explicit.scope_key.clone(),
-        },
-    }
 }
 
 #[async_trait]
@@ -315,7 +326,8 @@ impl LlmClient for OpenAiClient {
             }),
         });
 
-        let prompt_caching = openai_prompt_caching_request(&self.base_url, &self.prompt_caching);
+        let prompt_caching =
+            OpenAiPromptCachingRequest::from_prompt_caching(&self.base_url, &self.prompt_caching);
         let body = OpenAiRequest {
             model,
             messages,
@@ -394,7 +406,8 @@ mod tests {
         base_url: &str,
         prompt_caching: PromptCachingConfig,
     ) -> (String, OpenAiPromptCachingRequest) {
-        let prompt_caching_request = openai_prompt_caching_request(base_url, &prompt_caching);
+        let prompt_caching_request =
+            OpenAiPromptCachingRequest::from_prompt_caching(base_url, &prompt_caching);
         let request = OpenAiRequest {
             model: "gpt-4o-mini".into(),
             messages: vec![OpenAiMessage {

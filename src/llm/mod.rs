@@ -307,6 +307,14 @@ impl PromptCachingConfig {
         explicit.scope_key = Some(scope_key);
         Self::Explicit(explicit)
     }
+
+    /// Return the explicit request-level prompt caching controls, if any.
+    pub fn explicit_config(&self) -> Option<&ExplicitPromptCachingConfig> {
+        match self {
+            Self::ProviderDefault => None,
+            Self::Explicit(explicit) => Some(explicit),
+        }
+    }
 }
 
 fn parse_prompt_cache_retention(
