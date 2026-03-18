@@ -76,6 +76,8 @@ cargo run --release
 
 Full config reference in [`.env.example`](.env.example).
 
+Optional prompt caching is supported for both OpenAI and Anthropic. Enable it with `LLM_PROMPT_CACHE_ENABLED=1`; OpenAI also supports optional `OPENAI_PROMPT_CACHE_KEY` and `OPENAI_PROMPT_CACHE_RETENTION`, and Anthropic supports `ANTHROPIC_PROMPT_CACHE_TTL`.
+
 ## How It Works
 
 ```mermaid

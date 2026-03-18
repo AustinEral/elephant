@@ -14,6 +14,8 @@ cargo test
 
 Fast iteration on prompts — no Docker, no embeddings. Only needs `LLM_PROVIDER`, `LLM_API_KEY`, and `LLM_MODEL`.
 
+Optional prompt-cache envs from `.env` are honored here too.
+
 ```bash
 cargo test --test prompt_eval -- --ignored --nocapture
 ```
@@ -38,6 +40,8 @@ cargo test --test evals_extract
 ## Real integration tests
 
 Full retain→recall→reflect pipeline with real LLM and embedding APIs. Needs Docker.
+
+Optional prompt-cache envs from `.env` are also honored by the LLM-backed tests.
 
 ### Setup
 

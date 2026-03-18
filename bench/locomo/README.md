@@ -37,6 +37,11 @@ The runner uses the same environment variables as Elephant itself:
 - `DATABASE_URL`
 - `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL`
 - `RETAIN_LLM_MODEL`, `REFLECT_LLM_MODEL` if split models are desired
+- optional prompt-cache envs:
+  - `LLM_PROMPT_CACHE_ENABLED`
+  - `OPENAI_PROMPT_CACHE_KEY`
+  - `OPENAI_PROMPT_CACHE_RETENTION`
+  - `ANTHROPIC_PROMPT_CACHE_TTL`
 - embedding and reranker env vars
 
 Judge env vars remain independently overridable through `JUDGE_*`.
@@ -210,7 +215,7 @@ A serious run now records:
 - manifest and run provenance
 - prompt hashes and runtime tuning knobs
 - run-level and per-conversation timing
-- per-stage token/call/latency metrics
+- per-stage token/call/cache/latency metrics
 - per-conversation bank construction stats
 - per-question judge outcome in `*.questions.jsonl`
 - retrieved facts and reflect traces in `*.debug.jsonl`

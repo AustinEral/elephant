@@ -20,7 +20,7 @@ mkdir -p data
 cargo build --release --bin longmemeval-bench --bin longmemeval-view
 ```
 
-Same environment variables as Elephant itself (`DATABASE_URL`, `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL`, embedding/reranker vars). Judge defaults to GPT-4o, overridable with `--judge-model` or `JUDGE_MODEL` env var.
+Same environment variables as Elephant itself (`DATABASE_URL`, `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL`, embedding/reranker vars). Optional prompt-cache envs are also supported: `LLM_PROMPT_CACHE_ENABLED`, `OPENAI_PROMPT_CACHE_KEY`, `OPENAI_PROMPT_CACHE_RETENTION`, and `ANTHROPIC_PROMPT_CACHE_TTL`. Judge defaults to GPT-4o, overridable with `--judge-model` or `JUDGE_MODEL` env var.
 
 Use an isolated Postgres instance for benchmark runs (see [LoCoMo README](../locomo/README.md#setup) for Docker instructions).
 
@@ -90,7 +90,7 @@ cargo run --release --bin longmemeval-view -- \
 
 Three files per run (same pattern as LoCoMo):
 
-- **Summary JSON** (`<tag>.json`) — config, manifest, per-category accuracy, stage metrics
+- **Summary JSON** (`<tag>.json`) — config, manifest, per-category accuracy, stage metrics, total stage usage
 - **Questions JSONL** (`<tag>.questions.jsonl`) — per-question judge outcome
 - **Debug JSONL** (`<tag>.debug.jsonl`) — retrieved context, reflect traces
 
