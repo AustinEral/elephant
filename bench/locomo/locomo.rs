@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::env;
 use std::fs;
 use std::hash::{Hash, Hasher};
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
@@ -18,6 +19,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use chrono::{DateTime, NaiveDateTime, Utc};
+use flate2::Compression;
+use flate2::write::GzEncoder;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, Semaphore, mpsc};
@@ -932,6 +935,7 @@ enum BenchCommand {
     Ingest,
     Qa,
     Merge,
+    Publish,
 }
 
 impl BenchCommand {
@@ -941,6 +945,7 @@ impl BenchCommand {
             Self::Ingest => "ingest",
             Self::Qa => "qa",
             Self::Merge => "merge",
+            Self::Publish => "publish",
         }
     }
 }
@@ -1172,6 +1177,8 @@ struct CliOverrides {
     conversation_jobs: Option<usize>,
     question_jobs: Option<usize>,
     judge_model: Option<String>,
+    publish_run_id: Option<String>,
+    publish_include_debug: bool,
     allow_overwrite: bool,
 }
 
@@ -1181,6 +1188,13 @@ struct BenchInvocation {
     artifact_path: Option<PathBuf>,
     merge_artifacts: Vec<PathBuf>,
     config: RunConfig,
+    publish_config: PublishConfig,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PublishConfig {
+    run_id: Option<String>,
+    include_debug: bool,
 }
 
 impl CliOverrides {
@@ -1233,6 +1247,7 @@ struct ParsedCli {
     artifact_path: Option<PathBuf>,
     merge_artifacts: Vec<PathBuf>,
     overrides: CliOverrides,
+    publish_config: PublishConfig,
 }
 
 fn parse_args() -> BenchInvocation {
@@ -1258,6 +1273,7 @@ fn parse_args_from(raw: &[String]) -> Result<Option<BenchInvocation>, String> {
         artifact_path,
         merge_artifacts,
         overrides,
+        publish_config,
     } = parse_cli_overrides(raw)?;
     if overrides.help {
         return Ok(None);
@@ -1272,13 +1288,17 @@ fn parse_args_from(raw: &[String]) -> Result<Option<BenchInvocation>, String> {
             overrides,
         )?,
         BenchCommand::Merge => resolve_merge_config(overrides)?,
+        BenchCommand::Publish => resolve_publish_config(overrides)?,
     };
-    validate_run_config(command, &config)?;
+    if !matches!(command, BenchCommand::Publish) {
+        validate_run_config(command, &config)?;
+    }
     Ok(Some(BenchInvocation {
         command,
         artifact_path,
         merge_artifacts,
         config,
+        publish_config,
     }))
 }
 
@@ -1307,6 +1327,21 @@ fn resolve_merge_config(overrides: CliOverrides) -> Result<RunConfig, String> {
     }
     if let Some(tag) = overrides.tag {
         config.tag = Some(tag);
+    }
+    if overrides.allow_overwrite {
+        config.allow_overwrite = true;
+    }
+    Ok(config)
+}
+
+fn resolve_publish_config(overrides: CliOverrides) -> Result<RunConfig, String> {
+    validate_publish_overrides(&overrides)?;
+    let mut config = RunConfig::default();
+    if let Some(output) = overrides.output {
+        config.output = Some(output);
+    }
+    if overrides.allow_overwrite {
+        config.allow_overwrite = true;
     }
     Ok(config)
 }
@@ -1421,10 +1456,59 @@ fn validate_merge_overrides(overrides: &CliOverrides) -> Result<(), String> {
     }
 }
 
+fn validate_publish_overrides(overrides: &CliOverrides) -> Result<(), String> {
+    let mut unsupported = Vec::new();
+    if overrides.profile.is_some() {
+        unsupported.push("--profile");
+    }
+    if overrides.config_path.is_some() {
+        unsupported.push("--config");
+    }
+    if overrides.dataset.is_some() {
+        unsupported.push("--dataset");
+    }
+    if overrides.tag.is_some() {
+        unsupported.push("--tag");
+    }
+    if !overrides.conversations.is_empty() {
+        unsupported.push("--conversation");
+    }
+    if overrides.session_limit.is_some() {
+        unsupported.push("--session-limit");
+    }
+    if overrides.question_limit.is_some() {
+        unsupported.push("--question-limit");
+    }
+    if overrides.ingest.is_some() {
+        unsupported.push("--ingest");
+    }
+    if overrides.consolidation.is_some() {
+        unsupported.push("--consolidation");
+    }
+    if overrides.conversation_jobs.is_some() {
+        unsupported.push("--conversation-jobs");
+    }
+    if overrides.question_jobs.is_some() {
+        unsupported.push("--question-jobs");
+    }
+    if overrides.judge_model.is_some() {
+        unsupported.push("--judge-model");
+    }
+
+    if unsupported.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "`publish` does not accept {}; it only supports an input artifact plus --out/--run-id/--include-debug",
+            unsupported.join(", ")
+        ))
+    }
+}
+
 fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
     let mut overrides = CliOverrides::default();
     let command = match raw.get(1).map(String::as_str) {
-        None => return Err("expected subcommand: run, ingest, qa, or merge".into()),
+        None => return Err("expected subcommand: run, ingest, qa, merge, or publish".into()),
         Some("--help") | Some("-h") => {
             overrides.help = true;
             return Ok(ParsedCli {
@@ -1432,15 +1516,17 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
                 artifact_path: None,
                 merge_artifacts: Vec::new(),
                 overrides,
+                publish_config: PublishConfig::default(),
             });
         }
         Some("run") => BenchCommand::Run,
         Some("ingest") => BenchCommand::Ingest,
         Some("qa") => BenchCommand::Qa,
         Some("merge") => BenchCommand::Merge,
+        Some("publish") => BenchCommand::Publish,
         Some(other) => {
             return Err(format!(
-                "unknown subcommand: {other} (expected one of: run, ingest, qa, merge)"
+                "unknown subcommand: {other} (expected one of: run, ingest, qa, merge, publish)"
             ));
         }
     };
@@ -1448,9 +1534,14 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
     let mut artifact_path = None;
     let mut merge_artifacts = Vec::new();
     let mut i = 2;
-    if matches!(command, BenchCommand::Qa) {
+    if matches!(command, BenchCommand::Qa | BenchCommand::Publish) {
         match raw.get(2).map(String::as_str) {
-            None => return Err("expected artifact path after `qa`".into()),
+            None => {
+                return Err(format!(
+                    "expected artifact path after `{}`",
+                    command.as_str()
+                ));
+            }
             Some("--help") | Some("-h") => {
                 overrides.help = true;
                 return Ok(ParsedCli {
@@ -1458,10 +1549,14 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
                     artifact_path: None,
                     merge_artifacts,
                     overrides,
+                    publish_config: PublishConfig::default(),
                 });
             }
             Some(path) if path.starts_with('-') => {
-                return Err("expected artifact path after `qa`".into());
+                return Err(format!(
+                    "expected artifact path after `{}`",
+                    command.as_str()
+                ));
             }
             Some(path) => {
                 artifact_path = Some(PathBuf::from(path));
@@ -1561,6 +1656,17 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
                         .clone(),
                 );
             }
+            "--run-id" => {
+                i += 1;
+                overrides.publish_run_id = Some(
+                    raw.get(i)
+                        .ok_or_else(|| "--run-id requires a value".to_string())?
+                        .clone(),
+                );
+            }
+            "--include-debug" => {
+                overrides.publish_include_debug = true;
+            }
             "--force" => {
                 overrides.allow_overwrite = true;
             }
@@ -1575,11 +1681,16 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
     if matches!(command, BenchCommand::Merge) && merge_artifacts.len() < 2 {
         return Err("`merge` requires at least two input artifacts".into());
     }
+    let publish_config = PublishConfig {
+        run_id: overrides.publish_run_id.clone(),
+        include_debug: overrides.publish_include_debug,
+    };
     Ok(ParsedCli {
         command,
         artifact_path,
         merge_artifacts,
         overrides,
+        publish_config,
     })
 }
 
@@ -1608,6 +1719,90 @@ struct LoadedArtifactBundle {
     output: BenchmarkOutput,
     questions: Vec<QuestionResult>,
     debug_records: Vec<QuestionDebugRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PublishedBenchmarkIndex {
+    schema_version: String,
+    benchmark: String,
+    generated_at: String,
+    runs: Vec<PublishedRunIndexEntry>,
+}
+
+impl Default for PublishedBenchmarkIndex {
+    fn default() -> Self {
+        Self {
+            schema_version: "2026-03-19-publish-v1".into(),
+            benchmark: "locomo".into(),
+            generated_at: String::new(),
+            runs: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PublishedRunIndexEntry {
+    run_id: String,
+    published_at: String,
+    timestamp: String,
+    tag: Option<String>,
+    commit: Option<String>,
+    source_artifact: String,
+    source_fingerprint: String,
+    total_questions: usize,
+    accuracy: f64,
+    mean_f1: f64,
+    mean_evidence_recall: f64,
+    summary_path: String,
+    questions_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    debug_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PublishedRunSummary {
+    schema_version: String,
+    benchmark: String,
+    run_id: String,
+    published_at: String,
+    source: PublishedSourceArtifact,
+    public_artifacts: PublishedArtifacts,
+    timestamp: String,
+    tag: Option<String>,
+    commit: Option<String>,
+    judge_model: String,
+    retain_model: String,
+    reflect_model: String,
+    embedding_model: String,
+    reranker_model: String,
+    consolidation_strategy: String,
+    total_questions: usize,
+    accuracy: f64,
+    mean_f1: f64,
+    mean_evidence_recall: f64,
+    per_category: HashMap<String, CategoryResult>,
+    #[serde(default)]
+    per_conversation: HashMap<String, ConversationSummary>,
+    manifest: BenchmarkManifest,
+    #[serde(default)]
+    stage_metrics: BTreeMap<LlmStage, StageUsage>,
+    #[serde(default)]
+    total_stage_usage: StageUsage,
+    total_time_s: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PublishedSourceArtifact {
+    path: String,
+    fingerprint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PublishedArtifacts {
+    summary_path: String,
+    questions_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    debug_path: Option<String>,
 }
 
 fn read_jsonl_records<T: DeserializeOwned>(path: &Path) -> Result<Vec<T>, String> {
@@ -1689,6 +1884,221 @@ fn load_artifact_bundle(path: &Path) -> Result<LoadedArtifactBundle, String> {
         questions,
         debug_records,
     })
+}
+
+fn write_json_pretty<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
+    }
+    let json = serde_json::to_vec_pretty(value)
+        .map_err(|e| format!("failed to serialize {}: {e}", path.display()))?;
+    fs::write(path, json).map_err(|e| format!("failed to write {}: {e}", path.display()))
+}
+
+fn write_jsonl_gzip<T: Serialize>(path: &Path, values: &[T]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
+    }
+
+    let file =
+        fs::File::create(path).map_err(|e| format!("failed to create {}: {e}", path.display()))?;
+    let encoder = GzEncoder::new(file, Compression::default());
+    let mut writer = BufWriter::new(encoder);
+    for value in values {
+        serde_json::to_writer(&mut writer, value)
+            .map_err(|e| format!("failed to encode {}: {e}", path.display()))?;
+        writer
+            .write_all(b"\n")
+            .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+    }
+    let encoder = writer
+        .into_inner()
+        .map_err(|e| format!("failed to flush {}: {e}", path.display()))?;
+    encoder
+        .finish()
+        .map_err(|e| format!("failed to finalize {}: {e}", path.display()))?;
+    Ok(())
+}
+
+fn load_publish_index(path: &Path) -> Result<PublishedBenchmarkIndex, String> {
+    if !path.exists() {
+        return Ok(PublishedBenchmarkIndex::default());
+    }
+    let raw =
+        fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    serde_json::from_str(&raw).map_err(|e| format!("failed to parse {}: {e}", path.display()))
+}
+
+fn publish_slug(value: &str) -> String {
+    let mut slug = String::with_capacity(value.len());
+    let mut prev_dash = false;
+    for ch in value.chars() {
+        let mapped = if ch.is_ascii_alphanumeric() { ch } else { '-' };
+        if mapped == '-' {
+            if !prev_dash {
+                slug.push('-');
+            }
+            prev_dash = true;
+        } else {
+            slug.push(mapped.to_ascii_lowercase());
+            prev_dash = false;
+        }
+    }
+    slug.trim_matches('-').to_string()
+}
+
+fn default_publish_run_id(output: &BenchmarkOutput, artifact_path: &Path) -> String {
+    let date = output.timestamp.get(..10).unwrap_or("unknown-date");
+    let stem = output
+        .tag
+        .as_deref()
+        .or_else(|| artifact_path.file_stem().and_then(|s| s.to_str()))
+        .unwrap_or("run");
+    let stem = publish_slug(stem);
+    if stem.is_empty() {
+        date.into()
+    } else {
+        format!("{date}-{stem}")
+    }
+}
+
+fn build_published_summary(
+    bundle: &LoadedArtifactBundle,
+    run_id: &str,
+    published_at: &str,
+    debug_path: Option<String>,
+) -> PublishedRunSummary {
+    PublishedRunSummary {
+        schema_version: "2026-03-19-publish-v1".into(),
+        benchmark: bundle.output.benchmark.clone(),
+        run_id: run_id.into(),
+        published_at: published_at.into(),
+        source: PublishedSourceArtifact {
+            path: bundle.path.display().to_string(),
+            fingerprint: bundle.fingerprint.clone(),
+        },
+        public_artifacts: PublishedArtifacts {
+            summary_path: "summary.json".into(),
+            questions_path: "questions.jsonl.gz".into(),
+            debug_path,
+        },
+        timestamp: bundle.output.timestamp.clone(),
+        tag: bundle.output.tag.clone(),
+        commit: bundle.output.commit.clone(),
+        judge_model: bundle.output.judge_model.clone(),
+        retain_model: bundle.output.retain_model.clone(),
+        reflect_model: bundle.output.reflect_model.clone(),
+        embedding_model: bundle.output.embedding_model.clone(),
+        reranker_model: bundle.output.reranker_model.clone(),
+        consolidation_strategy: bundle.output.consolidation_strategy.clone(),
+        total_questions: bundle.output.total_questions,
+        accuracy: bundle.output.accuracy,
+        mean_f1: bundle.output.mean_f1,
+        mean_evidence_recall: bundle.output.mean_evidence_recall,
+        per_category: bundle.output.per_category.clone(),
+        per_conversation: bundle.output.per_conversation.clone(),
+        manifest: bundle.output.manifest.clone(),
+        stage_metrics: bundle.output.stage_metrics.clone(),
+        total_stage_usage: bundle.output.total_stage_usage.clone(),
+        total_time_s: bundle.output.total_time_s,
+    }
+}
+
+fn publish_artifact(
+    artifact_path: &Path,
+    output_root: &Path,
+    publish_config: &PublishConfig,
+    allow_overwrite: bool,
+) -> Result<(), String> {
+    let bundle = load_artifact_bundle(artifact_path)?;
+    let run_id = publish_config
+        .run_id
+        .clone()
+        .unwrap_or_else(|| default_publish_run_id(&bundle.output, artifact_path));
+    let published_at = Utc::now().to_rfc3339();
+    let run_root = output_root.join("runs").join(&run_id);
+    let summary_path = run_root.join("summary.json");
+    let questions_path = run_root.join("questions.jsonl.gz");
+    let debug_path = publish_config
+        .include_debug
+        .then(|| run_root.join("debug.jsonl.gz"));
+    let index_path = output_root.join("index.json");
+
+    if !allow_overwrite {
+        let mut existing = Vec::new();
+        for path in [&summary_path, &questions_path] {
+            if path.exists() {
+                existing.push(path.display().to_string());
+            }
+        }
+        if let Some(path) = debug_path.as_ref()
+            && path.exists()
+        {
+            existing.push(path.display().to_string());
+        }
+        if !existing.is_empty() {
+            return Err(format!(
+                "refusing to overwrite existing published artifact(s): {}. Choose a new --run-id or pass --force",
+                existing.join(", ")
+            ));
+        }
+    }
+
+    fs::create_dir_all(&run_root)
+        .map_err(|e| format!("failed to create {}: {e}", run_root.display()))?;
+
+    let debug_rel = debug_path.as_ref().map(|_| "debug.jsonl.gz".to_string());
+    let summary = build_published_summary(&bundle, &run_id, &published_at, debug_rel.clone());
+    write_json_pretty(&summary_path, &summary)?;
+    write_jsonl_gzip(&questions_path, &bundle.questions)?;
+    if let Some(debug_path) = debug_path.as_ref() {
+        write_jsonl_gzip(debug_path, &bundle.debug_records)?;
+    }
+
+    let mut index = load_publish_index(&index_path)?;
+    index.generated_at = published_at.clone();
+    index.benchmark = bundle.output.benchmark.clone();
+    index.runs.retain(|existing| existing.run_id != run_id);
+    index.runs.push(PublishedRunIndexEntry {
+        run_id: run_id.clone(),
+        published_at,
+        timestamp: bundle.output.timestamp.clone(),
+        tag: bundle.output.tag.clone(),
+        commit: bundle.output.commit.clone(),
+        source_artifact: bundle.path.display().to_string(),
+        source_fingerprint: bundle.fingerprint.clone(),
+        total_questions: bundle.output.total_questions,
+        accuracy: bundle.output.accuracy,
+        mean_f1: bundle.output.mean_f1,
+        mean_evidence_recall: bundle.output.mean_evidence_recall,
+        summary_path: format!("runs/{run_id}/summary.json"),
+        questions_path: format!("runs/{run_id}/questions.jsonl.gz"),
+        debug_path: debug_rel.map(|_| format!("runs/{run_id}/debug.jsonl.gz")),
+    });
+    index.runs.sort_by(|a, b| {
+        b.published_at
+            .cmp(&a.published_at)
+            .then(a.run_id.cmp(&b.run_id))
+    });
+    write_json_pretty(&index_path, &index)?;
+
+    println!(
+        "Published {} to {}",
+        bundle.path.display(),
+        run_root.display()
+    );
+    println!("Summary saved to {}", summary_path.display());
+    println!("Questions saved to {}", questions_path.display());
+    if let Some(debug_path) = debug_path {
+        println!("Debug saved to {}", debug_path.display());
+    } else {
+        println!("Debug export skipped; use --include-debug to write debug.jsonl.gz");
+    }
+    println!("Index saved to {}", index_path.display());
+
+    Ok(())
 }
 
 fn ingest_mode_from_manifest(manifest: &BenchmarkManifest) -> Result<IngestMode, String> {
@@ -1984,8 +2394,6 @@ fn merge_artifacts(
     let metrics = MetricsCollector::new();
     let mut total_time_s = 0.0;
     let mut seen_conversations = BTreeSet::new();
-    let mut seen_question_ids = BTreeSet::new();
-    let mut seen_debug_ids = BTreeSet::new();
 
     for bundle in &bundles {
         let scope_ids = artifact_scope_ids(bundle);
@@ -2040,23 +2448,9 @@ fn merge_artifacts(
             conversation_bank_stats.insert(sample_id.clone(), summary.bank_stats.clone());
         }
         for result in &bundle.questions {
-            if !seen_question_ids.insert(result.question_id.clone()) {
-                return Err(format!(
-                    "cannot merge {}: duplicate question id {}",
-                    bundle.path.display(),
-                    result.question_id
-                ));
-            }
             merged_results.push(result.clone());
         }
         for record in &bundle.debug_records {
-            if !seen_debug_ids.insert(record.question_id.clone()) {
-                return Err(format!(
-                    "cannot merge {}: duplicate debug record for question {}",
-                    bundle.path.display(),
-                    record.question_id
-                ));
-            }
             merged_debug.push(record.clone());
         }
     }
@@ -2155,6 +2549,10 @@ fn print_help() {
     eprintln!("  locomo-bench qa <RESULTS.json> [OPTIONS]");
     eprintln!("  locomo-bench merge <RESULTS.json> <RESULTS.json>... [--out PATH|--tag NAME]");
     eprintln!();
+    eprintln!(
+        "  locomo-bench publish <RESULTS.json> [--out DIR] [--run-id NAME] [--include-debug]"
+    );
+    eprintln!();
     eprintln!("Subcommands:");
     eprintln!("  run                              Fresh ingest, consolidate, then score QA");
     eprintln!("  ingest                           Ingest and consolidate only; do not run QA");
@@ -2163,6 +2561,9 @@ fn print_help() {
     );
     eprintln!(
         "  merge <RESULTS.json>...          Combine compatible subset artifacts into one canonical result"
+    );
+    eprintln!(
+        "  publish <RESULTS.json>           Export a GitHub Pages friendly bundle from one canonical artifact"
     );
     eprintln!();
     eprintln!("Options:");
@@ -2180,6 +2581,8 @@ fn print_help() {
     eprintln!("  --conversation-jobs <N>         Parallel conversations");
     eprintln!("  --question-jobs <N>             Parallel questions per conversation");
     eprintln!("  --judge-model <MODEL>           Override judge model");
+    eprintln!("  --run-id <NAME>                 Publish bundle id (`publish` only)");
+    eprintln!("  --include-debug                 Also export debug.jsonl.gz (`publish` only)");
     eprintln!("  --force                         Allow overwriting existing output files");
     eprintln!();
     eprintln!("Debug slice options:");
@@ -3155,6 +3558,7 @@ fn default_output_path(
             let stem = config.tag.as_deref().unwrap_or("merged");
             PathBuf::from(format!("bench/locomo/results/local/{stem}.json"))
         }
+        BenchCommand::Publish => PathBuf::from("bench/locomo/published"),
         BenchCommand::Run | BenchCommand::Ingest => {
             let stem = if let Some(ref tag) = config.tag {
                 tag.clone()
@@ -3184,8 +3588,25 @@ async fn main() {
     let command = invocation.command;
     let artifact_path = invocation.artifact_path.clone();
     let merge_inputs = invocation.merge_artifacts.clone();
+    let publish_config = invocation.publish_config.clone();
     let config = invocation.config;
     let output_path = default_output_path(command, &config, artifact_path.as_deref());
+
+    if matches!(command, BenchCommand::Publish) {
+        let artifact_path = artifact_path
+            .as_deref()
+            .unwrap_or_else(|| unreachable!("publish requires an artifact path"));
+        if let Err(err) = publish_artifact(
+            artifact_path,
+            &output_path,
+            &publish_config,
+            config.allow_overwrite,
+        ) {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     if let Err(err) = ensure_output_paths_are_safe(
         command,
@@ -3597,7 +4018,9 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::read::GzDecoder;
     use serde_json::json;
+    use std::io::Read;
 
     fn test_question_result(
         sample_id: &str,
@@ -3778,6 +4201,14 @@ mod tests {
         )
         .expect("write summary");
         output_path
+    }
+
+    fn read_gzip_lines(path: &Path) -> Vec<String> {
+        let file = fs::File::open(path).expect("open gzip file");
+        let mut decoder = GzDecoder::new(file);
+        let mut raw = String::new();
+        decoder.read_to_string(&mut raw).expect("read gzip file");
+        raw.lines().map(|line| line.to_string()).collect()
     }
 
     #[test]
@@ -3981,6 +4412,46 @@ mod tests {
     }
 
     #[test]
+    fn merge_force_sets_allow_overwrite() {
+        let raw = vec![
+            "locomo-bench".to_string(),
+            "merge".to_string(),
+            "a.json".to_string(),
+            "b.json".to_string(),
+            "--force".to_string(),
+        ];
+        let invocation = parse_args_from(&raw).unwrap().unwrap();
+        assert_eq!(invocation.command, BenchCommand::Merge);
+        assert!(invocation.config.allow_overwrite);
+    }
+
+    #[test]
+    fn publish_loads_input_artifact_and_options() {
+        let raw = vec![
+            "locomo-bench".to_string(),
+            "publish".to_string(),
+            "merged.json".to_string(),
+            "--out".to_string(),
+            "bench/locomo/published".to_string(),
+            "--run-id".to_string(),
+            "2026-03-10-series1".to_string(),
+            "--include-debug".to_string(),
+        ];
+        let invocation = parse_args_from(&raw).unwrap().unwrap();
+        assert_eq!(invocation.command, BenchCommand::Publish);
+        assert_eq!(invocation.artifact_path, Some(PathBuf::from("merged.json")));
+        assert_eq!(
+            invocation.config.output,
+            Some(PathBuf::from("bench/locomo/published"))
+        );
+        assert_eq!(
+            invocation.publish_config.run_id.as_deref(),
+            Some("2026-03-10-series1")
+        );
+        assert!(invocation.publish_config.include_debug);
+    }
+
+    #[test]
     fn default_run_output_uses_local_directory() {
         let config = RunConfig {
             profile: RunProfile::Full,
@@ -4014,6 +4485,15 @@ mod tests {
         assert_eq!(
             default_output_path(BenchCommand::Merge, &config, None),
             PathBuf::from("bench/locomo/results/local/merged.json")
+        );
+    }
+
+    #[test]
+    fn default_publish_output_uses_published_directory() {
+        let config = RunConfig::default();
+        assert_eq!(
+            default_output_path(BenchCommand::Publish, &config, None),
+            PathBuf::from("bench/locomo/published")
         );
     }
 
@@ -4246,6 +4726,118 @@ mod tests {
             merged_bundle.questions[0].qa_stage_metrics[&LlmStage::Reflect].cached_prompt_tokens,
             7
         );
+
+        fs::remove_dir_all(&test_dir).ok();
+    }
+
+    #[test]
+    fn publish_exports_summary_questions_and_index() {
+        let test_dir = env::temp_dir().join(format!("locomo-publish-test-{}", std::process::id()));
+        fs::create_dir_all(&test_dir).expect("create publish test dir");
+
+        let artifact = write_test_artifact(&test_dir, "series1", "conv-01", "q-01", true);
+        let publish_root = test_dir.join("published");
+        let publish_config = PublishConfig {
+            run_id: Some("2026-03-10-series1".into()),
+            include_debug: false,
+        };
+
+        publish_artifact(&artifact, &publish_root, &publish_config, false)
+            .expect("publish succeeds");
+
+        let run_dir = publish_root.join("runs/2026-03-10-series1");
+        let summary_path = run_dir.join("summary.json");
+        let questions_path = run_dir.join("questions.jsonl.gz");
+        let debug_path = run_dir.join("debug.jsonl.gz");
+        let index_path = publish_root.join("index.json");
+
+        assert!(summary_path.exists());
+        assert!(questions_path.exists());
+        assert!(!debug_path.exists());
+        assert!(index_path.exists());
+
+        let summary: PublishedRunSummary = serde_json::from_str(
+            &fs::read_to_string(&summary_path).expect("read published summary"),
+        )
+        .expect("parse published summary");
+        assert_eq!(summary.run_id, "2026-03-10-series1");
+        assert_eq!(
+            summary.public_artifacts.questions_path,
+            "questions.jsonl.gz"
+        );
+        assert!(summary.public_artifacts.debug_path.is_none());
+        assert_eq!(summary.total_questions, 1);
+
+        let question_lines = read_gzip_lines(&questions_path);
+        assert_eq!(question_lines.len(), 1);
+        let question: QuestionResult =
+            serde_json::from_str(&question_lines[0]).expect("parse question line");
+        assert_eq!(question.question_id, "q-01");
+
+        let index: PublishedBenchmarkIndex =
+            serde_json::from_str(&fs::read_to_string(&index_path).expect("read publish index"))
+                .expect("parse publish index");
+        assert_eq!(index.runs.len(), 1);
+        assert_eq!(index.runs[0].run_id, "2026-03-10-series1");
+        assert_eq!(
+            index.runs[0].summary_path,
+            "runs/2026-03-10-series1/summary.json"
+        );
+        assert_eq!(
+            index.runs[0].questions_path,
+            "runs/2026-03-10-series1/questions.jsonl.gz"
+        );
+        assert!(index.runs[0].debug_path.is_none());
+
+        fs::remove_dir_all(&test_dir).ok();
+    }
+
+    #[test]
+    fn merge_allows_identical_duplicate_question_and_debug_records() {
+        let test_dir =
+            env::temp_dir().join(format!("locomo-merge-dedupe-test-{}", std::process::id()));
+        fs::create_dir_all(&test_dir).expect("create merge dedupe test dir");
+
+        let left = write_test_artifact(&test_dir, "left", "conv-01", "q-left", true);
+        let right = write_test_artifact(&test_dir, "right", "conv-02", "q-right", false);
+
+        let left_questions = sidecar_path(&left, "questions");
+        let left_debug = sidecar_path(&left, "debug");
+        let question_line = fs::read_to_string(&left_questions).expect("read question sidecar");
+        let debug_line = fs::read_to_string(&left_debug).expect("read debug sidecar");
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&left_questions)
+            .expect("open question sidecar for append")
+            .write_all(question_line.as_bytes())
+            .expect("append duplicate question line");
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&left_debug)
+            .expect("open debug sidecar for append")
+            .write_all(debug_line.as_bytes())
+            .expect("append duplicate debug line");
+        let mut left_summary: BenchmarkOutput =
+            serde_json::from_str(&fs::read_to_string(&left).expect("read left summary"))
+                .expect("parse left summary");
+        left_summary.total_questions = 2;
+        fs::write(
+            &left,
+            serde_json::to_string_pretty(&left_summary).expect("serialize left summary"),
+        )
+        .expect("write left summary");
+
+        let merged = test_dir.join("merged.json");
+        merge_artifacts(
+            &[left.clone(), right.clone()],
+            &merged,
+            Some("merged".into()),
+        )
+        .expect("merge succeeds");
+
+        let merged_bundle = load_artifact_bundle(&merged).expect("load merged artifact");
+        assert_eq!(merged_bundle.questions.len(), 3);
+        assert_eq!(merged_bundle.debug_records.len(), 3);
 
         fs::remove_dir_all(&test_dir).ok();
     }

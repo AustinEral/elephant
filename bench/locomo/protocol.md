@@ -152,7 +152,6 @@ The input artifacts must match on:
 The input artifacts must also be disjoint:
 
 - no overlapping conversation ids
-- no duplicate `question_id` values
 - sidecars present for question and debug records
 
 These fields are preserved as provenance but do not block merge:

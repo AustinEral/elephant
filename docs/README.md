@@ -6,6 +6,7 @@
 - Start with **[../bench/locomo/README.md](../bench/locomo/README.md)** for the LoCoMo workflow and runner usage.
 - Related benchmark docs:
   [../bench/locomo/protocol.md](../bench/locomo/protocol.md),
+  [../bench/locomo/publish.md](../bench/locomo/publish.md),
   [../bench/locomo/result-card.md](../bench/locomo/result-card.md),
   [../bench/locomo/competitors.md](../bench/locomo/competitors.md),
   [../bench/locomo/results-format.md](../bench/locomo/results-format.md),

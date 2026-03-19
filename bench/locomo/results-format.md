@@ -15,6 +15,8 @@ Recommended layout:
 
 The summary file is the canonical run manifest and aggregate metric record. Per-question payloads live in sidecars so the artifact stays readable at full benchmark scale.
 
+If you want to publish a benchmark externally, export a separate public bundle with `locomo-bench publish`. The public bundle schema is documented in [publish.md](publish.md) and is intentionally distinct from the benchmark-native merge/view artifact contract described here.
+
 ## Top-level schema
 
 ```json

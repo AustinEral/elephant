@@ -15,6 +15,7 @@ tower = { version = "0.5.3", features = ["util"] }
 [dependencies]
 async-trait = "0.1.89"
 dotenvy = "0.15"
+flate2 = "1.1.2"
 futures = "0.3"
 axum = "0.8.8"
 chrono = { version = "0.4.44", features = ["serde"] }

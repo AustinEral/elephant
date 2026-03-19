@@ -7,6 +7,7 @@ The checked-in canonical result is a full 10-conversation run (series1, 1,540 qu
 Related docs:
 
 - [protocol.md](protocol.md) — benchmark methodology and publication standard
+- [publish.md](publish.md) — public bundle format and Pages/Releases workflow
 - [result-card.md](result-card.md) — current checked-in reference run
 - [competitors.md](competitors.md) — competitor methodology notes
 - [results-format.md](results-format.md) — artifact schema
@@ -140,6 +141,13 @@ cargo run --release --bin locomo-bench -- \
   bench/locomo/results/local/batch-b.json \
   --out bench/locomo/results/canonical/full.json
 
+# Export a Pages-friendly publish bundle from one canonical artifact
+cargo run --release --bin locomo-bench -- \
+  publish \
+  bench/locomo/results/canonical/full.json \
+  --out bench/locomo/published \
+  --run-id 2026-03-10-series1
+
 # Inspect a canonical run
 cargo run --release --bin view -- bench/locomo/results/canonical/full.json
 
@@ -154,8 +162,10 @@ By default:
 - `run` and `ingest` write to `bench/locomo/results/local/`
 - `merge` also writes to `bench/locomo/results/local/`
 - `qa <artifact>` uses `--tag` for output path, or writes back to the source artifact if neither `--tag` nor `--out` is set
+- `publish <artifact>` writes a Pages-friendly bundle to `bench/locomo/published/`
 
 Use `--out bench/locomo/results/canonical/<name>.json` when you intentionally want to promote a merged artifact into the canonical record.
+Use `publish` after that to stage a public bundle with `summary.json` plus gzipped sidecars.
 
 ## Important flags
 
@@ -165,6 +175,7 @@ Use `--out bench/locomo/results/canonical/<name>.json` when you intentionally wa
 | `ingest` | Ingest and consolidate only; do not run QA |
 | `qa <artifact>` | Score QA against bank ids from an existing artifact; skips ingest and consolidation |
 | `merge <artifact>...` | Combine compatible subset artifacts into one canonical summary + sidecars |
+| `publish <artifact>` | Export a publishable bundle with `index.json`, `summary.json`, and `questions.jsonl.gz` |
 | `--profile <name>` | Load a versioned benchmark profile (`full`, `smoke`, `legacy-raw`) |
 | `--config <path>` | Apply JSON overrides on top of the selected profile |
 | `--tag <name>` | Name the output stem in `results/local/` by default |
@@ -173,6 +184,8 @@ Use `--out bench/locomo/results/canonical/<name>.json` when you intentionally wa
 | `--consolidation <mode>` | Control consolidation timing: `end`, `per-session`, or `off` |
 | `--conversation-jobs <n>` | Parallel conversations |
 | `--question-jobs <n>` | Parallel questions per conversation |
+| `--run-id <name>` | Set the published run id for `publish` |
+| `--include-debug` | Also export `debug.jsonl.gz` for `publish` |
 | `--session-limit <n>` | Debug-only session slice |
 | `--question-limit <n>` | Debug-only question slice |
 | `--force` | Allow overwriting an existing output path and sidecars |
@@ -196,7 +209,6 @@ The input artifacts must match on:
 They must also have:
 
 - disjoint conversation scope
-- no duplicate `question_id` values
 - new-style sidecars present: `*.questions.jsonl` and `*.debug.jsonl`
 
 These fields are treated as provenance notes, not blockers:
@@ -224,6 +236,19 @@ A serious run now records:
 - merge provenance when a full benchmark is assembled from disjoint subset runs
 
 Schema: [results-format.md](results-format.md)
+
+## Publishing
+
+The benchmark-native artifact contract under `bench/locomo/results/` is not the same as the public publication bundle.
+
+Use this flow:
+
+1. Run or merge a canonical artifact under `bench/locomo/results/canonical/`
+2. Export a public bundle with `locomo-bench publish`
+3. Copy that bundle into a dedicated public benchmarks repo
+4. Keep optional `debug.jsonl.gz` files in GitHub Releases rather than the default Pages payload
+
+Public bundle details: [publish.md](publish.md)
 
 ## Publication status
 
