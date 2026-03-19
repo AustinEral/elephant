@@ -32,7 +32,7 @@ use crate::retain::{self, DefaultRetainPipeline, RetainPipeline};
 use crate::storage::MemoryStore;
 use crate::storage::pg::PgMemoryStore;
 use crate::types::ChunkConfig;
-use crate::types::llm::PromptCacheConfig;
+use crate::types::llm::{PromptCacheConfig, ReasoningEffort, ReasoningEffortConfig};
 
 use crate::consolidation::{Consolidator, OpinionMerger};
 
@@ -88,9 +88,17 @@ pub struct RuntimeTuning {
     pub reflect_max_iterations: usize,
     /// Reflect completion cap.
     pub reflect_max_tokens: Option<usize>,
+    /// Retain extraction reasoning effort override.
+    pub retain_extract_reasoning_effort: Option<ReasoningEffort>,
+    /// Retain entity-resolution reasoning effort override.
+    pub retain_resolve_reasoning_effort: Option<ReasoningEffort>,
+    /// Retain graph-builder reasoning effort override.
+    pub retain_graph_reasoning_effort: Option<ReasoningEffort>,
     /// Whether reflect exposes the source lookup tool.
     #[serde(default = "default_true")]
     pub reflect_enable_source_lookup: bool,
+    /// Reflect reasoning effort override.
+    pub reflect_reasoning_effort: Option<ReasoningEffort>,
     /// Graph semantic-link threshold.
     pub graph_semantic_threshold: f32,
     /// Graph temporal-link max distance.
@@ -105,6 +113,10 @@ pub struct RuntimeTuning {
     pub consolidation_max_tokens: usize,
     /// Consolidation retrieval budget.
     pub consolidation_recall_budget: usize,
+    /// Consolidation reasoning effort override.
+    pub consolidate_reasoning_effort: Option<ReasoningEffort>,
+    /// Opinion merge reasoning effort override.
+    pub opinion_merge_reasoning_effort: Option<ReasoningEffort>,
 }
 
 /// Human-readable runtime model labels.
@@ -308,6 +320,7 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
         preserve_turns: true,
     };
     let graph_config = GraphConfig::default();
+    let reasoning_effort = *ReasoningEffortConfig::current()?;
 
     let retain = Arc::new(DefaultRetainPipeline::new(
         Box::new(SimpleChunker),
@@ -448,7 +461,11 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
                 rerank_top_n,
                 reflect_max_iterations: reflect_max_iter,
                 reflect_max_tokens,
+                retain_extract_reasoning_effort: reasoning_effort.retain_extract,
+                retain_resolve_reasoning_effort: reasoning_effort.retain_resolve,
+                retain_graph_reasoning_effort: reasoning_effort.retain_graph,
                 reflect_enable_source_lookup,
+                reflect_reasoning_effort: reasoning_effort.reflect,
                 graph_semantic_threshold: graph_config.semantic_threshold,
                 graph_temporal_max_days: graph_config.temporal_max_days,
                 graph_enable_causal: graph_config.enable_causal,
@@ -456,6 +473,8 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
                 consolidation_batch_size: consolidation_config.batch_size,
                 consolidation_max_tokens: consolidation_config.max_tokens,
                 consolidation_recall_budget: consolidation_config.recall_budget,
+                consolidate_reasoning_effort: reasoning_effort.consolidate,
+                opinion_merge_reasoning_effort: reasoning_effort.opinion_merge,
             },
             prompt_hashes: runtime_prompt_hashes(),
         },

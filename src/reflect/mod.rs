@@ -18,7 +18,9 @@ use crate::error::Result;
 use crate::llm::LlmClient;
 use crate::recall::RecallPipeline;
 use crate::storage::MemoryStore;
-use crate::types::llm::{CompletionRequest, Message, ToolChoice, ToolDef, ToolResult};
+use crate::types::llm::{
+    CompletionRequest, Message, ReasoningEffortConfig, ToolChoice, ToolDef, ToolResult,
+};
 use crate::types::{
     Fact, FactId, NetworkType, RecallQuery, ReflectDoneTrace, ReflectQuery, ReflectResult,
     ReflectTraceStep, RetrievedFact, RetrievedSource, Source, SourceId, TurnId,
@@ -255,6 +257,7 @@ impl DefaultReflectPipeline {
             let request = CompletionRequest {
                 messages: messages.clone(),
                 temperature: Some(REFLECT_TEMPERATURE),
+                reasoning_effort: ReasoningEffortConfig::current()?.reflect,
                 max_tokens: self.max_output_tokens,
                 system: Some(system_prompt.clone()),
                 tools: Some(iter_tools),

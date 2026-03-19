@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::Result;
 use crate::llm::LlmClient;
 use crate::types::llm::{
-    CompletionRequest, CompletionResponse, OpenAiPromptCacheConfig,
-    OpenAiPromptCacheRetention, PromptCacheConfig, PromptCacheUsage, ToolCall, ToolChoice,
+    CompletionRequest, CompletionResponse, OpenAiPromptCacheConfig, OpenAiPromptCacheRetention,
+    PromptCacheConfig, PromptCacheUsage, ReasoningEffort, ToolCall, ToolChoice,
 };
 
 const API_URL: &str = "https://api.openai.com/v1";
@@ -56,6 +56,7 @@ struct OpenAiRequest {
     messages: Vec<OpenAiMessage>,
     max_tokens: Option<usize>,
     temperature: Option<f32>,
+    reasoning_effort: Option<ReasoningEffort>,
     tools: Option<Vec<OpenAiTool>>,
     tool_choice: Option<OpenAiToolChoice>,
     prompt_cache_key: Option<String>,
@@ -63,11 +64,15 @@ struct OpenAiRequest {
 }
 
 impl OpenAiRequest {
-    fn uses_max_completion_tokens(model: &str) -> bool {
+    fn uses_reasoning_model_family(model: &str) -> bool {
         model.starts_with("gpt-5")
             || model.starts_with("o1")
             || model.starts_with("o3")
             || model.starts_with("o4")
+    }
+
+    fn uses_max_completion_tokens(model: &str) -> bool {
+        Self::uses_reasoning_model_family(model)
     }
 
     fn temperature_for_model(model: &str, temperature: Option<f32>) -> Option<f32> {
@@ -79,6 +84,13 @@ impl OpenAiRequest {
         } else {
             temperature
         }
+    }
+
+    fn uses_developer_role(model: &str) -> bool {
+        model.starts_with("gpt-5")
+            || model.starts_with("o1")
+            || model.starts_with("o3")
+            || model.starts_with("o4")
     }
 }
 
@@ -100,6 +112,11 @@ impl Serialize for OpenAiRequest {
         }
         if let Some(temperature) = Self::temperature_for_model(&self.model, self.temperature) {
             map.serialize_entry("temperature", &temperature)?;
+        }
+        if let Some(reasoning_effort) = self.reasoning_effort
+            && Self::uses_reasoning_model_family(&self.model)
+        {
+            map.serialize_entry("reasoning_effort", &reasoning_effort)?;
         }
         if let Some(tools) = &self.tools {
             map.serialize_entry("tools", tools)?;
@@ -344,7 +361,11 @@ impl LlmClient for OpenAiClient {
         let mut messages: Vec<OpenAiMessage> = Vec::new();
         if let Some(system) = request.system {
             messages.push(OpenAiMessage {
-                role: "system".into(),
+                role: if OpenAiRequest::uses_developer_role(&model) {
+                    "developer".into()
+                } else {
+                    "system".into()
+                },
                 content: Some(system),
                 ..Default::default()
             });
@@ -430,6 +451,7 @@ impl LlmClient for OpenAiClient {
             messages,
             max_tokens: request.max_tokens,
             temperature: request.temperature,
+            reasoning_effort: request.reasoning_effort,
             tools,
             tool_choice,
             prompt_cache_key: self
@@ -479,6 +501,7 @@ mod tests {
             }],
             max_tokens: Some(128),
             temperature: Some(0.0),
+            reasoning_effort: None,
             tools: None,
             tool_choice: None,
             prompt_cache_key: Some("elephant:reflect".into()),
@@ -501,6 +524,7 @@ mod tests {
             }],
             max_tokens: Some(128),
             temperature: Some(0.0),
+            reasoning_effort: None,
             tools: None,
             tool_choice: None,
             prompt_cache_key: None,
@@ -526,6 +550,7 @@ mod tests {
             }],
             max_tokens: Some(128),
             temperature: Some(0.0),
+            reasoning_effort: None,
             tools: None,
             tool_choice: None,
             prompt_cache_key: None,
@@ -575,6 +600,42 @@ mod tests {
             OpenAiRequest::temperature_for_model("gpt-5.2", Some(0.3)),
             Some(0.3)
         );
+    }
+
+    #[test]
+    fn serializes_reasoning_effort_when_requested() {
+        let body = OpenAiRequest {
+            model: "gpt-5".into(),
+            messages: vec![OpenAiMessage {
+                role: "user".into(),
+                content: Some("hello".into()),
+                ..Default::default()
+            }],
+            max_tokens: Some(128),
+            temperature: None,
+            reasoning_effort: Some(ReasoningEffort::Low),
+            tools: None,
+            tool_choice: None,
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
+        };
+
+        let value = serde_json::to_value(&body).unwrap();
+        assert_eq!(value["reasoning_effort"], "low");
+    }
+
+    #[test]
+    fn routes_top_level_instructions_by_model_family() {
+        assert!(OpenAiRequest::uses_developer_role("gpt-5"));
+        assert!(OpenAiRequest::uses_developer_role("o3"));
+        assert!(!OpenAiRequest::uses_developer_role("gpt-4o"));
+    }
+
+    #[test]
+    fn routes_reasoning_effort_by_model_family() {
+        assert!(OpenAiRequest::uses_reasoning_model_family("gpt-5"));
+        assert!(OpenAiRequest::uses_reasoning_model_family("o3"));
+        assert!(!OpenAiRequest::uses_reasoning_model_family("gpt-4o"));
     }
 
     #[test]

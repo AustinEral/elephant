@@ -10,6 +10,7 @@ use crate::llm::LlmClient;
 use crate::storage::MemoryStore;
 use crate::types::{
     BankId, CompletionRequest, Fact, FactFilter, GraphLink, LinkType, Message, NetworkType,
+    ReasoningEffortConfig,
 };
 use crate::util::cosine_similarity;
 
@@ -252,6 +253,7 @@ impl DefaultGraphBuilder {
                 system: Some(CAUSAL_LINK_SYSTEM_PROMPT.into()),
                 messages: vec![Message::text("user", prompt)],
                 temperature: Some(CAUSAL_LINK_TEMPERATURE),
+                reasoning_effort: ReasoningEffortConfig::current()?.retain_graph,
                 max_tokens: Some(CAUSAL_LINK_MAX_TOKENS),
                 ..Default::default()
             };

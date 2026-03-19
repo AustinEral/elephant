@@ -19,7 +19,7 @@ pub use id::{BankId, EntityId, FactId, SourceId, TurnId};
 pub use llm::{
     AnthropicPromptCacheConfig, AnthropicPromptCacheTtl, CompletionRequest, CompletionResponse,
     Message, OpenAiPromptCacheConfig, OpenAiPromptCacheRetention, PromptCacheConfig,
-    PromptCacheUsage,
+    PromptCacheUsage, ReasoningEffort, ReasoningEffortConfig,
 };
 pub use network::{ExtractedNetworkType, NetworkType};
 pub use pipeline::{

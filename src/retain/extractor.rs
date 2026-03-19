@@ -6,7 +6,9 @@ use async_trait::async_trait;
 
 use crate::error::Result;
 use crate::llm::LlmClient;
-use crate::types::{CompletionRequest, ExtractedFact, ExtractionInput, Message};
+use crate::types::{
+    CompletionRequest, ExtractedFact, ExtractionInput, Message, ReasoningEffortConfig,
+};
 
 /// Trait for extracting structured facts from raw text.
 #[async_trait]
@@ -92,6 +94,7 @@ impl FactExtractor for LlmFactExtractor {
                 system: Some(system.clone()),
                 messages: vec![Message::text("user", user_msg.clone())],
                 temperature: Some(EXTRACT_TEMPERATURE),
+                reasoning_effort: ReasoningEffortConfig::current()?.retain_extract,
                 max_tokens: Some(EXTRACT_MAX_TOKENS),
                 ..Default::default()
             };

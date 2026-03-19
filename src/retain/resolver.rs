@@ -10,7 +10,8 @@ use crate::error::Result;
 use crate::llm::LlmClient;
 use crate::storage::MemoryStore;
 use crate::types::{
-    BankId, CompletionRequest, Entity, EntityId, EntityType, Message, ResolvedEntity,
+    BankId, CompletionRequest, Entity, EntityId, EntityType, Message, ReasoningEffortConfig,
+    ResolvedEntity,
 };
 use crate::util::cosine_similarity;
 
@@ -137,6 +138,7 @@ impl LayeredEntityResolver {
             system: Some(ENTITY_RESOLUTION_SYSTEM_PROMPT.into()),
             messages: vec![Message::text("user", prompt)],
             temperature: Some(ENTITY_RESOLUTION_TEMPERATURE),
+            reasoning_effort: ReasoningEffortConfig::current()?.retain_resolve,
             max_tokens: Some(ENTITY_RESOLUTION_MAX_TOKENS),
             ..Default::default()
         };

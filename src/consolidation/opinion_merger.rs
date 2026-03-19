@@ -11,7 +11,7 @@ use crate::error::Result;
 use crate::llm::{LlmClient, complete_structured};
 use crate::storage::MemoryStore;
 use crate::types::id::BankId;
-use crate::types::llm::{CompletionRequest, Message};
+use crate::types::llm::{CompletionRequest, Message, ReasoningEffortConfig};
 use crate::types::{FactFilter, NetworkType, OpinionMergeReport};
 
 use super::cluster_by_similarity;
@@ -132,6 +132,7 @@ impl OpinionMerger for DefaultOpinionMerger {
                 messages: vec![Message::text("user", prompt)],
                 max_tokens: Some(MERGE_MAX_TOKENS),
                 temperature: Some(MERGE_TEMPERATURE),
+                reasoning_effort: ReasoningEffortConfig::current()?.opinion_merge,
                 system: None,
                 ..Default::default()
             };

@@ -1,6 +1,11 @@
 //! LLM request and response types.
 
+use std::env;
+use std::sync::OnceLock;
+
 use serde::{Deserialize, Serialize};
+
+use crate::error::{Error, Result};
 
 /// Prompt caching configuration for a concrete provider client.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -151,6 +156,94 @@ pub enum ToolChoice {
     Specific(String),
 }
 
+/// Supported reasoning effort settings for providers that expose them.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningEffort {
+    /// Minimize hidden reasoning work.
+    Minimal,
+    /// Use a low amount of reasoning work.
+    Low,
+    /// Use the provider default medium reasoning work.
+    Medium,
+    /// Use a high amount of reasoning work.
+    High,
+    /// Use extra-high reasoning work when supported.
+    XHigh,
+    /// Disable reasoning entirely when supported.
+    None,
+}
+
+impl ReasoningEffort {
+    /// Read an optional reasoning effort override from an environment variable.
+    pub fn from_env(name: &str) -> Result<Option<Self>> {
+        let Some(raw) = env::var(name).ok() else {
+            return Ok(None);
+        };
+
+        let value = raw.trim().to_ascii_lowercase();
+        let effort = match value.as_str() {
+            "minimal" => Self::Minimal,
+            "low" => Self::Low,
+            "medium" => Self::Medium,
+            "high" => Self::High,
+            "xhigh" => Self::XHigh,
+            "none" => Self::None,
+            _ => {
+                return Err(Error::Internal(format!(
+                    "{name} must be one of: none, minimal, low, medium, high, xhigh; got: {raw}"
+                )));
+            }
+        };
+
+        Ok(Some(effort))
+    }
+}
+
+/// Per-stage reasoning-effort overrides loaded from environment.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReasoningEffortConfig {
+    /// Retain extraction override.
+    pub retain_extract: Option<ReasoningEffort>,
+    /// Retain entity-resolution override.
+    pub retain_resolve: Option<ReasoningEffort>,
+    /// Retain graph-builder override.
+    pub retain_graph: Option<ReasoningEffort>,
+    /// Reflect override.
+    pub reflect: Option<ReasoningEffort>,
+    /// Consolidation override.
+    pub consolidate: Option<ReasoningEffort>,
+    /// Opinion-merge override.
+    pub opinion_merge: Option<ReasoningEffort>,
+}
+
+static REASONING_EFFORT_CONFIG: OnceLock<std::result::Result<ReasoningEffortConfig, String>> =
+    OnceLock::new();
+
+impl ReasoningEffortConfig {
+    /// Read reasoning-effort overrides from environment.
+    pub fn from_env() -> Result<Self> {
+        Ok(Self {
+            retain_extract: ReasoningEffort::from_env("RETAIN_EXTRACT_REASONING_EFFORT")?,
+            retain_resolve: ReasoningEffort::from_env("RETAIN_RESOLVE_REASONING_EFFORT")?,
+            retain_graph: ReasoningEffort::from_env("RETAIN_GRAPH_REASONING_EFFORT")?,
+            reflect: ReasoningEffort::from_env("REFLECT_REASONING_EFFORT")?,
+            consolidate: ReasoningEffort::from_env("CONSOLIDATE_REASONING_EFFORT")?,
+            opinion_merge: ReasoningEffort::from_env("OPINION_MERGE_REASONING_EFFORT")?,
+        })
+    }
+
+    /// Load reasoning-effort overrides once and return the shared config.
+    pub fn current() -> Result<&'static Self> {
+        match REASONING_EFFORT_CONFIG
+            .get_or_init(|| Self::from_env().map_err(|err| err.to_string()))
+        {
+            Ok(config) => Ok(config),
+            Err(message) => Err(Error::Internal(message.clone())),
+        }
+    }
+}
+
 /// A request to an LLM for completion.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct CompletionRequest {
@@ -162,6 +255,9 @@ pub struct CompletionRequest {
     pub max_tokens: Option<usize>,
     /// Sampling temperature.
     pub temperature: Option<f32>,
+    /// Optional reasoning effort for providers that support it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
     /// Optional system prompt.
     pub system: Option<String>,
     /// Tool definitions for tool-calling.
@@ -206,6 +302,7 @@ mod tests {
             messages: vec![Message::text("user", "hello")],
             max_tokens: Some(1024),
             temperature: Some(0.7),
+            reasoning_effort: None,
             system: Some("You are a helpful assistant.".into()),
             ..Default::default()
         };

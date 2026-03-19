@@ -20,7 +20,7 @@ use crate::llm::{LlmClient, complete_structured};
 use crate::recall::RecallPipeline;
 use crate::storage::MemoryStore;
 use crate::types::id::{BankId, FactId};
-use crate::types::llm::{CompletionRequest, Message};
+use crate::types::llm::{CompletionRequest, Message, ReasoningEffortConfig};
 use crate::types::{
     ConsolidationReport, Fact, FactFilter, FactType, NetworkType, RecallQuery, TemporalRange,
 };
@@ -308,6 +308,7 @@ impl DefaultConsolidator {
                 messages: vec![Message::text("user", prompt)],
                 max_tokens: Some(self.config.max_tokens),
                 temperature: Some(CONSOLIDATE_TEMPERATURE),
+                reasoning_effort: ReasoningEffortConfig::current()?.consolidate,
                 system: None,
                 ..Default::default()
             };
