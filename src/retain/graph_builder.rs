@@ -64,7 +64,7 @@ pub const CAUSAL_LINK_USER_PROMPT_TEMPLATE: &str = "Given these two facts, is th
 /// Causal-link temperature.
 pub const CAUSAL_LINK_TEMPERATURE: f32 = 0.0;
 /// Causal-link output cap.
-pub const CAUSAL_LINK_MAX_TOKENS: usize = 10;
+pub const CAUSAL_LINK_MAX_TOKENS: usize = 32;
 /// Max causal pairs checked per retain batch.
 pub const MAX_CAUSAL_CHECKS: usize = 10;
 

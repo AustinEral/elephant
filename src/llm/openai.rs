@@ -326,8 +326,7 @@ impl OpenAiMessageResp {
             Some(OpenAiMessageContent::Text(text)) => text.clone(),
             Some(OpenAiMessageContent::Parts(parts)) => parts
                 .iter()
-                .filter_map(|part| (part.part_type == "text").then_some(part.text.as_deref()))
-                .flatten()
+                .filter_map(OpenAiContentPart::visible_text)
                 .collect::<Vec<_>>()
                 .join(""),
             None => String::new(),
@@ -339,10 +338,7 @@ impl OpenAiMessageResp {
             Some(OpenAiMessageContent::Parts(parts)) => {
                 let refusal = parts
                     .iter()
-                    .filter_map(|part| {
-                        (part.part_type == "refusal").then_some(part.refusal.as_deref())
-                    })
-                    .flatten()
+                    .filter_map(OpenAiContentPart::refusal_text)
                     .collect::<Vec<_>>()
                     .join("");
                 (!refusal.is_empty()).then_some(refusal)
@@ -352,10 +348,27 @@ impl OpenAiMessageResp {
     }
 }
 
+impl OpenAiContentPart {
+    fn visible_text(&self) -> Option<&str> {
+        (self.part_type == "text")
+            .then_some(self.text.as_deref())
+            .flatten()
+    }
+
+    fn refusal_text(&self) -> Option<&str> {
+        (self.part_type == "refusal")
+            .then_some(self.refusal.as_deref())
+            .flatten()
+    }
+}
+
 #[async_trait]
 impl LlmClient for OpenAiClient {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
         let model = super::resolve_model(request.model, &self.default_model);
+        let requested_max_tokens = request.max_tokens;
+        let requested_temperature = request.temperature;
+        let requested_reasoning_effort = request.reasoning_effort;
 
         // Build messages: system prompt goes as a system message in the array
         let mut messages: Vec<OpenAiMessage> = Vec::new();
@@ -464,6 +477,10 @@ impl LlmClient for OpenAiClient {
                 .and_then(|config| config.retention),
         };
 
+        let request_json = serde_json::to_string(&body).map_err(|e| {
+            crate::error::Error::Llm(format!("failed to serialize OpenAI request: {e}"))
+        })?;
+
         let url = format!("{}/chat/completions", self.base_url);
 
         let resp_text = super::send_and_check(
@@ -472,7 +489,7 @@ impl LlmClient for OpenAiClient {
                 .post(&url)
                 .header("Authorization", format!("Bearer {}", self.api_key))
                 .header("Content-Type", "application/json")
-                .json(&body),
+                .body(request_json.clone()),
         )
         .await?;
 
@@ -480,7 +497,24 @@ impl LlmClient for OpenAiClient {
             crate::error::Error::Llm(format!("failed to parse OpenAI response: {e}"))
         })?;
 
-        Ok(parsed.into_completion_response())
+        let response = parsed.into_completion_response();
+        if response.content.is_empty()
+            && response.tool_calls.is_empty()
+            && response.stop_reason.as_deref() != Some("refusal")
+        {
+            tracing::warn!(
+                model = %model,
+                stop_reason = ?response.stop_reason,
+                input_tokens = response.input_tokens,
+                output_tokens = response.output_tokens,
+                requested_max_tokens = ?requested_max_tokens,
+                requested_temperature = ?requested_temperature,
+                requested_reasoning_effort = ?requested_reasoning_effort,
+                "openai returned empty visible response body"
+            );
+        }
+
+        Ok(response)
     }
 }
 

@@ -53,7 +53,7 @@ pub const ENTITY_RESOLUTION_USER_PROMPT_TEMPLATE: &str = "Is the mention \"{ment
 /// Entity resolver temperature.
 pub const ENTITY_RESOLUTION_TEMPERATURE: f32 = 0.0;
 /// Entity resolver output cap.
-pub const ENTITY_RESOLUTION_MAX_TOKENS: usize = 10;
+pub const ENTITY_RESOLUTION_MAX_TOKENS: usize = 32;
 
 impl LayeredEntityResolver {
     /// Create a new resolver.
