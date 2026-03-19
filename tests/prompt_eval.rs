@@ -11,7 +11,7 @@
 
 use elephant::llm::anthropic::AnthropicClient;
 use elephant::llm::complete_structured;
-use elephant::types::llm::{CompletionRequest, Message};
+use elephant::types::llm::{CompletionRequest, Message, PromptCacheConfig};
 use elephant::types::pipeline::ExtractedFact;
 
 use serde::Deserialize;
@@ -32,7 +32,13 @@ fn llm_client() -> AnthropicClient {
     let model = std::env::var("LLM_MODEL")
         .or_else(|_| std::env::var("RETAIN_LLM_MODEL"))
         .unwrap_or_else(|_| panic!("LLM_MODEL or RETAIN_LLM_MODEL must be set in .env"));
-    AnthropicClient::new(env("LLM_API_KEY"), model).unwrap()
+    AnthropicClient::new(
+        env("LLM_API_KEY"),
+        model,
+        elephant::llm::DEFAULT_TIMEOUT_SECS,
+        PromptCacheConfig::Disabled,
+    )
+    .unwrap()
 }
 
 fn extraction_request(content: &str, speaker: Option<&str>) -> CompletionRequest {
@@ -63,6 +69,7 @@ fn reflect_request(context: &str, opinions: &str, question: &str) -> CompletionR
         messages: vec![Message::text("user", user_prompt)],
         max_tokens: None,
         temperature: Some(0.3),
+        reasoning_effort: None,
         system: None,
         tools: None,
         tool_choice: None,
@@ -80,6 +87,7 @@ fn synthesize_observation_request(entity_name: &str, facts: &str) -> CompletionR
         messages: vec![Message::text("user", user_prompt)],
         max_tokens: None,
         temperature: Some(0.3),
+        reasoning_effort: None,
         system: None,
         tools: None,
         tool_choice: None,
@@ -95,6 +103,7 @@ fn merge_opinions_request(opinions: &str) -> CompletionRequest {
         messages: vec![Message::text("user", user_prompt)],
         max_tokens: None,
         temperature: Some(0.0),
+        reasoning_effort: None,
         system: None,
         tools: None,
         tool_choice: None,

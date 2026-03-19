@@ -24,7 +24,7 @@ impl LocalEmbeddings {
     /// Load the ONNX model and tokenizer from `model_dir`.
     ///
     /// Expects `model_dir/model.onnx` and `model_dir/tokenizer.json`.
-    pub fn new(model_dir: &Path) -> Result<Self> {
+    pub fn new(model_dir: &Path, max_seq_len: usize) -> Result<Self> {
         let model_path = model_dir.join("model.onnx");
         let tokenizer_path = model_dir.join("tokenizer.json");
 
@@ -37,10 +37,6 @@ impl LocalEmbeddings {
 
         let mut tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| Error::Embedding(format!("tokenizer load error: {e}")))?;
-        let max_seq_len: usize = std::env::var("EMBEDDING_MAX_SEQ_LEN")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(512);
         tokenizer
             .with_truncation(Some(tokenizers::TruncationParams {
                 max_length: max_seq_len,
@@ -181,7 +177,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn embed_returns_384_dims() {
-        let client = LocalEmbeddings::new(&model_dir()).unwrap();
+        let client = LocalEmbeddings::new(&model_dir(), 512).unwrap();
         let result = client.embed(&["Hello, world!"]).await.unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].len(), 384);
@@ -190,7 +186,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn semantic_similarity() {
-        let client = LocalEmbeddings::new(&model_dir()).unwrap();
+        let client = LocalEmbeddings::new(&model_dir(), 512).unwrap();
         let vecs = client.embed(&["cat", "dog", "database"]).await.unwrap();
         let cat_dog = cosine_sim(&vecs[0], &vecs[1]);
         let cat_db = cosine_sim(&vecs[0], &vecs[2]);

@@ -33,6 +33,7 @@ use elephant::retain::graph_builder::{DefaultGraphBuilder, GraphConfig};
 use elephant::retain::resolver::LayeredEntityResolver;
 use elephant::server::{AppState, router};
 use elephant::storage::pg::PgMemoryStore;
+use elephant::types::llm::PromptCacheConfig;
 use elephant::types::*;
 
 use axum::Router;
@@ -72,6 +73,8 @@ fn make_test_llm() -> Arc<dyn LlmClient> {
             api_key: llm_api_key(),
             model: llm_model(),
             base_url: llm_base_url(),
+            timeout_secs: llm::DEFAULT_TIMEOUT_SECS,
+            prompt_cache: PromptCacheConfig::Disabled,
         })
         .unwrap(),
     )
@@ -159,9 +162,10 @@ impl RealTestHarness {
             let model_name = self.embeddings.model_name().to_string();
             if model_name.contains("bge") {
                 Box::new(
-                    elephant::embedding::local::LocalEmbeddings::new(std::path::Path::new(
-                        &embedding_model_path(),
-                    ))
+                    elephant::embedding::local::LocalEmbeddings::new(
+                        std::path::Path::new(&embedding_model_path()),
+                        512,
+                    )
                     .expect("local embeddings"),
                 )
             } else {
@@ -232,6 +236,7 @@ impl RealTestHarness {
             self.llm.clone(),
             self.embeddings.clone(),
             recall.clone(),
+            elephant::consolidation::ConsolidationConfig::default(),
         ));
         let opinion_merger = Arc::new(DefaultOpinionMerger::new(
             store_arc.clone(),
@@ -267,6 +272,7 @@ fn local_embedding_config() -> EmbeddingConfig {
     EmbeddingConfig {
         provider: EmbeddingProvider::Local,
         model_path: Some(embedding_model_path()),
+        max_seq_len: 512,
         api_key: None,
         model: None,
         dimensions: None,
@@ -278,6 +284,7 @@ fn openai_embedding_config() -> EmbeddingConfig {
     EmbeddingConfig {
         provider: EmbeddingProvider::OpenAi,
         model_path: None,
+        max_seq_len: 512,
         api_key: Some(embedding_api_key()),
         model: Some(embedding_api_model()),
         dimensions: Some(embedding_api_dims()),

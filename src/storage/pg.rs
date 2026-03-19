@@ -748,10 +748,12 @@ async fn delete_bank_impl(conn: &mut PgConnection, id: BankId) -> Result<()> {
     .execute(&mut *conn)
     .await?;
 
-    sqlx::query("DELETE FROM fact_sources WHERE fact_id IN (SELECT id FROM facts WHERE bank_id = $1)")
-        .bind(id)
-        .execute(&mut *conn)
-        .await?;
+    sqlx::query(
+        "DELETE FROM fact_sources WHERE fact_id IN (SELECT id FROM facts WHERE bank_id = $1)",
+    )
+    .bind(id)
+    .execute(&mut *conn)
+    .await?;
 
     sqlx::query("DELETE FROM sources WHERE bank_id = $1")
         .bind(id)

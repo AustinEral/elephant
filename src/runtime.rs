@@ -7,13 +7,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::consolidation::observation;
 use crate::consolidation::opinion_merger;
-use crate::consolidation::{DefaultConsolidator, DefaultOpinionMerger};
+use crate::consolidation::{ConsolidationConfig, DefaultConsolidator, DefaultOpinionMerger};
 use crate::embedding::{self, EmbeddingClient, EmbeddingConfig, EmbeddingProvider};
 use crate::error::{Error, Result};
-use crate::llm::LlmClient;
 use crate::llm::anthropic::AnthropicClient;
 use crate::llm::openai::OpenAiClient;
 use crate::llm::retry::{RetryPolicy, RetryingLlmClient};
+use crate::llm::{self, LlmClient};
 use crate::metrics::{LlmStage, MeteredLlmClient, MetricsCollector};
 use crate::recall::DefaultRecallPipeline;
 use crate::recall::RecallPipeline;
@@ -32,6 +32,7 @@ use crate::retain::{self, DefaultRetainPipeline, RetainPipeline};
 use crate::storage::MemoryStore;
 use crate::storage::pg::PgMemoryStore;
 use crate::types::ChunkConfig;
+use crate::types::llm::{PromptCacheConfig, ReasoningEffort, ReasoningEffortConfig};
 
 use crate::consolidation::{Consolidator, OpinionMerger};
 
@@ -41,6 +42,8 @@ struct LlmConfig {
     api_key: String,
     model: String,
     base_url: Option<String>,
+    timeout_secs: u64,
+    prompt_cache: PromptCacheConfig,
 }
 
 /// Stable prompt-template hash bundle for publication provenance.
@@ -85,9 +88,17 @@ pub struct RuntimeTuning {
     pub reflect_max_iterations: usize,
     /// Reflect completion cap.
     pub reflect_max_tokens: Option<usize>,
+    /// Retain extraction reasoning effort override.
+    pub retain_extract_reasoning_effort: Option<ReasoningEffort>,
+    /// Retain entity-resolution reasoning effort override.
+    pub retain_resolve_reasoning_effort: Option<ReasoningEffort>,
+    /// Retain graph-builder reasoning effort override.
+    pub retain_graph_reasoning_effort: Option<ReasoningEffort>,
     /// Whether reflect exposes the source lookup tool.
     #[serde(default = "default_true")]
     pub reflect_enable_source_lookup: bool,
+    /// Reflect reasoning effort override.
+    pub reflect_reasoning_effort: Option<ReasoningEffort>,
     /// Graph semantic-link threshold.
     pub graph_semantic_threshold: f32,
     /// Graph temporal-link max distance.
@@ -102,6 +113,10 @@ pub struct RuntimeTuning {
     pub consolidation_max_tokens: usize,
     /// Consolidation retrieval budget.
     pub consolidation_recall_budget: usize,
+    /// Consolidation reasoning effort override.
+    pub consolidate_reasoning_effort: Option<ReasoningEffort>,
+    /// Opinion merge reasoning effort override.
+    pub opinion_merge_reasoning_effort: Option<ReasoningEffort>,
 }
 
 /// Human-readable runtime model labels.
@@ -160,10 +175,14 @@ fn make_llm(config: &LlmConfig) -> Result<Box<dyn LlmClient>> {
             config.api_key.clone(),
             config.model.clone(),
             config.base_url.clone(),
+            config.timeout_secs,
+            config.prompt_cache.clone(),
         )?)),
         _ => Ok(Box::new(AnthropicClient::new(
             config.api_key.clone(),
             config.model.clone(),
+            config.timeout_secs,
+            config.prompt_cache.clone(),
         )?)),
     }
 }
@@ -255,6 +274,7 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
     let retain_model = env::var("RETAIN_LLM_MODEL").or_else(|_| env_required("LLM_MODEL"))?;
     let reflect_model = env::var("REFLECT_LLM_MODEL").or_else(|_| env_required("LLM_MODEL"))?;
     let llm_base_url = env::var("LLM_BASE_URL").ok();
+    let llm_timeout_secs = llm::timeout_secs_from_env();
 
     let max_conns = options.max_pool_connections.unwrap_or(10);
     let pool = sqlx::postgres::PgPoolOptions::new()
@@ -263,37 +283,26 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
         .await?;
     let store = Arc::new(PgMemoryStore::new(pool.clone()));
     store.migrate().await?;
+    let prompt_cache = llm::prompt_cache_config_from_env(&llm_provider)?;
 
     let retain_config = LlmConfig {
         provider: llm_provider.clone(),
         api_key: llm_api_key.clone(),
         model: retain_model.clone(),
         base_url: llm_base_url.clone(),
+        timeout_secs: llm_timeout_secs,
+        prompt_cache: prompt_cache.clone(),
     };
     let reflect_config = LlmConfig {
         provider: llm_provider.clone(),
         api_key: llm_api_key,
         model: reflect_model.clone(),
         base_url: llm_base_url,
+        timeout_secs: llm_timeout_secs,
+        prompt_cache,
     };
 
-    let emb_config = EmbeddingConfig {
-        provider: match env_required("EMBEDDING_PROVIDER")?.as_str() {
-            "openai" => EmbeddingProvider::OpenAi,
-            "local" => EmbeddingProvider::Local,
-            other => {
-                return Err(Error::Internal(format!(
-                    "unknown EMBEDDING_PROVIDER: {other}"
-                )));
-            }
-        },
-        model_path: env::var("EMBEDDING_MODEL_PATH").ok(),
-        api_key: env::var("EMBEDDING_API_KEY").ok(),
-        model: env::var("EMBEDDING_API_MODEL").ok(),
-        dimensions: env::var("EMBEDDING_API_DIMS")
-            .ok()
-            .and_then(|s| s.parse().ok()),
-    };
+    let emb_config = embedding::config_from_env()?;
     let embeddings: Arc<dyn EmbeddingClient> = Arc::from(embedding::build_client(&emb_config)?);
 
     let dedup_threshold: Option<f32> = match env::var("DEDUP_THRESHOLD").as_deref() {
@@ -311,6 +320,7 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
         preserve_turns: true,
     };
     let graph_config = GraphConfig::default();
+    let reasoning_effort = *ReasoningEffortConfig::current()?;
 
     let retain = Arc::new(DefaultRetainPipeline::new(
         Box::new(SimpleChunker),
@@ -346,27 +356,9 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
         dedup_threshold,
     ));
 
-    let reranker_config = RerankerConfig {
-        provider: match env_required("RERANKER_PROVIDER")?.as_str() {
-            "local" => RerankerProvider::Local,
-            "api" => RerankerProvider::Api,
-            "none" => RerankerProvider::None,
-            other => {
-                return Err(Error::Internal(format!(
-                    "unknown RERANKER_PROVIDER: {other}"
-                )));
-            }
-        },
-        model_path: env::var("RERANKER_MODEL_PATH").ok(),
-        max_seq_len: env::var("RERANKER_MAX_SEQ_LEN")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(512),
-        api_key: env::var("RERANKER_API_KEY").ok(),
-        api_url: env::var("RERANKER_API_URL").ok(),
-        api_model: env::var("RERANKER_API_MODEL").ok(),
-    };
+    let reranker_config = reranker::config_from_env()?;
     let reranker = reranker::build_reranker(&reranker_config)?;
+    let consolidation_config: ConsolidationConfig = observation::config_from_env();
 
     let retriever_limit: usize = env::var("RETRIEVER_LIMIT")
         .ok()
@@ -442,6 +434,7 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
         )?,
         embeddings.clone(),
         recall.clone(),
+        consolidation_config,
     ));
     let opinion_merger = Arc::new(DefaultOpinionMerger::new(
         store.clone(),
@@ -468,14 +461,20 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
                 rerank_top_n,
                 reflect_max_iterations: reflect_max_iter,
                 reflect_max_tokens,
+                retain_extract_reasoning_effort: reasoning_effort.retain_extract,
+                retain_resolve_reasoning_effort: reasoning_effort.retain_resolve,
+                retain_graph_reasoning_effort: reasoning_effort.retain_graph,
                 reflect_enable_source_lookup,
+                reflect_reasoning_effort: reasoning_effort.reflect,
                 graph_semantic_threshold: graph_config.semantic_threshold,
                 graph_temporal_max_days: graph_config.temporal_max_days,
                 graph_enable_causal: graph_config.enable_causal,
                 graph_max_causal_checks: graph_builder::MAX_CAUSAL_CHECKS,
-                consolidation_batch_size: observation::batch_size(),
-                consolidation_max_tokens: observation::max_tokens(),
-                consolidation_recall_budget: observation::recall_budget(),
+                consolidation_batch_size: consolidation_config.batch_size,
+                consolidation_max_tokens: consolidation_config.max_tokens,
+                consolidation_recall_budget: consolidation_config.recall_budget,
+                consolidate_reasoning_effort: reasoning_effort.consolidate,
+                opinion_merge_reasoning_effort: reasoning_effort.opinion_merge,
             },
             prompt_hashes: runtime_prompt_hashes(),
         },

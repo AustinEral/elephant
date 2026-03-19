@@ -10,6 +10,7 @@ use crate::llm::LlmClient;
 use crate::storage::MemoryStore;
 use crate::types::{
     BankId, CompletionRequest, Fact, FactFilter, GraphLink, LinkType, Message, NetworkType,
+    ReasoningEffortConfig,
 };
 use crate::util::cosine_similarity;
 
@@ -63,7 +64,7 @@ pub const CAUSAL_LINK_USER_PROMPT_TEMPLATE: &str = "Given these two facts, is th
 /// Causal-link temperature.
 pub const CAUSAL_LINK_TEMPERATURE: f32 = 0.0;
 /// Causal-link output cap.
-pub const CAUSAL_LINK_MAX_TOKENS: usize = 10;
+pub const CAUSAL_LINK_MAX_TOKENS: usize = 32;
 /// Max causal pairs checked per retain batch.
 pub const MAX_CAUSAL_CHECKS: usize = 10;
 
@@ -252,6 +253,7 @@ impl DefaultGraphBuilder {
                 system: Some(CAUSAL_LINK_SYSTEM_PROMPT.into()),
                 messages: vec![Message::text("user", prompt)],
                 temperature: Some(CAUSAL_LINK_TEMPERATURE),
+                reasoning_effort: ReasoningEffortConfig::current()?.retain_graph,
                 max_tokens: Some(CAUSAL_LINK_MAX_TOKENS),
                 ..Default::default()
             };

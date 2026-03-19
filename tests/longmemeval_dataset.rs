@@ -17,7 +17,7 @@ mod dataset;
 use std::collections::HashMap;
 use std::path::Path;
 
-use dataset::{load_dataset, QuestionType};
+use dataset::{QuestionType, load_dataset};
 
 #[test]
 #[ignore]
@@ -49,7 +49,10 @@ fn test_load_s() {
 
     // Some instances are abstention
     let abs_count = instances.iter().filter(|i| i.is_abstention()).count();
-    assert!(abs_count > 0, "should have at least one abstention instance");
+    assert!(
+        abs_count > 0,
+        "should have at least one abstention instance"
+    );
 
     // No instance has empty question_date
     for inst in &instances {
@@ -77,10 +80,7 @@ fn test_load_m() {
     let (instances, fingerprint_m) = load_dataset(path_m).expect("failed to load M dataset");
 
     // Instances returned (same 500 questions, different haystack sizes)
-    assert!(
-        !instances.is_empty(),
-        "M dataset should have instances"
-    );
+    assert!(!instances.is_empty(), "M dataset should have instances");
 
     // Fingerprint is non-empty and DIFFERENT from S dataset fingerprint
     assert_eq!(fingerprint_m.len(), 16, "fingerprint should be 16 chars");
@@ -135,7 +135,9 @@ fn test_question_type_distribution() {
     // Count instances per reporting_category (7 categories: 6 types + abstention)
     let mut category_counts: HashMap<&str, usize> = HashMap::new();
     for inst in &instances {
-        *category_counts.entry(inst.reporting_category()).or_insert(0) += 1;
+        *category_counts
+            .entry(inst.reporting_category())
+            .or_insert(0) += 1;
     }
 
     let expected_categories = [

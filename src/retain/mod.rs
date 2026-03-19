@@ -21,11 +21,7 @@ use crate::embedding::EmbeddingClient;
 use crate::error::Result;
 use crate::llm::LlmClient;
 use crate::storage::MemoryStore;
-use crate::types::{
-    CompletionRequest, ExtractionInput, Fact, FactFilter, FactId, Message, NetworkType,
-    RetainInput, RetainOutput, Source, SourceId,
-};
-use crate::util::cosine_similarity;
+use crate::types::{ExtractionInput, Fact, FactId, RetainInput, RetainOutput, Source, SourceId};
 
 use self::chunker::Chunker;
 use self::extractor::FactExtractor;
@@ -238,7 +234,7 @@ impl DefaultRetainPipeline {
                     bank_id: input.bank_id,
                     content: ef.content.clone(),
                     fact_type: ef.fact_type.normalize(),
-                    network: ef.network,
+                    network: ef.network.normalize(),
                     entity_ids,
                     temporal_range: ef.temporal_range.clone(),
                     embedding: Some(embeddings[i].clone()),
@@ -393,7 +389,7 @@ mod tests {
             Ok(vec![ExtractedFact {
                 content: "Avery shared the roadmap".into(),
                 fact_type: FactType::Experience,
-                network: NetworkType::Experience,
+                network: crate::types::ExtractedNetworkType::Experience,
                 entity_mentions: vec![],
                 temporal_range: None,
                 confidence: None,

@@ -130,6 +130,7 @@ mod tests {
                     output_tokens: 1,
                     stop_reason: None,
                     tool_calls: vec![],
+                    prompt_cache: None,
                 })
             }
         }

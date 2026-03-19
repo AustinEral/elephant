@@ -82,8 +82,11 @@ The summary file is the canonical run manifest and aggregate metric record. Per-
 
   "stage_metrics": {
     "retain_extract": {
-      "prompt_tokens": 123,
-      "completion_tokens": 45,
+      "input_tokens": 123,
+      "cached_prompt_tokens": 90,
+      "cache_read_input_tokens": 0,
+      "cache_creation_input_tokens": 0,
+      "output_tokens": 45,
       "calls": 10,
       "errors": 0,
       "latency_ms": 2110
@@ -91,8 +94,11 @@ The summary file is the canonical run manifest and aggregate metric record. Per-
   },
 
   "total_stage_usage": {
-    "prompt_tokens": 12345,
-    "completion_tokens": 678,
+    "input_tokens": 12345,
+    "cached_prompt_tokens": 8765,
+    "cache_read_input_tokens": 4321,
+    "cache_creation_input_tokens": 210,
+    "output_tokens": 678,
     "calls": 300,
     "errors": 1,
     "latency_ms": 543210
@@ -135,8 +141,11 @@ The summary file is the canonical run manifest and aggregate metric record. Per-
       },
       "stage_metrics": {
         "retain_extract": {
-          "prompt_tokens": 123,
-          "completion_tokens": 45,
+          "input_tokens": 123,
+          "cached_prompt_tokens": 90,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "output_tokens": 45,
           "calls": 10,
           "errors": 0,
           "latency_ms": 2110
@@ -181,15 +190,21 @@ If merged source runs differed only in provenance-style fields, the merged manif
   "evidence_recall": 1.0,
   "qa_stage_metrics": {
     "reflect": {
-      "prompt_tokens": 321,
-      "completion_tokens": 44,
+      "input_tokens": 321,
+      "cached_prompt_tokens": 250,
+      "cache_read_input_tokens": 0,
+      "cache_creation_input_tokens": 0,
+      "output_tokens": 44,
       "calls": 2,
       "errors": 0,
       "latency_ms": 1840
     },
     "judge": {
-      "prompt_tokens": 88,
-      "completion_tokens": 12,
+      "input_tokens": 88,
+      "cached_prompt_tokens": 0,
+      "cache_read_input_tokens": 44,
+      "cache_creation_input_tokens": 8,
+      "output_tokens": 12,
       "calls": 1,
       "errors": 0,
       "latency_ms": 420
@@ -298,6 +313,17 @@ These are summed across the run and keyed by benchmark stage:
 Question records also carry `qa_stage_metrics`, which are the question-scoped `reflect` and `judge` costs only.
 
 Per-conversation summaries carry their own `stage_metrics`, so QA-only runs can be merged on top of an earlier ingest artifact without losing the ingest/consolidation cost picture.
+
+Each `StageUsage` record preserves the raw token counters that Elephant reports today:
+
+- `input_tokens`
+- `output_tokens`
+- `cached_prompt_tokens`
+- `cache_read_input_tokens`
+- `cache_creation_input_tokens`
+- `calls`
+- `errors`
+- `latency_ms`
 
 Per-conversation summaries also carry:
 

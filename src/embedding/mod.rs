@@ -6,7 +6,7 @@ pub mod openai;
 
 use async_trait::async_trait;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 /// Trait abstraction over embedding providers.
 ///
@@ -41,12 +41,44 @@ pub struct EmbeddingConfig {
     pub provider: EmbeddingProvider,
     /// Path to local ONNX model directory (for [`EmbeddingProvider::Local`]).
     pub model_path: Option<String>,
+    /// Max sequence length for local tokenizer truncation.
+    pub max_seq_len: usize,
     /// API key (for [`EmbeddingProvider::OpenAi`]).
     pub api_key: Option<String>,
     /// Model name (for [`EmbeddingProvider::OpenAi`]).
     pub model: Option<String>,
     /// Embedding dimensions (for [`EmbeddingProvider::OpenAi`]).
     pub dimensions: Option<usize>,
+}
+
+/// Read embedding configuration from environment.
+pub fn config_from_env() -> Result<EmbeddingConfig> {
+    let provider = match std::env::var("EMBEDDING_PROVIDER")
+        .map_err(|e| Error::Internal(format!("EMBEDDING_PROVIDER must be set: {e}")))?
+        .as_str()
+    {
+        "openai" => EmbeddingProvider::OpenAi,
+        "local" => EmbeddingProvider::Local,
+        other => {
+            return Err(Error::Internal(format!(
+                "unknown EMBEDDING_PROVIDER: {other}"
+            )));
+        }
+    };
+
+    Ok(EmbeddingConfig {
+        provider,
+        model_path: std::env::var("EMBEDDING_MODEL_PATH").ok(),
+        max_seq_len: std::env::var("EMBEDDING_MAX_SEQ_LEN")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(512),
+        api_key: std::env::var("EMBEDDING_API_KEY").ok(),
+        model: std::env::var("EMBEDDING_API_MODEL").ok(),
+        dimensions: std::env::var("EMBEDDING_API_DIMS")
+            .ok()
+            .and_then(|s| s.parse().ok()),
+    })
 }
 
 /// Build an embedding client from a configuration.
@@ -58,7 +90,8 @@ pub fn build_client(config: &EmbeddingConfig) -> Result<Box<dyn EmbeddingClient>
                     "EMBEDDING_MODEL_PATH must be set for local embeddings".into(),
                 )
             })?;
-            let client = local::LocalEmbeddings::new(std::path::Path::new(model_path))?;
+            let client =
+                local::LocalEmbeddings::new(std::path::Path::new(model_path), config.max_seq_len)?;
             Ok(Box::new(client))
         }
         EmbeddingProvider::OpenAi => {

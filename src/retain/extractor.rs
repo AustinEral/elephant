@@ -6,7 +6,9 @@ use async_trait::async_trait;
 
 use crate::error::Result;
 use crate::llm::LlmClient;
-use crate::types::{CompletionRequest, ExtractedFact, ExtractionInput, Message};
+use crate::types::{
+    CompletionRequest, ExtractedFact, ExtractionInput, Message, ReasoningEffortConfig,
+};
 
 /// Trait for extracting structured facts from raw text.
 #[async_trait]
@@ -92,6 +94,7 @@ impl FactExtractor for LlmFactExtractor {
                 system: Some(system.clone()),
                 messages: vec![Message::text("user", user_msg.clone())],
                 temperature: Some(EXTRACT_TEMPERATURE),
+                reasoning_effort: ReasoningEffortConfig::current()?.retain_extract,
                 max_tokens: Some(EXTRACT_MAX_TOKENS),
                 ..Default::default()
             };
@@ -114,7 +117,7 @@ mod tests {
 
     use super::*;
     use crate::llm::mock::MockLlmClient;
-    use crate::types::{BankId, FactType, NetworkType};
+    use crate::types::{BankId, ExtractedNetworkType, FactType};
 
     #[tokio::test]
     async fn extract_parses_valid_json() {
@@ -122,7 +125,7 @@ mod tests {
             ExtractedFact {
                 content: "Rust uses ownership for memory safety".into(),
                 fact_type: FactType::World,
-                network: NetworkType::World,
+                network: ExtractedNetworkType::World,
                 entity_mentions: vec!["Rust".into()],
                 temporal_range: None,
                 confidence: None,
@@ -130,7 +133,7 @@ mod tests {
             ExtractedFact {
                 content: "The team chose Postgres over MongoDB".into(),
                 fact_type: FactType::Experience,
-                network: NetworkType::Experience,
+                network: ExtractedNetworkType::Experience,
                 entity_mentions: vec!["Postgres".into(), "MongoDB".into()],
                 temporal_range: None,
                 confidence: None,
@@ -163,7 +166,7 @@ mod tests {
         let json = serde_json::to_string(&vec![ExtractedFact {
             content: "Python is popular".into(),
             fact_type: FactType::World,
-            network: NetworkType::World,
+            network: ExtractedNetworkType::World,
             entity_mentions: vec!["Python".into()],
             temporal_range: None,
             confidence: None,

@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, Semaphore, mpsc};
 
 use elephant::MemoryStore;
-use elephant::consolidation::{ConsolidationProgress, observation};
+use elephant::consolidation::ConsolidationProgress;
 use elephant::llm::LlmClient;
 use elephant::metrics::{LlmStage, MetricsCollector, StageUsage, with_scoped_collector};
 use elephant::runtime::{
@@ -31,8 +31,8 @@ use elephant::runtime::{
     RuntimeTuning as ElephantRuntimeTuning, build_runtime_from_env,
 };
 use elephant::types::{
-    BankId, Disposition, MemoryBank, NetworkType, ReflectDoneTrace,
-    ReflectQuery, RetainInput, RetrievalSource, TurnId,
+    BankId, Disposition, MemoryBank, NetworkType, ReflectDoneTrace, ReflectQuery, RetainInput,
+    RetrievalSource, TurnId,
 };
 
 // --- LoCoMo dataset types ---
@@ -2352,7 +2352,7 @@ async fn consolidate_with_bench_progress(
     let total_batches = if total_facts == 0 {
         0
     } else {
-        total_facts.div_ceil(observation::batch_size())
+        total_facts.div_ceil(runtime.info.tuning.consolidation_batch_size)
     };
     println!(
         "[{tag}] Consolidating {total_facts} fact{} in {total_batches} batch{}...",
@@ -3172,6 +3172,14 @@ fn default_output_path(
 async fn main() {
     let _ = dotenvy::dotenv();
 
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .with_target(false)
+        .init();
+
     let invocation = parse_args();
     let command = invocation.command;
     let artifact_path = invocation.artifact_path.clone();
@@ -3555,12 +3563,23 @@ async fn main() {
         fmt_elapsed(total_qa_time_s),
     );
     println!(
-        "Stage usage: {} prompt + {} completion = {} total tokens across {} calls",
-        total_stage_usage.prompt_tokens,
-        total_stage_usage.completion_tokens,
+        "Stage usage: {} input + {} output = {} total tokens across {} calls",
+        total_stage_usage.input_tokens,
+        total_stage_usage.output_tokens,
         total_stage_usage.total_tokens(),
         total_stage_usage.calls,
     );
+    if total_stage_usage.cached_prompt_tokens > 0
+        || total_stage_usage.cache_read_input_tokens > 0
+        || total_stage_usage.cache_creation_input_tokens > 0
+    {
+        println!(
+            "Cache usage: {} cached prompt | {} cache read | {} cache write",
+            total_stage_usage.cached_prompt_tokens,
+            total_stage_usage.cache_read_input_tokens,
+            total_stage_usage.cache_creation_input_tokens,
+        );
+    }
     if total_correct > 0 {
         println!(
             "Tokens per correct: {:.1}",
@@ -3611,8 +3630,11 @@ mod tests {
             qa_stage_metrics: BTreeMap::from([(
                 LlmStage::Reflect,
                 StageUsage {
-                    prompt_tokens: 10,
-                    completion_tokens: 5,
+                    input_tokens: 10,
+                    cached_prompt_tokens: 7,
+                    cache_read_input_tokens: 5,
+                    cache_creation_input_tokens: 2,
+                    output_tokens: 5,
                     calls: 1,
                     errors: 0,
                     latency_ms: 100,
@@ -3658,8 +3680,11 @@ mod tests {
         );
 
         let stage_usage = StageUsage {
-            prompt_tokens: 10,
-            completion_tokens: 5,
+            input_tokens: 10,
+            cached_prompt_tokens: 7,
+            cache_read_input_tokens: 5,
+            cache_creation_input_tokens: 2,
+            output_tokens: 5,
             calls: 1,
             errors: 0,
             latency_ms: 100,
@@ -4199,6 +4224,28 @@ mod tests {
         assert_eq!(merged_bundle.output.manifest.source_artifacts.len(), 2);
         assert!((merged_bundle.output.accuracy - 0.5).abs() < f64::EPSILON);
         assert_eq!(merged_bundle.output.total_stage_usage.total_tokens(), 30);
+        assert_eq!(
+            merged_bundle.output.total_stage_usage.cached_prompt_tokens,
+            14
+        );
+        assert_eq!(
+            merged_bundle
+                .output
+                .total_stage_usage
+                .cache_read_input_tokens,
+            10
+        );
+        assert_eq!(
+            merged_bundle
+                .output
+                .total_stage_usage
+                .cache_creation_input_tokens,
+            4
+        );
+        assert_eq!(
+            merged_bundle.questions[0].qa_stage_metrics[&LlmStage::Reflect].cached_prompt_tokens,
+            7
+        );
 
         fs::remove_dir_all(&test_dir).ok();
     }
