@@ -67,10 +67,9 @@ fn build_llm() -> Result<Arc<dyn LlmClient>, String> {
         .map_err(|e| format!("RETAIN_LLM_MODEL or LLM_MODEL must be set: {e}"))?;
     let base_url = env::var("LLM_BASE_URL").ok();
 
-    let provider = match provider_str.as_str() {
-        "openai" => Provider::OpenAi,
-        _ => Provider::Anthropic,
-    };
+    let provider = provider_str
+        .parse::<Provider>()
+        .map_err(|e| format!("invalid LLM_PROVIDER: {e}"))?;
 
     let config = ProviderConfig {
         provider,

@@ -57,10 +57,10 @@ fn llm_model() -> String {
     env("LLM_MODEL")
 }
 fn llm_provider() -> Provider {
-    match std::env::var("LLM_PROVIDER").unwrap_or_default().as_str() {
-        "openai" => Provider::OpenAi,
-        _ => Provider::Anthropic,
-    }
+    std::env::var("LLM_PROVIDER")
+        .unwrap_or_else(|_| Provider::Anthropic.as_str().to_string())
+        .parse::<Provider>()
+        .expect("LLM_PROVIDER must be a supported provider")
 }
 fn llm_base_url() -> Option<String> {
     std::env::var("LLM_BASE_URL").ok()

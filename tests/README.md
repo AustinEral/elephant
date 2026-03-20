@@ -12,7 +12,7 @@ cargo test
 
 ## Prompt eval tests
 
-Fast iteration on prompts — no Docker, no embeddings. Only needs `LLM_PROVIDER`, `LLM_API_KEY`, and `LLM_MODEL`.
+Fast iteration on prompts — no Docker, no embeddings. Only needs `LLM_PROVIDER`, `LLM_API_KEY`, and `LLM_MODEL`. Valid providers are `anthropic`, `openai`, and `openai-responses`.
 
 Optional prompt-cache envs from `.env` are honored here too.
 

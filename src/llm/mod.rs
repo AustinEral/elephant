@@ -3,9 +3,10 @@
 pub mod anthropic;
 pub mod mock;
 pub mod openai;
+pub mod openai_responses;
 pub mod retry;
 
-use std::env;
+use std::{env, str::FromStr};
 
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
@@ -236,12 +237,40 @@ pub(crate) async fn send_and_check(
 }
 
 /// LLM provider selection.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provider {
     /// Anthropic Claude API.
     Anthropic,
-    /// OpenAI API.
+    /// OpenAI Chat Completions API.
     OpenAi,
+    /// OpenAI Responses API.
+    OpenAiResponses,
+}
+
+impl Provider {
+    /// Returns the canonical environment value for this provider.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Anthropic => "anthropic",
+            Self::OpenAi => "openai",
+            Self::OpenAiResponses => "openai-responses",
+        }
+    }
+}
+
+impl FromStr for Provider {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "anthropic" => Ok(Self::Anthropic),
+            "openai" => Ok(Self::OpenAi),
+            "openai-responses" | "openai_responses" => Ok(Self::OpenAiResponses),
+            other => Err(Error::Internal(format!(
+                "LLM provider must be one of: anthropic, openai, openai-responses; got: {other}"
+            ))),
+        }
+    }
 }
 
 /// Configuration for a single LLM provider.
@@ -289,14 +318,14 @@ pub fn prompt_cache_config_from_env(provider: &str) -> Result<PromptCacheConfig>
     }
 
     match provider {
-        "openai" => {
+        "openai" | "openai-responses" | "openai_responses" => {
             let retention = match env::var("OPENAI_PROMPT_CACHE_RETENTION") {
                 Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
-                    "in_memory" => Some(OpenAiPromptCacheRetention::InMemory),
+                    "in_memory" | "in-memory" => Some(OpenAiPromptCacheRetention::InMemory),
                     "24h" => Some(OpenAiPromptCacheRetention::Hours24),
                     other => {
                         return Err(Error::Internal(format!(
-                            "OPENAI_PROMPT_CACHE_RETENTION must be one of: in_memory, 24h; got: {other}"
+                            "OPENAI_PROMPT_CACHE_RETENTION must be one of: in_memory, in-memory, 24h; got: {other}"
                         )));
                     }
                 },
@@ -354,6 +383,13 @@ pub fn build_client(config: &ProviderConfig) -> crate::error::Result<Box<dyn Llm
             config.prompt_cache.clone(),
         )?)),
         Provider::OpenAi => Ok(Box::new(openai::OpenAiClient::new(
+            config.api_key.clone(),
+            config.model.clone(),
+            config.base_url.clone(),
+            config.timeout_secs,
+            config.prompt_cache.clone(),
+        )?)),
+        Provider::OpenAiResponses => Ok(Box::new(openai_responses::OpenAiResponsesClient::new(
             config.api_key.clone(),
             config.model.clone(),
             config.base_url.clone(),
@@ -516,6 +552,38 @@ mod tests {
             ],
             || {
                 assert!(prompt_cache_config_from_env("openai").is_err());
+            },
+        );
+    }
+
+    #[test]
+    fn provider_parses_openai_responses_aliases() {
+        assert_eq!(
+            "openai-responses".parse::<Provider>().unwrap(),
+            Provider::OpenAiResponses
+        );
+        assert_eq!(
+            "openai_responses".parse::<Provider>().unwrap(),
+            Provider::OpenAiResponses
+        );
+        assert_eq!(Provider::OpenAiResponses.as_str(), "openai-responses");
+    }
+
+    #[test]
+    fn prompt_cache_config_accepts_openai_responses_provider_and_hyphenated_retention() {
+        with_env_vars(
+            &[
+                ("LLM_PROMPT_CACHE_ENABLED", Some("1")),
+                ("OPENAI_PROMPT_CACHE_RETENTION", Some("in-memory")),
+            ],
+            || {
+                assert_eq!(
+                    prompt_cache_config_from_env("openai_responses").unwrap(),
+                    PromptCacheConfig::OpenAi(OpenAiPromptCacheConfig {
+                        key: None,
+                        retention: Some(OpenAiPromptCacheRetention::InMemory),
+                    })
+                );
             },
         );
     }

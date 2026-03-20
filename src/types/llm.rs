@@ -34,6 +34,7 @@ pub struct OpenAiPromptCacheConfig {
 #[serde(rename_all = "snake_case")]
 pub enum OpenAiPromptCacheRetention {
     /// Retain in memory.
+    #[serde(rename = "in-memory")]
     InMemory,
     /// Retain for 24 hours.
     #[serde(rename = "24h")]
