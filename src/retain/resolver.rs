@@ -7,11 +7,10 @@ use async_trait::async_trait;
 
 use crate::embedding::EmbeddingClient;
 use crate::error::Result;
-use crate::llm::LlmClient;
+use crate::llm::{CompletionRequest, LlmClient, Message, ReasoningEffortConfig};
 use crate::storage::MemoryStore;
 use crate::types::{
-    BankId, CompletionRequest, Entity, EntityId, EntityType, Message, ReasoningEffortConfig,
-    ResolvedEntity,
+    BankId, Entity, EntityId, EntityType, ResolvedEntity,
 };
 use crate::util::cosine_similarity;
 
@@ -133,15 +132,13 @@ impl LayeredEntityResolver {
             .replace("{canonical_name}", &candidate.canonical_name)
             .replace("{aliases}", &format!("{:?}", candidate.aliases));
 
-        let request = CompletionRequest {
-            model: String::new(),
-            system: Some(ENTITY_RESOLUTION_SYSTEM_PROMPT.into()),
-            messages: vec![Message::text("user", prompt)],
-            temperature: Some(ENTITY_RESOLUTION_TEMPERATURE),
-            reasoning_effort: ReasoningEffortConfig::current()?.retain_resolve,
-            max_tokens: Some(ENTITY_RESOLUTION_MAX_TOKENS),
-            ..Default::default()
-        };
+        let request = CompletionRequest::builder()
+            .system(ENTITY_RESOLUTION_SYSTEM_PROMPT)
+            .message(Message::user(prompt))
+            .temperature(ENTITY_RESOLUTION_TEMPERATURE)
+            .reasoning_effort_opt(ReasoningEffortConfig::current()?.retain_resolve)
+            .max_tokens(ENTITY_RESOLUTION_MAX_TOKENS)
+            .build();
 
         let response = self.llm.complete(request).await?;
         Ok(response.content.trim().to_lowercase().starts_with("yes"))

@@ -656,11 +656,20 @@ fn build_judge_client(
     metrics: Arc<MetricsCollector>,
     override_model: Option<String>,
 ) -> Arc<dyn LlmClient> {
-    common::judge::build_judge_client(metrics, override_model)
+    common::judge::build_judge_client(
+        metrics,
+        &common::judge::JudgeOverrides {
+            provider: None,
+            model: override_model,
+        },
+    )
 }
 
 fn judge_label(override_model: &Option<String>) -> String {
-    common::judge::judge_label(override_model)
+    common::judge::judge_label(&common::judge::JudgeOverrides {
+        provider: None,
+        model: override_model.clone(),
+    })
 }
 
 async fn llm_judge(

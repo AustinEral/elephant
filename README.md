@@ -74,9 +74,9 @@ Requires Postgres 16 + pgvector, ONNX Runtime 1.23, and local models for embeddi
 cargo run --release
 ```
 
-Full config reference in [`.env.example`](.env.example). `LLM_PROVIDER` supports `anthropic`, `openai`, and `openai-responses`.
+Full config reference in [`.env.example`](.env.example). `LLM_PROVIDER` supports `anthropic` and `openai`, where `openai` uses the OpenAI Responses API.
 
-Optional prompt caching is supported for Anthropic, OpenAI Chat Completions, and OpenAI Responses. Enable it with `LLM_PROMPT_CACHE_ENABLED=1`; OpenAI also supports optional `OPENAI_PROMPT_CACHE_KEY` and `OPENAI_PROMPT_CACHE_RETENTION`, and Anthropic supports `ANTHROPIC_PROMPT_CACHE_TTL`.
+Optional prompt caching is supported for Anthropic and OpenAI Responses. Enable it with `LLM_PROMPT_CACHE_ENABLED=1`; OpenAI also supports optional `OPENAI_PROMPT_CACHE_KEY` and `OPENAI_PROMPT_CACHE_RETENTION`, and Anthropic supports `ANTHROPIC_PROMPT_CACHE_TTL`.
 
 ## How It Works
 

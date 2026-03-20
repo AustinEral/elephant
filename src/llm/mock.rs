@@ -6,8 +6,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 
 use crate::error::Result;
-use crate::llm::LlmClient;
-use crate::types::llm::{CompletionRequest, CompletionResponse};
+use crate::llm::{CompletionRequest, CompletionResponse, LlmClient};
 
 /// A mock LLM client that returns pre-queued responses.
 ///
@@ -74,17 +73,14 @@ impl LlmClient for MockLlmClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::Message;
     use serde::Deserialize;
 
     fn make_request() -> CompletionRequest {
-        CompletionRequest {
-            model: "mock".into(),
-            messages: vec![],
-            max_tokens: None,
-            temperature: None,
-            system: None,
-            ..Default::default()
-        }
+        CompletionRequest::builder()
+            .model("mock")
+            .messages(vec![Message::user(String::new())])
+            .build()
     }
 
     #[tokio::test]

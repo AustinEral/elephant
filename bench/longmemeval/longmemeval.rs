@@ -77,15 +77,21 @@ fn judge_prompt_hash() -> String {
     common::fnv1a64_hex(&combined)
 }
 
-/// Resolve the judge model from config + env, defaulting to gpt-4o per EVAL-01.
-fn resolve_judge_model(config: &RunConfig) -> Option<String> {
+/// Resolve the judge overrides from config + env, defaulting to OpenAI `gpt-4o` per EVAL-01.
+fn resolve_judge_overrides(config: &RunConfig) -> common::judge::JudgeOverrides {
     if config.judge_model.is_some() {
-        return config.judge_model.clone();
+        return common::judge::JudgeOverrides {
+            provider: None,
+            model: config.judge_model.clone(),
+        };
     }
     if env::var("JUDGE_MODEL").is_ok() {
-        return None; // let common::judge use the env var
+        return common::judge::JudgeOverrides::default();
     }
-    Some("gpt-4o".into())
+    common::judge::JudgeOverrides {
+        provider: Some(elephant::llm::Provider::OpenAi),
+        model: Some("gpt-4o".into()),
+    }
 }
 
 // --- CLI ---
@@ -1998,18 +2004,18 @@ async fn main() {
     };
 
     // Build judge client (only needed for Run/Qa)
-    let judge_override = resolve_judge_model(&config);
+    let judge_overrides = resolve_judge_overrides(&config);
     let judge: Option<Arc<dyn elephant::llm::LlmClient>> =
         if !matches!(command, BenchCommand::Ingest) {
             Some(common::judge::build_judge_client(
                 metrics.clone(),
-                judge_override.clone(),
+                &judge_overrides,
             ))
         } else {
             None
         };
     let jl = if !matches!(command, BenchCommand::Ingest) {
-        common::judge::judge_label(&judge_override)
+        common::judge::judge_label(&judge_overrides)
     } else {
         String::new()
     };
@@ -3764,20 +3770,32 @@ mod tests {
     }
 
     #[test]
-    fn resolve_judge_model_with_config_override() {
+    fn resolve_judge_overrides_with_config_override() {
         let config = RunConfig {
             judge_model: Some("claude-3".into()),
             ..Default::default()
         };
-        assert_eq!(resolve_judge_model(&config), Some("claude-3".into()));
+        assert_eq!(
+            resolve_judge_overrides(&config),
+            common::judge::JudgeOverrides {
+                provider: None,
+                model: Some("claude-3".into()),
+            }
+        );
     }
 
     #[test]
-    fn resolve_judge_model_default_gpt4o() {
+    fn resolve_judge_overrides_default_to_openai_gpt4o() {
         // Ensure JUDGE_MODEL is not set for this test
         let _guard = env_guard("JUDGE_MODEL");
         let config = RunConfig::default();
-        assert_eq!(resolve_judge_model(&config), Some("gpt-4o".into()));
+        assert_eq!(
+            resolve_judge_overrides(&config),
+            common::judge::JudgeOverrides {
+                provider: Some(elephant::llm::Provider::OpenAi),
+                model: Some("gpt-4o".into()),
+            }
+        );
     }
 
     /// RAII guard that removes an env var for the test scope and restores it after.

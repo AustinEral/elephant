@@ -8,10 +8,9 @@ use serde::Deserialize;
 
 use crate::embedding::EmbeddingClient;
 use crate::error::Result;
-use crate::llm::{LlmClient, complete_structured};
+use crate::llm::{CompletionRequest, LlmClient, Message, ReasoningEffortConfig, complete_structured};
 use crate::storage::MemoryStore;
 use crate::types::id::BankId;
-use crate::types::llm::{CompletionRequest, Message, ReasoningEffortConfig};
 use crate::types::{FactFilter, NetworkType, OpinionMergeReport};
 
 use super::cluster_by_similarity;
@@ -127,15 +126,12 @@ impl OpinionMerger for DefaultOpinionMerger {
 
             let prompt = MERGE_PROMPT.replace("{opinions}", &opinions_text);
 
-            let request = CompletionRequest {
-                model: String::new(),
-                messages: vec![Message::text("user", prompt)],
-                max_tokens: Some(MERGE_MAX_TOKENS),
-                temperature: Some(MERGE_TEMPERATURE),
-                reasoning_effort: ReasoningEffortConfig::current()?.opinion_merge,
-                system: None,
-                ..Default::default()
-            };
+            let request = CompletionRequest::builder()
+                .message(Message::user(prompt))
+                .max_tokens(MERGE_MAX_TOKENS)
+                .temperature(MERGE_TEMPERATURE)
+                .reasoning_effort_opt(ReasoningEffortConfig::current()?.opinion_merge)
+                .build();
 
             let resp: MergeResponse = complete_structured(self.llm.as_ref(), request).await?;
 

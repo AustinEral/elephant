@@ -6,11 +6,10 @@ use async_trait::async_trait;
 use chrono::Duration;
 
 use crate::error::Result;
-use crate::llm::LlmClient;
+use crate::llm::{CompletionRequest, LlmClient, Message, ReasoningEffortConfig};
 use crate::storage::MemoryStore;
 use crate::types::{
-    BankId, CompletionRequest, Fact, FactFilter, GraphLink, LinkType, Message, NetworkType,
-    ReasoningEffortConfig,
+    BankId, Fact, FactFilter, GraphLink, LinkType, NetworkType,
 };
 use crate::util::cosine_similarity;
 
@@ -248,15 +247,13 @@ impl DefaultGraphBuilder {
                 .replace("{fact_a}", &new_fact.content)
                 .replace("{fact_b}", &existing.content);
 
-            let request = CompletionRequest {
-                model: String::new(),
-                system: Some(CAUSAL_LINK_SYSTEM_PROMPT.into()),
-                messages: vec![Message::text("user", prompt)],
-                temperature: Some(CAUSAL_LINK_TEMPERATURE),
-                reasoning_effort: ReasoningEffortConfig::current()?.retain_graph,
-                max_tokens: Some(CAUSAL_LINK_MAX_TOKENS),
-                ..Default::default()
-            };
+            let request = CompletionRequest::builder()
+                .system(CAUSAL_LINK_SYSTEM_PROMPT)
+                .message(Message::user(prompt))
+                .temperature(CAUSAL_LINK_TEMPERATURE)
+                .reasoning_effort_opt(ReasoningEffortConfig::current()?.retain_graph)
+                .max_tokens(CAUSAL_LINK_MAX_TOKENS)
+                .build();
 
             let response = self.llm.complete(request).await?;
             if response.content.trim().to_lowercase().starts_with("yes") {

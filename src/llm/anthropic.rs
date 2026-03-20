@@ -4,11 +4,10 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-use crate::error::Result;
-use crate::llm::LlmClient;
-use crate::types::llm::{
-    AnthropicPromptCacheConfig, AnthropicPromptCacheTtl, CompletionRequest, CompletionResponse,
-    PromptCacheConfig, PromptCacheUsage, ToolCall, ToolChoice,
+use crate::error::{Error, Result};
+use crate::llm::{
+    AnthropicConfig, AnthropicPromptCacheConfig, AnthropicPromptCacheTtl, CompletionRequest,
+    CompletionResponse, LlmClient, PromptCacheUsage, ToolCall, ToolChoice,
 };
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -46,25 +45,17 @@ pub struct AnthropicClient {
 
 impl AnthropicClient {
     /// Create a new Anthropic client. Auto-detects OAuth from token prefix.
-    pub fn new(
-        api_key: String,
-        model: String,
-        timeout_secs: u64,
-        prompt_cache: PromptCacheConfig,
-    ) -> Result<Self> {
-        let auth = AnthropicAuth::from_token(api_key);
+    pub fn new(config: AnthropicConfig) -> Result<Self> {
+        let auth = AnthropicAuth::from_token(config.api_key().to_string());
         let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(timeout_secs))
+            .timeout(std::time::Duration::from_secs(config.timeout_secs()))
             .build()
-            .map_err(|e| crate::error::Error::Internal(e.to_string()))?;
+            .map_err(|e| Error::Internal(e.to_string()))?;
         Ok(Self {
             client,
             auth,
-            default_model: model,
-            prompt_cache: match prompt_cache {
-                PromptCacheConfig::Anthropic(config) => Some(config),
-                _ => None,
-            },
+            default_model: config.model().to_string(),
+            prompt_cache: config.prompt_cache().cloned(),
         })
     }
 }
@@ -221,79 +212,64 @@ impl AnthropicResponse {
 #[async_trait]
 impl LlmClient for AnthropicClient {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
-        let model = super::resolve_model(request.model, &self.default_model);
+        let model = super::resolve_model(request.model(), &self.default_model);
 
-        // Build messages, including tool results if present
         let mut messages: Vec<AnthropicMessage> = Vec::new();
 
-        for m in &request.messages {
+        for m in request.messages() {
             let mut blocks = Vec::new();
-            if !m.content.is_empty() {
+            if !m.content().is_empty() {
                 blocks.push(ContentBlock::Text {
-                    text: m.content.clone(),
+                    text: m.content().to_string(),
                 });
             }
-            for tc in &m.tool_calls {
+            for tc in m.tool_calls() {
                 blocks.push(ContentBlock::ToolUse {
                     id: tc.id.clone(),
                     name: tc.name.clone(),
                     input: tc.arguments.clone(),
                 });
             }
-            for tr in &m.tool_results {
+            for tr in m.tool_results_ref() {
                 blocks.push(ContentBlock::ToolResult {
                     tool_use_id: tr.tool_call_id.clone(),
                     content: tr.content.clone(),
                 });
             }
             messages.push(AnthropicMessage {
-                role: m.role.clone(),
+                role: m.role().as_str().to_string(),
                 content: AnthropicContent::Blocks(blocks),
             });
         }
 
-        // Append tool results as a user message with tool_result content blocks
-        if !request.tool_results.is_empty() {
-            let blocks: Vec<ContentBlock> = request
-                .tool_results
-                .iter()
-                .map(|tr| ContentBlock::ToolResult {
-                    tool_use_id: tr.tool_call_id.clone(),
-                    content: tr.content.clone(),
-                })
-                .collect();
-            messages.push(AnthropicMessage {
-                role: "user".into(),
-                content: AnthropicContent::Blocks(blocks),
-            });
-        }
-
-        // Map tools
-        let tools = request.tools.map(|defs| {
-            defs.into_iter()
+        let tools = request.tools().map(|defs| {
+            defs.iter()
                 .map(|t| AnthropicTool {
-                    name: t.name,
-                    description: t.description,
-                    input_schema: t.input_schema,
+                    name: t.name().to_string(),
+                    description: t.description().to_string(),
+                    input_schema: t.input_schema().clone(),
                 })
                 .collect()
         });
 
-        let tool_choice = request.tool_choice.map(|tc| match tc {
-            ToolChoice::Auto => AnthropicToolChoice::Auto,
-            ToolChoice::Required => AnthropicToolChoice::Any,
-            ToolChoice::None => AnthropicToolChoice::Auto, // Anthropic has no "none"; auto is closest
-            ToolChoice::Specific(name) => AnthropicToolChoice::Tool { name },
-        });
-
-        let system = request.system;
+        let tool_choice = match request.tool_choice().cloned() {
+            Some(ToolChoice::Auto) => Some(AnthropicToolChoice::Auto),
+            Some(ToolChoice::Required) => Some(AnthropicToolChoice::Any),
+            Some(ToolChoice::Specific(name)) => Some(AnthropicToolChoice::Tool { name }),
+            Some(ToolChoice::None) => {
+                return Err(Error::Configuration(
+                    "Anthropic does not support ToolChoice::None".into(),
+                ));
+            }
+            None => None,
+        };
 
         let body = AnthropicRequest {
             model,
             messages,
-            max_tokens: request.max_tokens.unwrap_or(4096),
-            temperature: request.temperature,
-            system,
+            max_tokens: request.max_tokens().unwrap_or(4096),
+            temperature: request.temperature(),
+            system: request.system().map(str::to_string),
             tools,
             tool_choice,
             cache_control: self.prompt_cache.as_ref().map(AnthropicCacheControl::from),
@@ -328,7 +304,7 @@ impl From<&AnthropicPromptCacheConfig> for AnthropicCacheControl {
     fn from(config: &AnthropicPromptCacheConfig) -> Self {
         Self {
             cache_type: "ephemeral",
-            ttl: config.ttl,
+            ttl: config.ttl(),
         }
     }
 }
@@ -336,7 +312,7 @@ impl From<&AnthropicPromptCacheConfig> for AnthropicCacheControl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::llm::Message;
+    use crate::llm::Message;
     use serde_json::json;
 
     #[test]
@@ -354,9 +330,9 @@ mod tests {
             system: None,
             tools: None,
             tool_choice: None,
-            cache_control: Some(AnthropicCacheControl::from(&AnthropicPromptCacheConfig {
-                ttl: Some(AnthropicPromptCacheTtl::Hours1),
-            })),
+            cache_control: Some(AnthropicCacheControl::from(
+                &AnthropicPromptCacheConfig::new().with_ttl(AnthropicPromptCacheTtl::Hours1),
+            )),
         };
 
         let value = serde_json::to_value(&body).unwrap();
@@ -421,23 +397,23 @@ mod tests {
         let _ = dotenvy::dotenv();
         let api_key = std::env::var("LLM_API_KEY").expect("LLM_API_KEY must be set");
         let client = AnthropicClient::new(
-            api_key,
-            std::env::var("LLM_MODEL")
-                .or_else(|_| std::env::var("RETAIN_LLM_MODEL"))
-                .expect("LLM_MODEL or RETAIN_LLM_MODEL must be set"),
-            crate::llm::DEFAULT_TIMEOUT_SECS,
-            PromptCacheConfig::Disabled,
+            AnthropicConfig::new(
+                api_key,
+                std::env::var("LLM_MODEL")
+                    .or_else(|_| std::env::var("RETAIN_LLM_MODEL"))
+                    .expect("LLM_MODEL or RETAIN_LLM_MODEL must be set"),
+            )
+            .unwrap()
+            .with_timeout_secs(crate::llm::DEFAULT_TIMEOUT_SECS)
+            .unwrap(),
         )
         .unwrap();
 
-        let request = CompletionRequest {
-            model: String::new(),
-            messages: vec![Message::text("user", "Say hello in exactly 3 words.")],
-            max_tokens: Some(64),
-            temperature: Some(0.0),
-            system: None,
-            ..Default::default()
-        };
+        let request = CompletionRequest::builder()
+            .message(Message::user("Say hello in exactly 3 words."))
+            .max_tokens(64)
+            .temperature(0.0)
+            .build();
 
         let resp = client.complete(request).await.unwrap();
         assert!(!resp.content.is_empty());
@@ -454,12 +430,15 @@ mod tests {
 
         let api_key = std::env::var("LLM_API_KEY").expect("LLM_API_KEY must be set");
         let client = AnthropicClient::new(
-            api_key,
-            std::env::var("LLM_MODEL")
-                .or_else(|_| std::env::var("RETAIN_LLM_MODEL"))
-                .expect("LLM_MODEL or RETAIN_LLM_MODEL must be set"),
-            crate::llm::DEFAULT_TIMEOUT_SECS,
-            PromptCacheConfig::Disabled,
+            AnthropicConfig::new(
+                api_key,
+                std::env::var("LLM_MODEL")
+                    .or_else(|_| std::env::var("RETAIN_LLM_MODEL"))
+                    .expect("LLM_MODEL or RETAIN_LLM_MODEL must be set"),
+            )
+            .unwrap()
+            .with_timeout_secs(crate::llm::DEFAULT_TIMEOUT_SECS)
+            .unwrap(),
         )
         .unwrap();
 
@@ -469,17 +448,13 @@ mod tests {
             hex: String,
         }
 
-        let request = CompletionRequest {
-            model: String::new(),
-            messages: vec![Message::text(
-                "user",
+        let request = CompletionRequest::builder()
+            .message(Message::user(
                 "Return a JSON object with fields \"name\" and \"hex\" for the color red. Only output JSON, nothing else.",
-            )],
-            max_tokens: Some(64),
-            temperature: Some(0.0),
-            system: None,
-            ..Default::default()
-        };
+            ))
+            .max_tokens(64)
+            .temperature(0.0)
+            .build();
 
         let color: Color = complete_structured(&client, request).await.unwrap();
         assert!(!color.name.is_empty());
@@ -496,21 +471,18 @@ mod tests {
             "this test requires an OAuth token (sk-ant-oat...)"
         );
         let client = AnthropicClient::new(
-            api_key,
-            "claude-sonnet-4-20250514".into(),
-            crate::llm::DEFAULT_TIMEOUT_SECS,
-            PromptCacheConfig::Disabled,
+            AnthropicConfig::new(api_key, "claude-sonnet-4-20250514")
+                .unwrap()
+                .with_timeout_secs(crate::llm::DEFAULT_TIMEOUT_SECS)
+                .unwrap(),
         )
         .unwrap();
 
-        let request = CompletionRequest {
-            model: String::new(),
-            messages: vec![Message::text("user", "Say hello in exactly 3 words.")],
-            max_tokens: Some(64),
-            temperature: Some(0.0),
-            system: None,
-            ..Default::default()
-        };
+        let request = CompletionRequest::builder()
+            .message(Message::user("Say hello in exactly 3 words."))
+            .max_tokens(64)
+            .temperature(0.0)
+            .build();
 
         let resp = client.complete(request).await.unwrap();
         println!("OAuth response: {}", resp.content);

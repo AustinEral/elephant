@@ -230,7 +230,7 @@ If merged source runs differed only in provenance-style fields, the merged manif
       "source_ids": ["01KK54YT6PV3KG9GRYNV65TV0K"]
     },
     "used_fallback": false,
-    "stop_reason": "tool_use",
+    "stop_reason": "tool_call",
     "response": "Melanie painted a lake sunrise in 2022 [01KK54YT6PV3KG9GRYNV65TV0K].",
     "source_ids": ["01KK54YT6PV3KG9GRYNV65TV0K"]
   },
@@ -274,7 +274,7 @@ If merged source runs differed only in provenance-style fields, the merged manif
 }
 ```
 
-`final_done` is the raw final `done()` tool payload captured from the reflect loop. It exists to explain blank or malformed answers: you can see the original tool arguments, whether fallback parsing was used, the provider `stop_reason`, and the normalized response/source ids that actually fed the benchmark result.
+`final_done` is the raw final `done()` tool payload captured from the reflect loop. It exists to explain blank or malformed answers: you can see the original tool arguments, whether fallback parsing was used, the normalized `stop_reason`, and the normalized response/source ids that actually fed the benchmark result.
 
 ## What matters most
 

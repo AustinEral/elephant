@@ -18,7 +18,10 @@ impl IntoResponse for Error {
     fn into_response(self) -> Response {
         let status = match &self {
             Error::NotFound(_) => StatusCode::NOT_FOUND,
-            Error::InvalidDisposition(_) | Error::InvalidId(_) | Error::Serialization(_) => {
+            Error::InvalidDisposition(_)
+            | Error::InvalidId(_)
+            | Error::Serialization(_)
+            | Error::Configuration(_) => {
                 StatusCode::BAD_REQUEST
             }
             Error::Llm(_)

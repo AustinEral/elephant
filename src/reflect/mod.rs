@@ -15,15 +15,16 @@ use serde::Deserialize;
 use tracing::{Instrument, debug, error, info, info_span, trace};
 
 use crate::error::Result;
-use crate::llm::LlmClient;
+use crate::llm::{
+    CompletionRequest, LlmClient, Message, ReasoningEffortConfig, ToolChoice, ToolDefinition,
+    ToolResult,
+};
 use crate::recall::RecallPipeline;
 use crate::storage::MemoryStore;
-use crate::types::llm::{
-    CompletionRequest, Message, ReasoningEffortConfig, ToolChoice, ToolDef, ToolResult,
-};
 use crate::types::{
     Fact, FactId, NetworkType, RecallQuery, ReflectDoneTrace, ReflectQuery, ReflectResult,
-    ReflectTraceStep, RetrievedFact, RetrievedSource, Source, SourceId, TurnId,
+    ReflectStopReason, ReflectTraceStep, RetrievedFact, RetrievedSource, Source, SourceId,
+    TurnId,
 };
 
 use disposition::verbalize_bank_profile;
@@ -102,6 +103,7 @@ impl DefaultReflectPipeline {
 
 /// Arguments for a search tool call (`search_observations` or `recall`).
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct SearchArgs {
     /// Semantic search query.
     query: String,
@@ -126,6 +128,7 @@ struct LookupSourcesArgs {
 
 /// Arguments for the `done` tool call — also used for fallback synthesis.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct DoneArgs {
     /// The answer with inline [fact-ID] citations.
     response: String,
@@ -134,24 +137,24 @@ struct DoneArgs {
     source_ids: Vec<String>,
 }
 
-fn tool_defs(enable_source_lookup: bool) -> Vec<ToolDef> {
+fn tool_defs(enable_source_lookup: bool) -> Vec<ToolDefinition> {
     let mut tools = vec![
-        ToolDef::from_schema::<SearchArgs>(
+        ToolDefinition::from_schema::<SearchArgs>(
             "search_observations",
             "Search consolidated observations (high-level summaries). Use first for the big picture.",
         ),
-        ToolDef::from_schema::<SearchArgs>(
+        ToolDefinition::from_schema::<SearchArgs>(
             "recall",
             "Search raw memories (facts and experiences). Ground truth data. Use to verify or fill gaps.",
         ),
     ];
     if enable_source_lookup {
-        tools.push(ToolDef::from_schema::<LookupSourcesArgs>(
+        tools.push(ToolDefinition::from_schema::<LookupSourcesArgs>(
             "lookup_sources",
             "Look up exact extraction inputs for one known fact ID. Use when original source text or source timing would help answer.",
         ));
     }
-    tools.push(ToolDef::from_schema::<DoneArgs>(
+    tools.push(ToolDefinition::from_schema::<DoneArgs>(
         "done",
         "Return the final answer with source citations.",
     ));
@@ -162,10 +165,10 @@ fn tool_defs_for_iteration(
     enable_source_lookup: bool,
     iteration: usize,
     last_iteration: usize,
-) -> (Vec<ToolDef>, ToolChoice) {
+) -> (Vec<ToolDefinition>, ToolChoice) {
     if iteration == last_iteration {
         return (
-            vec![ToolDef::from_schema::<DoneArgs>(
+            vec![ToolDefinition::from_schema::<DoneArgs>(
                 "done",
                 "Return the final answer with source citations.",
             )],
@@ -175,14 +178,14 @@ fn tool_defs_for_iteration(
 
     match iteration {
         0 => (
-            vec![ToolDef::from_schema::<SearchArgs>(
+            vec![ToolDefinition::from_schema::<SearchArgs>(
                 "search_observations",
                 "Search consolidated observations (high-level summaries). Use first for the big picture.",
             )],
             ToolChoice::Specific("search_observations".into()),
         ),
         1 => (
-            vec![ToolDef::from_schema::<SearchArgs>(
+            vec![ToolDefinition::from_schema::<SearchArgs>(
                 "recall",
                 "Search raw memories (facts and experiences). Ground truth data. Use to verify or fill gaps.",
             )],
@@ -226,7 +229,7 @@ impl DefaultReflectPipeline {
         } else {
             query.question.clone()
         };
-        let mut messages: Vec<Message> = vec![Message::text("user", user_content)];
+        let mut messages: Vec<Message> = vec![Message::user(user_content)];
 
         let mut seen_fact_ids: HashSet<FactId> = HashSet::new();
         let mut seen_source_ids: HashSet<SourceId> = HashSet::new();
@@ -254,16 +257,15 @@ impl DefaultReflectPipeline {
             let (iter_tools, tool_choice) =
                 tool_defs_for_iteration(self.enable_source_lookup, iteration, last_iteration);
 
-            let request = CompletionRequest {
-                messages: messages.clone(),
-                temperature: Some(REFLECT_TEMPERATURE),
-                reasoning_effort: ReasoningEffortConfig::current()?.reflect,
-                max_tokens: self.max_output_tokens,
-                system: Some(system_prompt.clone()),
-                tools: Some(iter_tools),
-                tool_choice: Some(tool_choice),
-                ..Default::default()
-            };
+            let request = CompletionRequest::builder()
+                .messages(messages.clone())
+                .temperature(REFLECT_TEMPERATURE)
+                .reasoning_effort_opt(ReasoningEffortConfig::current()?.reflect)
+                .max_tokens_opt(self.max_output_tokens)
+                .system(system_prompt.clone())
+                .tools(iter_tools)
+                .tool_choice(tool_choice)
+                .build();
 
             let llm_start = Instant::now();
             let response = self.llm.complete(request).await?;
@@ -499,18 +501,11 @@ impl DefaultReflectPipeline {
             }
 
             // Append assistant message with tool calls, then user message with results
-            messages.push(Message {
-                role: "assistant".into(),
-                content: response.content.clone(),
-                tool_calls: response.tool_calls.clone(),
-                tool_results: vec![],
-            });
-            messages.push(Message {
-                role: "user".into(),
-                content: String::new(),
-                tool_calls: vec![],
-                tool_results,
-            });
+            messages.push(Message::assistant_with_tool_calls(
+                response.content.clone(),
+                response.tool_calls.clone(),
+            ));
+            messages.push(Message::with_tool_results(tool_results));
         }
 
         // Should not be reachable — last iteration forces done() — but handle gracefully.
@@ -647,7 +642,7 @@ impl DefaultReflectPipeline {
                     raw_arguments: arguments.clone(),
                     used_fallback: false,
                     parse_error: None,
-                    stop_reason: stop_reason.map(str::to_string),
+                    stop_reason: stop_reason.map(ReflectStopReason::from_provider),
                     response: args.response.clone(),
                     source_ids: args.source_ids.clone(),
                 };
@@ -671,7 +666,7 @@ impl DefaultReflectPipeline {
                     raw_arguments: arguments.clone(),
                     used_fallback: true,
                     parse_error: Some(err.to_string()),
-                    stop_reason: stop_reason.map(str::to_string),
+                    stop_reason: stop_reason.map(ReflectStopReason::from_provider),
                     response,
                     source_ids: vec![],
                 };
@@ -786,7 +781,7 @@ mod tests {
     use crate::recall::{DefaultRecallPipeline, RecallPipeline};
     use crate::storage::MemoryStore;
     use crate::storage::mock::MockMemoryStore;
-    use crate::types::llm::CompletionResponse;
+    use crate::llm::{CompletionResponse, ToolCall};
     use crate::types::*;
     use chrono::{TimeZone, Utc};
 
@@ -887,7 +882,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: Some("tool_use".into()),
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_1".into(),
                 name: "search_observations".into(),
                 arguments: serde_json::json!({"query": "Rust memory", "reason": "overview"}),
@@ -901,7 +896,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: Some("tool_use".into()),
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_2".into(),
                 name: "recall".into(),
                 arguments: serde_json::json!({"query": "Rust memory safety", "reason": "details"}),
@@ -915,7 +910,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: Some("tool_use".into()),
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_3".into(),
                 name: "done".into(),
                 arguments: serde_json::json!({
@@ -946,7 +941,7 @@ mod tests {
         let final_done = result.final_done.expect("final done trace");
         assert_eq!(final_done.iteration, 2);
         assert!(!final_done.used_fallback);
-        assert_eq!(final_done.stop_reason.as_deref(), Some("tool_use"));
+        assert_eq!(final_done.stop_reason, Some(ReflectStopReason::ToolCall));
         assert!(final_done.response.contains("ownership"));
         assert_eq!(final_done.source_ids, vec![fact_id.to_string()]);
     }
@@ -960,7 +955,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: Some("tool_use".into()),
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_1".into(),
                 name: "search_observations".into(),
                 arguments: serde_json::json!({"query": "fallback", "reason": "overview"}),
@@ -972,7 +967,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: Some("tool_use".into()),
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_2".into(),
                 name: "recall".into(),
                 arguments: serde_json::json!({"query": "fallback", "reason": "details"}),
@@ -984,7 +979,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: Some("max_tokens".into()),
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_3".into(),
                 name: "done".into(),
                 arguments: serde_json::json!({
@@ -1009,7 +1004,7 @@ mod tests {
         let final_done = result.final_done.expect("final done trace");
         assert!(final_done.used_fallback);
         assert!(final_done.parse_error.is_some());
-        assert_eq!(final_done.stop_reason.as_deref(), Some("max_tokens"));
+        assert_eq!(final_done.stop_reason, Some(ReflectStopReason::MaxTokens));
         assert_eq!(final_done.response, "");
         assert!(final_done.source_ids.is_empty());
         assert_eq!(final_done.assistant_content, "Synthesizing");
@@ -1066,7 +1061,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: None,
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_1".into(),
                 name: "search_observations".into(),
                 arguments: serde_json::json!({"query": "project timeline", "reason": "overview"}),
@@ -1078,7 +1073,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: None,
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_2".into(),
                 name: "recall".into(),
                 arguments: serde_json::json!({"query": "project timeline", "reason": "details"}),
@@ -1090,7 +1085,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: None,
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_3".into(),
                 name: "done".into(),
                 arguments: serde_json::json!({
@@ -1159,7 +1154,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: Some("tool_use".into()),
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_1".into(),
                 name: "search_observations".into(),
                 arguments: serde_json::json!({"query": "launch plan", "reason": "overview"}),
@@ -1171,7 +1166,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: Some("tool_use".into()),
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_2".into(),
                 name: "recall".into(),
                 arguments: serde_json::json!({"query": "Avery launch plan", "reason": "details"}),
@@ -1183,7 +1178,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: Some("tool_use".into()),
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_3".into(),
                 name: "lookup_sources".into(),
                 arguments: serde_json::json!({
@@ -1199,7 +1194,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: Some("tool_use".into()),
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_4".into(),
                 name: "done".into(),
                 arguments: serde_json::json!({
@@ -1289,7 +1284,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: Some("tool_use".into()),
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_1".into(),
                 name: "search_observations".into(),
                 arguments: serde_json::json!({"query": "launch plan", "reason": "overview"}),
@@ -1301,7 +1296,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: Some("tool_use".into()),
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_2".into(),
                 name: "recall".into(),
                 arguments: serde_json::json!({"query": "Avery July review", "reason": "details"}),
@@ -1313,7 +1308,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: Some("tool_use".into()),
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_3".into(),
                 name: "lookup_sources".into(),
                 arguments: serde_json::json!({
@@ -1329,7 +1324,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: Some("tool_use".into()),
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_4".into(),
                 name: "done".into(),
                 arguments: serde_json::json!({
@@ -1371,9 +1366,21 @@ mod tests {
         let enabled = tool_defs(true);
         let disabled = tool_defs(false);
 
-        assert!(enabled.iter().any(|tool| tool.name == "lookup_sources"));
-        assert!(!disabled.iter().any(|tool| tool.name == "lookup_sources"));
-        assert!(disabled.iter().any(|tool| tool.name == "done"));
+        assert!(enabled.iter().any(|tool| tool.name() == "lookup_sources"));
+        assert!(!disabled.iter().any(|tool| tool.name() == "lookup_sources"));
+        assert!(disabled.iter().any(|tool| tool.name() == "done"));
+    }
+
+    #[test]
+    fn reflect_tool_schemas_disallow_unknown_fields() {
+        for tool in tool_defs(true) {
+            assert_eq!(
+                tool.input_schema()["additionalProperties"],
+                serde_json::Value::Bool(false),
+                "{} must set additionalProperties=false for OpenAI strict tools",
+                tool.name(),
+            );
+        }
     }
 
     #[test]
@@ -1384,7 +1391,7 @@ mod tests {
         assert_eq!(
             tools
                 .iter()
-                .map(|tool| tool.name.as_str())
+                .map(|tool| tool.name())
                 .collect::<Vec<_>>(),
             vec!["search_observations"]
         );
@@ -1394,7 +1401,7 @@ mod tests {
         assert_eq!(
             tools
                 .iter()
-                .map(|tool| tool.name.as_str())
+                .map(|tool| tool.name())
                 .collect::<Vec<_>>(),
             vec!["recall"]
         );
@@ -1404,7 +1411,7 @@ mod tests {
         assert_eq!(
             tools
                 .iter()
-                .map(|tool| tool.name.as_str())
+                .map(|tool| tool.name())
                 .collect::<Vec<_>>(),
             vec!["search_observations", "recall", "lookup_sources", "done"]
         );
@@ -1414,7 +1421,7 @@ mod tests {
         assert_eq!(
             tools
                 .iter()
-                .map(|tool| tool.name.as_str())
+                .map(|tool| tool.name())
                 .collect::<Vec<_>>(),
             vec!["done"]
         );
@@ -1441,7 +1448,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: None,
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_1".into(),
                 name: "search_observations".into(),
                 arguments: serde_json::json!({"query": "data", "reason": "overview"}),
@@ -1455,7 +1462,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: None,
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_2".into(),
                 name: "recall".into(),
                 arguments: serde_json::json!({"query": "data", "reason": "details"}),
@@ -1469,7 +1476,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: None,
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_3".into(),
                 name: "done".into(),
                 arguments: serde_json::json!({
@@ -1535,7 +1542,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: None,
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_1".into(),
                 name: "search_observations".into(),
                 arguments: serde_json::json!({"query": "testing", "reason": "overview"}),
@@ -1549,7 +1556,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: None,
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_2".into(),
                 name: "recall".into(),
                 arguments: serde_json::json!({"query": "testing", "reason": "details"}),
@@ -1563,7 +1570,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: None,
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_3".into(),
                 name: "done".into(),
                 arguments: serde_json::json!({
@@ -1600,7 +1607,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: None,
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_1".into(),
                 name: "search_observations".into(),
                 arguments: serde_json::json!({"query": "meaning of life", "reason": "overview"}),
@@ -1614,7 +1621,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: None,
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_2".into(),
                 name: "recall".into(),
                 arguments: serde_json::json!({"query": "meaning of life", "reason": "details"}),
@@ -1628,7 +1635,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: None,
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_3".into(),
                 name: "done".into(),
                 arguments: serde_json::json!({
@@ -1677,7 +1684,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: None,
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_1".into(),
                 name: "search_observations".into(),
                 arguments: serde_json::json!({"query": "analysis", "reason": "overview"}),
@@ -1690,7 +1697,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: None,
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_2".into(),
                 name: "recall".into(),
                 arguments: serde_json::json!({"query": "analysis", "reason": "details"}),
@@ -1703,7 +1710,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: None,
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_3".into(),
                 name: "done".into(),
                 arguments: serde_json::json!({
@@ -1789,7 +1796,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: None,
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_1".into(),
                 name: "search_observations".into(),
                 arguments: serde_json::json!({"query": "data", "reason": "overview"}),
@@ -1802,7 +1809,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: None,
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_2".into(),
                 name: "recall".into(),
                 arguments: serde_json::json!({"query": "first data", "reason": "details"}),
@@ -1815,7 +1822,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: None,
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_3".into(),
                 name: "recall".into(),
                 arguments: serde_json::json!({"query": "second data", "reason": "more details"}),
@@ -1828,7 +1835,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 20,
             stop_reason: None,
-            tool_calls: vec![crate::types::llm::ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_4".into(),
                 name: "done".into(),
                 arguments: serde_json::json!({

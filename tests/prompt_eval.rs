@@ -9,9 +9,10 @@
 //!
 //! Only requires LLM_PROVIDER + LLM_API_KEY + LLM_MODEL from .env.
 
+mod support;
+
 use elephant::llm::complete_structured;
-use elephant::llm::{self, LlmClient, Provider, ProviderConfig};
-use elephant::types::llm::{CompletionRequest, Message, PromptCacheConfig};
+use elephant::llm::{CompletionRequest, LlmClient, Message};
 use elephant::types::pipeline::ExtractedFact;
 
 use serde::Deserialize;
@@ -24,26 +25,8 @@ fn init() {
     let _ = dotenvy::dotenv();
 }
 
-fn env(key: &str) -> String {
-    std::env::var(key).unwrap_or_else(|_| panic!("{key} must be set in .env"))
-}
-
 fn llm_client() -> Box<dyn LlmClient> {
-    let provider = env("LLM_PROVIDER")
-        .parse::<Provider>()
-        .unwrap_or_else(|e| panic!("invalid LLM_PROVIDER: {e}"));
-    let model = std::env::var("LLM_MODEL")
-        .or_else(|_| std::env::var("RETAIN_LLM_MODEL"))
-        .unwrap_or_else(|_| panic!("LLM_MODEL or RETAIN_LLM_MODEL must be set in .env"));
-    llm::build_client(&ProviderConfig {
-        provider,
-        api_key: env("LLM_API_KEY"),
-        model,
-        base_url: std::env::var("LLM_BASE_URL").ok(),
-        timeout_secs: elephant::llm::DEFAULT_TIMEOUT_SECS,
-        prompt_cache: PromptCacheConfig::Disabled,
-    })
-    .unwrap()
+    support::build_client_from_env(&["LLM_MODEL", "RETAIN_LLM_MODEL"]).unwrap()
 }
 
 fn extraction_request(content: &str, speaker: Option<&str>) -> CompletionRequest {
@@ -53,14 +36,11 @@ fn extraction_request(content: &str, speaker: Option<&str>) -> CompletionRequest
         user_msg.push_str(&format!("Speaker: {name}\n\n"));
     }
     user_msg.push_str(content);
-    CompletionRequest {
-        model: String::new(),
-        messages: vec![Message::text("user", user_msg)],
-        max_tokens: None,
-        temperature: Some(0.0),
-        system: Some(system),
-        ..Default::default()
-    }
+    CompletionRequest::builder()
+        .message(Message::user(user_msg))
+        .temperature(0.0)
+        .system(system)
+        .build()
 }
 
 fn reflect_request(context: &str, opinions: &str, question: &str) -> CompletionRequest {
@@ -69,17 +49,10 @@ fn reflect_request(context: &str, opinions: &str, question: &str) -> CompletionR
         .replace("{context}", context)
         .replace("{opinions}", opinions)
         .replace("{question}", question);
-    CompletionRequest {
-        model: String::new(),
-        messages: vec![Message::text("user", user_prompt)],
-        max_tokens: None,
-        temperature: Some(0.3),
-        reasoning_effort: None,
-        system: None,
-        tools: None,
-        tool_choice: None,
-        tool_results: vec![],
-    }
+    CompletionRequest::builder()
+        .message(Message::user(user_prompt))
+        .temperature(0.3)
+        .build()
 }
 
 fn synthesize_observation_request(entity_name: &str, facts: &str) -> CompletionRequest {
@@ -87,33 +60,19 @@ fn synthesize_observation_request(entity_name: &str, facts: &str) -> CompletionR
     let user_prompt = template
         .replace("{entity_name}", entity_name)
         .replace("{facts}", facts);
-    CompletionRequest {
-        model: String::new(),
-        messages: vec![Message::text("user", user_prompt)],
-        max_tokens: None,
-        temperature: Some(0.3),
-        reasoning_effort: None,
-        system: None,
-        tools: None,
-        tool_choice: None,
-        tool_results: vec![],
-    }
+    CompletionRequest::builder()
+        .message(Message::user(user_prompt))
+        .temperature(0.3)
+        .build()
 }
 
 fn merge_opinions_request(opinions: &str) -> CompletionRequest {
     let template = include_str!("../prompts/merge_opinions.txt");
     let user_prompt = template.replace("{opinions}", opinions);
-    CompletionRequest {
-        model: String::new(),
-        messages: vec![Message::text("user", user_prompt)],
-        max_tokens: None,
-        temperature: Some(0.0),
-        reasoning_effort: None,
-        system: None,
-        tools: None,
-        tool_choice: None,
-        tool_results: vec![],
-    }
+    CompletionRequest::builder()
+        .message(Message::user(user_prompt))
+        .temperature(0.0)
+        .build()
 }
 
 // ---------------------------------------------------------------------------

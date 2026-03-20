@@ -1,20 +1,19 @@
-//! OpenAI Chat Completions API client.
+//! OpenAI Responses API client.
 
 use async_trait::async_trait;
 use reqwest::Client;
-use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize};
 
-use crate::error::Result;
-use crate::llm::LlmClient;
-use crate::types::llm::{
-    CompletionRequest, CompletionResponse, OpenAiPromptCacheConfig, OpenAiPromptCacheRetention,
-    PromptCacheConfig, PromptCacheUsage, ReasoningEffort, ToolCall, ToolChoice,
+use crate::error::{Error, Result};
+use crate::llm::{
+    CompletionRequest, CompletionResponse, LlmClient, Message, OpenAiConfig,
+    OpenAiPromptCacheConfig, OpenAiPromptCacheRetention, PromptCacheUsage, ReasoningEffort,
+    ToolCall, ToolChoice, ToolDefinition, ToolResult,
 };
 
 const API_URL: &str = "https://api.openai.com/v1";
 
-/// Client for the OpenAI Chat Completions API.
+/// Client for the OpenAI Responses API.
 pub struct OpenAiClient {
     client: Client,
     api_key: String,
@@ -24,240 +23,293 @@ pub struct OpenAiClient {
 }
 
 impl OpenAiClient {
-    /// Create a new OpenAI client with optional base URL for compatible providers.
-    pub fn new(
-        api_key: String,
-        model: String,
-        base_url: Option<String>,
-        timeout_secs: u64,
-        prompt_cache: PromptCacheConfig,
-    ) -> Result<Self> {
+    /// Create a new OpenAI Responses client with an optional base URL override.
+    pub fn new(config: OpenAiConfig) -> Result<Self> {
         let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(timeout_secs))
+            .timeout(std::time::Duration::from_secs(config.timeout_secs()))
             .build()
-            .map_err(|e| crate::error::Error::Internal(e.to_string()))?;
+            .map_err(|e| Error::Internal(e.to_string()))?;
+
         Ok(Self {
             client,
-            api_key,
-            default_model: model,
-            base_url: base_url.unwrap_or_else(|| API_URL.to_string()),
-            prompt_cache: match prompt_cache {
-                PromptCacheConfig::OpenAi(config) => Some(config),
-                _ => None,
-            },
+            api_key: config.api_key().to_string(),
+            default_model: config.model().to_string(),
+            base_url: config.base_url().unwrap_or(API_URL).to_string(),
+            prompt_cache: config.prompt_cache().cloned(),
         })
     }
 }
 
-// --- OpenAI API request/response types ---
-
-struct OpenAiRequest {
+#[derive(Serialize)]
+struct OpenAiResponsesRequest {
     model: String,
-    messages: Vec<OpenAiMessage>,
-    max_tokens: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instructions: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    input: Vec<OpenAiResponsesInputItem>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_output_tokens: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
-    reasoning_effort: Option<ReasoningEffort>,
-    tools: Option<Vec<OpenAiTool>>,
-    tool_choice: Option<OpenAiToolChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<OpenAiResponsesReasoning>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<OpenAiResponsesTool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<OpenAiResponsesToolChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     prompt_cache_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     prompt_cache_retention: Option<OpenAiPromptCacheRetention>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parallel_tool_calls: Option<bool>,
 }
 
-impl OpenAiRequest {
-    fn uses_reasoning_model_family(model: &str) -> bool {
+impl OpenAiResponsesRequest {
+    fn supports_reasoning(model: &str) -> bool {
         model.starts_with("gpt-5")
             || model.starts_with("o1")
             || model.starts_with("o3")
             || model.starts_with("o4")
     }
 
-    fn uses_max_completion_tokens(model: &str) -> bool {
-        Self::uses_reasoning_model_family(model)
+    fn temperature_for_model(
+        model: &str,
+        temperature: Option<f32>,
+        reasoning_effort: Option<ReasoningEffort>,
+    ) -> Option<f32> {
+        if model.starts_with("gpt-5.1") || model.starts_with("gpt-5.2") {
+            return matches!(reasoning_effort, Some(ReasoningEffort::None))
+                .then_some(temperature)
+                .flatten();
+        }
+
+        if model.starts_with("gpt-5") {
+            return None;
+        }
+
+        temperature
     }
 
-    fn temperature_for_model(model: &str, temperature: Option<f32>) -> Option<f32> {
-        if model.starts_with("gpt-5")
-            && !model.starts_with("gpt-5.1")
-            && !model.starts_with("gpt-5.2")
-        {
-            None
-        } else {
-            temperature
+    fn from_completion_request(
+        request: &CompletionRequest,
+        model: String,
+        prompt_cache: Option<&OpenAiPromptCacheConfig>,
+    ) -> Self {
+        let mut input = Vec::new();
+        for message in request.messages() {
+            input.extend(OpenAiResponsesInputItem::from_message(message));
+        }
+
+        let tools = request
+            .tools()
+            .map(|defs| defs.iter().cloned().map(OpenAiResponsesTool::from).collect());
+        let parallel_tool_calls = tools.as_ref().map(|_| true);
+        let supports_reasoning = Self::supports_reasoning(&model);
+        let temperature =
+            Self::temperature_for_model(&model, request.temperature(), request.reasoning_effort());
+        let reasoning = request
+            .reasoning_effort()
+            .filter(|_| supports_reasoning)
+            .map(OpenAiResponsesReasoning::from);
+
+        Self {
+            model,
+            instructions: request.system().map(str::to_string),
+            input,
+            max_output_tokens: request.max_tokens(),
+            temperature,
+            reasoning,
+            tools,
+            tool_choice: request.tool_choice().cloned().map(OpenAiResponsesToolChoice::from),
+            prompt_cache_key: prompt_cache.and_then(|config| config.key().map(str::to_string)),
+            prompt_cache_retention: prompt_cache.and_then(|config| config.retention()),
+            parallel_tool_calls,
         }
     }
-
-    fn uses_developer_role(model: &str) -> bool {
-        model.starts_with("gpt-5")
-            || model.starts_with("o1")
-            || model.starts_with("o3")
-            || model.starts_with("o4")
-    }
-}
-
-impl Serialize for OpenAiRequest {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let uses_max_completion_tokens = Self::uses_max_completion_tokens(&self.model);
-        let mut map = serializer.serialize_map(None)?;
-        map.serialize_entry("model", &self.model)?;
-        map.serialize_entry("messages", &self.messages)?;
-        if uses_max_completion_tokens {
-            if let Some(max_tokens) = self.max_tokens {
-                map.serialize_entry("max_completion_tokens", &max_tokens)?;
-            }
-        } else if let Some(max_tokens) = self.max_tokens {
-            map.serialize_entry("max_tokens", &max_tokens)?;
-        }
-        if let Some(temperature) = Self::temperature_for_model(&self.model, self.temperature) {
-            map.serialize_entry("temperature", &temperature)?;
-        }
-        if let Some(reasoning_effort) = self.reasoning_effort
-            && Self::uses_reasoning_model_family(&self.model)
-        {
-            map.serialize_entry("reasoning_effort", &reasoning_effort)?;
-        }
-        if let Some(tools) = &self.tools {
-            map.serialize_entry("tools", tools)?;
-        }
-        if let Some(tool_choice) = &self.tool_choice {
-            map.serialize_entry("tool_choice", tool_choice)?;
-        }
-        if let Some(prompt_cache_key) = &self.prompt_cache_key {
-            map.serialize_entry("prompt_cache_key", prompt_cache_key)?;
-        }
-        if let Some(prompt_cache_retention) = self.prompt_cache_retention {
-            map.serialize_entry("prompt_cache_retention", &prompt_cache_retention)?;
-        }
-        map.end()
-    }
-}
-
-#[derive(Serialize, Default)]
-struct OpenAiMessage {
-    role: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_call_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_calls: Option<Vec<OpenAiReqToolCall>>,
 }
 
 #[derive(Serialize)]
-struct OpenAiReqToolCall {
-    id: String,
+struct OpenAiResponsesReasoning {
+    effort: ReasoningEffort,
+}
+
+impl From<ReasoningEffort> for OpenAiResponsesReasoning {
+    fn from(effort: ReasoningEffort) -> Self {
+        Self { effort }
+    }
+}
+
+#[derive(Serialize)]
+struct OpenAiResponsesTool {
     #[serde(rename = "type")]
-    tool_type: String,
-    function: OpenAiReqFunctionCall,
-}
-
-#[derive(Serialize)]
-struct OpenAiReqFunctionCall {
-    name: String,
-    arguments: String,
-}
-
-#[derive(Serialize)]
-struct OpenAiTool {
-    #[serde(rename = "type")]
-    tool_type: String,
-    function: OpenAiFunction,
-}
-
-#[derive(Serialize)]
-struct OpenAiFunction {
+    tool_type: &'static str,
     name: String,
     description: String,
     parameters: serde_json::Value,
+    strict: bool,
+}
+
+impl From<ToolDefinition> for OpenAiResponsesTool {
+    fn from(tool: ToolDefinition) -> Self {
+        Self {
+            tool_type: "function",
+            name: tool.name().to_string(),
+            description: tool.description().to_string(),
+            parameters: tool.input_schema().clone(),
+            strict: true,
+        }
+    }
 }
 
 #[derive(Serialize)]
 #[serde(untagged)]
-enum OpenAiToolChoice {
-    String(String),
-    Specific(OpenAiToolChoiceSpecific),
+enum OpenAiResponsesToolChoice {
+    Mode(String),
+    Function {
+        #[serde(rename = "type")]
+        choice_type: &'static str,
+        name: String,
+    },
+}
+
+impl From<ToolChoice> for OpenAiResponsesToolChoice {
+    fn from(choice: ToolChoice) -> Self {
+        match choice {
+            ToolChoice::Auto => Self::Mode("auto".into()),
+            ToolChoice::Required => Self::Mode("required".into()),
+            ToolChoice::None => Self::Mode("none".into()),
+            ToolChoice::Specific(name) => Self::Function {
+                choice_type: "function",
+                name,
+            },
+        }
+    }
 }
 
 #[derive(Serialize)]
-struct OpenAiToolChoiceSpecific {
-    #[serde(rename = "type")]
-    tool_type: String,
-    function: OpenAiToolChoiceFunction,
+#[serde(tag = "type")]
+enum OpenAiResponsesInputItem {
+    #[serde(rename = "message")]
+    Message {
+        role: String,
+        content: Vec<OpenAiResponsesInputContent>,
+    },
+    #[serde(rename = "function_call")]
+    FunctionCall {
+        call_id: String,
+        name: String,
+        arguments: String,
+    },
+    #[serde(rename = "function_call_output")]
+    FunctionCallOutput { call_id: String, output: String },
+}
+
+impl OpenAiResponsesInputItem {
+    fn from_message(message: &Message) -> Vec<Self> {
+        let mut items = Vec::new();
+
+        if !message.content().is_empty() {
+            items.push(Self::Message {
+                role: message.role().as_str().to_string(),
+                content: vec![OpenAiResponsesInputContent::Text {
+                    text: message.content().to_string(),
+                }],
+            });
+        }
+
+        items.extend(
+            message
+                .tool_calls()
+                .iter()
+                .map(|tool_call| Self::FunctionCall {
+                    call_id: tool_call.id.clone(),
+                    name: tool_call.name.clone(),
+                    arguments: tool_call.arguments.to_string(),
+                }),
+        );
+
+        items.extend(
+            message
+                .tool_results_ref()
+                .iter()
+                .cloned()
+                .map(Self::from_tool_result),
+        );
+
+        items
+    }
+
+    fn from_tool_result(tool_result: ToolResult) -> Self {
+        Self::FunctionCallOutput {
+            call_id: tool_result.tool_call_id,
+            output: tool_result.content,
+        }
+    }
 }
 
 #[derive(Serialize)]
-struct OpenAiToolChoiceFunction {
-    name: String,
+#[serde(tag = "type")]
+enum OpenAiResponsesInputContent {
+    #[serde(rename = "input_text")]
+    Text { text: String },
 }
 
 #[derive(Deserialize)]
-struct OpenAiResponse {
-    choices: Vec<OpenAiChoice>,
-    usage: Option<OpenAiUsage>,
-}
-
-#[derive(Deserialize)]
-struct OpenAiChoice {
-    message: OpenAiMessageResp,
-    finish_reason: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct OpenAiMessageResp {
-    content: Option<OpenAiMessageContent>,
+struct OpenAiResponsesResponse {
     #[serde(default)]
-    refusal: Option<String>,
+    output: Vec<OpenAiResponsesOutputItem>,
     #[serde(default)]
-    tool_calls: Vec<OpenAiRespToolCall>,
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum OpenAiMessageContent {
-    Text(String),
-    Parts(Vec<OpenAiContentPart>),
-}
-
-#[derive(Deserialize)]
-struct OpenAiContentPart {
-    #[serde(rename = "type")]
-    part_type: String,
+    usage: Option<OpenAiResponsesUsage>,
     #[serde(default)]
-    text: Option<String>,
+    incomplete_details: Option<OpenAiResponsesIncompleteDetails>,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type")]
+enum OpenAiResponsesOutputItem {
+    #[serde(rename = "message")]
+    Message {
+        #[serde(default)]
+        content: Vec<OpenAiResponsesOutputMessageContent>,
+    },
+    #[serde(rename = "function_call")]
+    FunctionCall {
+        call_id: String,
+        name: String,
+        arguments: String,
+    },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type")]
+enum OpenAiResponsesOutputMessageContent {
+    #[serde(rename = "output_text")]
+    Text { text: String },
+    #[serde(rename = "refusal")]
+    Refusal { refusal: String },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Deserialize)]
+struct OpenAiResponsesUsage {
+    input_tokens: usize,
+    output_tokens: usize,
     #[serde(default)]
-    refusal: Option<String>,
+    input_tokens_details: Option<OpenAiResponsesInputTokenDetails>,
 }
 
 #[derive(Deserialize)]
-struct OpenAiRespToolCall {
-    id: String,
-    function: OpenAiRespFunctionCall,
-}
-
-#[derive(Deserialize)]
-struct OpenAiRespFunctionCall {
-    name: String,
-    arguments: String,
-}
-
-#[derive(Deserialize)]
-struct OpenAiUsage {
-    prompt_tokens: usize,
-    completion_tokens: usize,
-    #[serde(default)]
-    prompt_tokens_details: Option<OpenAiPromptTokensDetails>,
-}
-
-#[derive(Deserialize)]
-struct OpenAiPromptTokensDetails {
+struct OpenAiResponsesInputTokenDetails {
     #[serde(default)]
     cached_tokens: usize,
 }
 
-impl From<OpenAiPromptTokensDetails> for PromptCacheUsage {
-    fn from(details: OpenAiPromptTokensDetails) -> Self {
+impl From<OpenAiResponsesInputTokenDetails> for PromptCacheUsage {
+    fn from(details: OpenAiResponsesInputTokenDetails) -> Self {
         Self {
             cached_tokens: Some(details.cached_tokens),
             cache_read_input_tokens: None,
@@ -266,50 +318,76 @@ impl From<OpenAiPromptTokensDetails> for PromptCacheUsage {
     }
 }
 
-impl OpenAiResponse {
-    fn into_completion_response(self) -> CompletionResponse {
-        let choice = self.choices.into_iter().next();
-        let content = choice
-            .as_ref()
-            .map(|c| c.message.content_text())
-            .filter(|content| !content.is_empty())
-            .or_else(|| choice.as_ref().and_then(|c| c.message.refusal_text()))
-            .unwrap_or_default();
-        let stop_reason = choice.as_ref().and_then(|c| {
-            if c.message.refusal_text().is_some() {
-                Some("refusal".into())
-            } else {
-                c.finish_reason.clone()
-            }
-        });
+#[derive(Deserialize)]
+struct OpenAiResponsesIncompleteDetails {
+    reason: String,
+}
 
-        let tool_calls: Vec<ToolCall> = choice
-            .map(|c| {
-                c.message
-                    .tool_calls
-                    .into_iter()
-                    .filter_map(|tc| {
-                        let arguments: serde_json::Value =
-                            serde_json::from_str(&tc.function.arguments).ok()?;
-                        Some(ToolCall {
-                            id: tc.id,
-                            name: tc.function.name,
+impl From<OpenAiResponsesResponse> for CompletionResponse {
+    fn from(response: OpenAiResponsesResponse) -> Self {
+        let mut content_parts = Vec::new();
+        let mut refusal_parts = Vec::new();
+        let mut tool_calls = Vec::new();
+
+        for item in response.output {
+            match item {
+                OpenAiResponsesOutputItem::Message { content } => {
+                    for part in content {
+                        match part {
+                            OpenAiResponsesOutputMessageContent::Text { text }
+                                if !text.is_empty() =>
+                            {
+                                content_parts.push(text);
+                            }
+                            OpenAiResponsesOutputMessageContent::Refusal { refusal }
+                                if !refusal.is_empty() =>
+                            {
+                                refusal_parts.push(refusal);
+                            }
+                            OpenAiResponsesOutputMessageContent::Text { .. }
+                            | OpenAiResponsesOutputMessageContent::Refusal { .. }
+                            | OpenAiResponsesOutputMessageContent::Other => {}
+                        }
+                    }
+                }
+                OpenAiResponsesOutputItem::FunctionCall {
+                    call_id,
+                    name,
+                    arguments,
+                } => {
+                    if let Ok(arguments) = serde_json::from_str(&arguments) {
+                        tool_calls.push(ToolCall {
+                            id: call_id,
+                            name,
                             arguments,
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+                        });
+                    }
+                }
+                OpenAiResponsesOutputItem::Other => {}
+            }
+        }
 
-        let (input_tokens, output_tokens, prompt_cache) = self
+        let content = if content_parts.is_empty() {
+            refusal_parts.join("")
+        } else {
+            content_parts.join("")
+        };
+
+        let stop_reason = if refusal_parts.is_empty() {
+            response.incomplete_details.map(|details| details.reason)
+        } else {
+            Some("refusal".into())
+        };
+
+        let (input_tokens, output_tokens, prompt_cache) = response
             .usage
-            .map(|u| {
-                let prompt_cache = u.prompt_tokens_details.map(PromptCacheUsage::from);
-                (u.prompt_tokens, u.completion_tokens, prompt_cache)
+            .map(|usage| {
+                let prompt_cache = usage.input_tokens_details.map(PromptCacheUsage::from);
+                (usage.input_tokens, usage.output_tokens, prompt_cache)
             })
             .unwrap_or((0, 0, None));
 
-        CompletionResponse {
+        Self {
             content,
             input_tokens,
             output_tokens,
@@ -320,184 +398,34 @@ impl OpenAiResponse {
     }
 }
 
-impl OpenAiMessageResp {
-    fn content_text(&self) -> String {
-        match &self.content {
-            Some(OpenAiMessageContent::Text(text)) => text.clone(),
-            Some(OpenAiMessageContent::Parts(parts)) => parts
-                .iter()
-                .filter_map(OpenAiContentPart::visible_text)
-                .collect::<Vec<_>>()
-                .join(""),
-            None => String::new(),
-        }
-    }
-
-    fn refusal_text(&self) -> Option<String> {
-        self.refusal.clone().or_else(|| match &self.content {
-            Some(OpenAiMessageContent::Parts(parts)) => {
-                let refusal = parts
-                    .iter()
-                    .filter_map(OpenAiContentPart::refusal_text)
-                    .collect::<Vec<_>>()
-                    .join("");
-                (!refusal.is_empty()).then_some(refusal)
-            }
-            _ => None,
-        })
-    }
-}
-
-impl OpenAiContentPart {
-    fn visible_text(&self) -> Option<&str> {
-        (self.part_type == "text")
-            .then_some(self.text.as_deref())
-            .flatten()
-    }
-
-    fn refusal_text(&self) -> Option<&str> {
-        (self.part_type == "refusal")
-            .then_some(self.refusal.as_deref())
-            .flatten()
-    }
-}
-
 #[async_trait]
 impl LlmClient for OpenAiClient {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
-        let model = super::resolve_model(request.model, &self.default_model);
-        let requested_max_tokens = request.max_tokens;
-        let requested_temperature = request.temperature;
-        let requested_reasoning_effort = request.reasoning_effort;
+        let model = super::resolve_model(request.model(), &self.default_model);
+        let requested_max_tokens = request.max_tokens();
+        let requested_temperature = request.temperature();
+        let requested_reasoning_effort = request.reasoning_effort();
 
-        // Build messages: system prompt goes as a system message in the array
-        let mut messages: Vec<OpenAiMessage> = Vec::new();
-        if let Some(system) = request.system {
-            messages.push(OpenAiMessage {
-                role: if OpenAiRequest::uses_developer_role(&model) {
-                    "developer".into()
-                } else {
-                    "system".into()
-                },
-                content: Some(system),
-                ..Default::default()
-            });
-        }
-        for m in &request.messages {
-            let tool_calls = if m.tool_calls.is_empty() {
-                None
-            } else {
-                Some(
-                    m.tool_calls
-                        .iter()
-                        .map(|tc| OpenAiReqToolCall {
-                            id: tc.id.clone(),
-                            tool_type: "function".into(),
-                            function: OpenAiReqFunctionCall {
-                                name: tc.name.clone(),
-                                arguments: tc.arguments.to_string(),
-                            },
-                        })
-                        .collect(),
-                )
-            };
-            let should_emit_message =
-                !m.content.is_empty() || tool_calls.is_some() || m.tool_results.is_empty();
-            if should_emit_message {
-                messages.push(OpenAiMessage {
-                    role: m.role.clone(),
-                    content: if m.content.is_empty() {
-                        None
-                    } else {
-                        Some(m.content.clone())
-                    },
-                    tool_calls,
-                    ..Default::default()
-                });
-            }
-            // OpenAI requires tool_results as separate role="tool" messages
-            for tr in &m.tool_results {
-                messages.push(OpenAiMessage {
-                    role: "tool".into(),
-                    content: Some(tr.content.clone()),
-                    tool_call_id: Some(tr.tool_call_id.clone()),
-                    ..Default::default()
-                });
-            }
-        }
-        // Append legacy tool_results from CompletionRequest
-        for tr in &request.tool_results {
-            messages.push(OpenAiMessage {
-                role: "tool".into(),
-                content: Some(tr.content.clone()),
-                tool_call_id: Some(tr.tool_call_id.clone()),
-                ..Default::default()
-            });
-        }
-
-        // Map tools
-        let tools = request.tools.map(|defs| {
-            defs.into_iter()
-                .map(|t| OpenAiTool {
-                    tool_type: "function".into(),
-                    function: OpenAiFunction {
-                        name: t.name,
-                        description: t.description,
-                        parameters: t.input_schema,
-                    },
-                })
-                .collect()
-        });
-
-        let tool_choice = request.tool_choice.map(|tc| match tc {
-            ToolChoice::Auto => OpenAiToolChoice::String("auto".into()),
-            ToolChoice::Required => OpenAiToolChoice::String("required".into()),
-            ToolChoice::None => OpenAiToolChoice::String("none".into()),
-            ToolChoice::Specific(name) => OpenAiToolChoice::Specific(OpenAiToolChoiceSpecific {
-                tool_type: "function".into(),
-                function: OpenAiToolChoiceFunction { name },
-            }),
-        });
-
-        let body = OpenAiRequest {
-            model: model.clone(),
-            messages,
-            max_tokens: request.max_tokens,
-            temperature: request.temperature,
-            reasoning_effort: request.reasoning_effort,
-            tools,
-            tool_choice,
-            prompt_cache_key: self
-                .prompt_cache
-                .as_ref()
-                .and_then(|config| config.key.clone()),
-            prompt_cache_retention: self
-                .prompt_cache
-                .as_ref()
-                .and_then(|config| config.retention),
-        };
-
-        let request_json = serde_json::to_string(&body).map_err(|e| {
-            crate::error::Error::Llm(format!("failed to serialize OpenAI request: {e}"))
-        })?;
-
-        let url = format!("{}/chat/completions", self.base_url);
+        let body = OpenAiResponsesRequest::from_completion_request(
+            &request,
+            model.clone(),
+            self.prompt_cache.as_ref(),
+        );
+        let url = format!("{}/responses", self.base_url);
 
         let resp_text = super::send_and_check(
             "OpenAI",
             self.client
                 .post(&url)
-                .header("Authorization", format!("Bearer {}", self.api_key))
-                .header("Content-Type", "application/json")
-                .body(request_json.clone()),
+                .bearer_auth(&self.api_key)
+                .json(&body),
         )
         .await?;
 
-        let parsed: OpenAiResponse = serde_json::from_str(&resp_text).map_err(|e| {
-            crate::error::Error::Llm(format!("failed to parse OpenAI response: {e}"))
-        })?;
+        let parsed: OpenAiResponsesResponse = serde_json::from_str(&resp_text)
+            .map_err(|e| Error::Llm(format!("failed to parse OpenAI response: {e}")))?;
 
-        let response = parsed.into_completion_response();
+        let response = CompletionResponse::from(parsed);
         if response.content.is_empty()
             && response.tool_calls.is_empty()
             && response.stop_reason.as_deref() != Some("refusal")
@@ -521,191 +449,119 @@ impl LlmClient for OpenAiClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::llm::Message;
+    use crate::llm::{ToolDefinition, ToolResult};
     use serde_json::json;
 
     #[test]
-    fn serializes_prompt_cache_fields_on_request() {
-        let body = OpenAiRequest {
-            model: "gpt-5".into(),
-            messages: vec![OpenAiMessage {
-                role: "user".into(),
-                content: Some("hello".into()),
-                ..Default::default()
-            }],
-            max_tokens: Some(128),
-            temperature: Some(0.0),
-            reasoning_effort: None,
-            tools: None,
-            tool_choice: None,
-            prompt_cache_key: Some("elephant:reflect".into()),
-            prompt_cache_retention: Some(OpenAiPromptCacheRetention::Hours24),
-        };
+    fn serializes_responses_request_from_completion_request() {
+        let request = CompletionRequest::builder()
+            .message(Message::user("hello"))
+            .message(Message::assistant_with_tool_calls(
+                String::new(),
+                vec![ToolCall::new("call_123", "lookup", json!({"query": "hi"}))],
+            ))
+            .message(Message::with_tool_results(vec![ToolResult::new(
+                "call_123",
+                "tool result",
+            )]))
+            .message(Message::tool_result("call_456", "legacy tool result"))
+            .max_tokens(128)
+            .temperature(0.2)
+            .reasoning_effort(ReasoningEffort::None)
+            .system("be brief")
+            .tools(vec![ToolDefinition::new(
+                "lookup",
+                "Look something up",
+                json!({"type": "object"}),
+            )])
+            .tool_choice(ToolChoice::Specific("lookup".into()))
+            .build();
+
+        let body = OpenAiResponsesRequest::from_completion_request(
+            &request,
+            "gpt-5.1".into(),
+            Some(
+                &OpenAiPromptCacheConfig::new()
+                    .with_key("elephant:reflect")
+                    .with_retention(OpenAiPromptCacheRetention::InMemory),
+            ),
+        );
 
         let value = serde_json::to_value(&body).unwrap();
+        assert_eq!(value["instructions"], "be brief");
+        assert_eq!(value["max_output_tokens"], 128);
+        assert!((value["temperature"].as_f64().unwrap() - 0.2).abs() < 1e-6);
+        assert_eq!(value["reasoning"]["effort"], "none");
         assert_eq!(value["prompt_cache_key"], "elephant:reflect");
-        assert_eq!(value["prompt_cache_retention"], "24h");
+        assert_eq!(value["prompt_cache_retention"], "in-memory");
+        assert_eq!(value["parallel_tool_calls"], true);
+        assert_eq!(value["tool_choice"]["type"], "function");
+        assert_eq!(value["tool_choice"]["name"], "lookup");
+        assert_eq!(value["tools"][0]["type"], "function");
+        assert_eq!(value["tools"][0]["strict"], true);
+        assert_eq!(value["input"][0]["type"], "message");
+        assert_eq!(value["input"][0]["role"], "user");
+        assert_eq!(value["input"][0]["content"][0]["type"], "input_text");
+        assert_eq!(value["input"][1]["type"], "function_call");
+        assert_eq!(value["input"][1]["call_id"], "call_123");
+        assert_eq!(value["input"][2]["type"], "function_call_output");
+        assert_eq!(value["input"][2]["call_id"], "call_123");
+        assert_eq!(value["input"][3]["type"], "function_call_output");
+        assert_eq!(value["input"][3]["call_id"], "call_456");
     }
 
     #[test]
-    fn uses_max_completion_tokens_for_gpt5_models() {
-        let body = OpenAiRequest {
-            model: "gpt-5".into(),
-            messages: vec![OpenAiMessage {
-                role: "user".into(),
-                content: Some("hello".into()),
-                ..Default::default()
-            }],
-            max_tokens: Some(128),
-            temperature: Some(0.0),
-            reasoning_effort: None,
-            tools: None,
-            tool_choice: None,
-            prompt_cache_key: None,
-            prompt_cache_retention: None,
-        };
+    fn omits_temperature_for_gpt5_reasoning_requests() {
+        let request = CompletionRequest::builder()
+            .message(Message::user("hello"))
+            .max_tokens(64)
+            .temperature(0.2)
+            .reasoning_effort(ReasoningEffort::Low)
+            .build();
 
+        let body =
+            OpenAiResponsesRequest::from_completion_request(&request, "gpt-5".into(), None);
         let value = serde_json::to_value(&body).unwrap();
-        assert!(OpenAiRequest::uses_max_completion_tokens("gpt-5"));
-        assert!(OpenAiRequest::uses_max_completion_tokens("o3"));
-        assert!(!OpenAiRequest::uses_max_completion_tokens("gpt-4o"));
-        assert_eq!(value["max_completion_tokens"], 128);
-        assert!(value.get("max_tokens").is_none());
+        assert!(value.get("temperature").is_none());
+        assert_eq!(value["reasoning"]["effort"], "low");
     }
 
     #[test]
-    fn uses_max_tokens_for_legacy_chat_models() {
-        let body = OpenAiRequest {
-            model: "gpt-4o".into(),
-            messages: vec![OpenAiMessage {
-                role: "user".into(),
-                content: Some("hello".into()),
-                ..Default::default()
-            }],
-            max_tokens: Some(128),
-            temperature: Some(0.0),
-            reasoning_effort: None,
-            tools: None,
-            tool_choice: None,
-            prompt_cache_key: None,
-            prompt_cache_retention: None,
-        };
-
-        let value = serde_json::to_value(&body).unwrap();
-        assert!(!OpenAiRequest::uses_max_completion_tokens("gpt-4o"));
-        assert_eq!(value["max_tokens"], 128);
-        assert!(value.get("max_completion_tokens").is_none());
-    }
-
-    #[test]
-    fn routes_token_limits_by_model_family() {
-        assert!(!OpenAiRequest::uses_max_completion_tokens("gpt-4o"));
-        assert!(OpenAiRequest::uses_max_completion_tokens("gpt-5"));
-        assert!(OpenAiRequest::uses_max_completion_tokens("o3"));
-    }
-
-    #[test]
-    fn omits_temperature_for_older_gpt5_chat_models() {
-        assert_eq!(
-            OpenAiRequest::temperature_for_model("gpt-5", Some(0.1)),
-            None
-        );
-        assert_eq!(
-            OpenAiRequest::temperature_for_model("gpt-5-mini", Some(0.0)),
-            None
-        );
-        assert_eq!(
-            OpenAiRequest::temperature_for_model("gpt-5-chat-latest", Some(1.0)),
-            None
-        );
-    }
-
-    #[test]
-    fn preserves_temperature_for_supported_chat_models() {
-        assert_eq!(
-            OpenAiRequest::temperature_for_model("gpt-4o", Some(0.3)),
-            Some(0.3)
-        );
-        assert_eq!(
-            OpenAiRequest::temperature_for_model("gpt-5.1", Some(0.3)),
-            Some(0.3)
-        );
-        assert_eq!(
-            OpenAiRequest::temperature_for_model("gpt-5.2", Some(0.3)),
-            Some(0.3)
-        );
-    }
-
-    #[test]
-    fn serializes_reasoning_effort_when_requested() {
-        let body = OpenAiRequest {
-            model: "gpt-5".into(),
-            messages: vec![OpenAiMessage {
-                role: "user".into(),
-                content: Some("hello".into()),
-                ..Default::default()
-            }],
-            max_tokens: Some(128),
-            temperature: None,
-            reasoning_effort: Some(ReasoningEffort::Low),
-            tools: None,
-            tool_choice: None,
-            prompt_cache_key: None,
-            prompt_cache_retention: None,
-        };
-
-        let value = serde_json::to_value(&body).unwrap();
-        assert_eq!(value["reasoning_effort"], "low");
-    }
-
-    #[test]
-    fn routes_top_level_instructions_by_model_family() {
-        assert!(OpenAiRequest::uses_developer_role("gpt-5"));
-        assert!(OpenAiRequest::uses_developer_role("o3"));
-        assert!(!OpenAiRequest::uses_developer_role("gpt-4o"));
-    }
-
-    #[test]
-    fn routes_reasoning_effort_by_model_family() {
-        assert!(OpenAiRequest::uses_reasoning_model_family("gpt-5"));
-        assert!(OpenAiRequest::uses_reasoning_model_family("o3"));
-        assert!(!OpenAiRequest::uses_reasoning_model_family("gpt-4o"));
-    }
-
-    #[test]
-    fn parses_response_with_cached_tokens_and_tool_calls() {
-        let parsed: OpenAiResponse = serde_json::from_value(json!({
-            "choices": [{
-                "message": {
-                    "content": "done",
-                    "tool_calls": [{
-                        "id": "call_1",
-                        "function": {
-                            "name": "lookup",
-                            "arguments": "{\"q\":\"hi\"}"
-                        }
-                    }]
+    fn parses_response_output_items_and_cached_tokens() {
+        let parsed: OpenAiResponsesResponse = serde_json::from_value(json!({
+            "output": [
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "lookup",
+                    "arguments": "{\"query\":\"hi\"}"
                 },
-                "finish_reason": "tool_calls"
-            }],
+                {
+                    "type": "message",
+                    "content": [
+                        {"type": "output_text", "text": "done"}
+                    ]
+                }
+            ],
             "usage": {
-                "prompt_tokens": 1200,
-                "completion_tokens": 42,
-                "prompt_tokens_details": {
+                "input_tokens": 1200,
+                "output_tokens": 42,
+                "input_tokens_details": {
                     "cached_tokens": 1024
                 }
             }
         }))
         .unwrap();
 
-        let response = parsed.into_completion_response();
+        let response = CompletionResponse::from(parsed);
         assert_eq!(response.content, "done");
         assert_eq!(response.input_tokens, 1200);
         assert_eq!(response.output_tokens, 42);
-        assert_eq!(response.stop_reason.as_deref(), Some("tool_calls"));
+        assert_eq!(response.stop_reason, None);
         assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].id, "call_1");
         assert_eq!(response.tool_calls[0].name, "lookup");
-        assert_eq!(response.tool_calls[0].arguments, json!({"q": "hi"}));
+        assert_eq!(response.tool_calls[0].arguments, json!({"query": "hi"}));
         assert_eq!(
             response.prompt_cache,
             Some(PromptCacheUsage {
@@ -717,166 +573,39 @@ mod tests {
     }
 
     #[test]
-    fn parses_refusal_message_as_refusal_stop_reason() {
-        let parsed: OpenAiResponse = serde_json::from_value(json!({
-            "choices": [{
-                "message": {
-                    "content": null,
-                    "refusal": "I can't help with that."
-                },
-                "finish_reason": "stop"
-            }],
+    fn parses_refusal_as_stop_reason() {
+        let parsed: OpenAiResponsesResponse = serde_json::from_value(json!({
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        {"type": "refusal", "refusal": "I can't help with that."}
+                    ]
+                }
+            ],
             "usage": {
-                "prompt_tokens": 10,
-                "completion_tokens": 4
+                "input_tokens": 10,
+                "output_tokens": 4
             }
         }))
         .unwrap();
 
-        let response = parsed.into_completion_response();
+        let response = CompletionResponse::from(parsed);
         assert_eq!(response.stop_reason.as_deref(), Some("refusal"));
         assert_eq!(response.content, "I can't help with that.");
     }
 
     #[test]
-    fn parses_text_content_parts() {
-        let parsed: OpenAiResponse = serde_json::from_value(json!({
-            "choices": [{
-                "message": {
-                    "content": [
-                        {"type": "text", "text": "hello "},
-                        {"type": "text", "text": "world"}
-                    ]
-                },
-                "finish_reason": "stop"
-            }],
-            "usage": {
-                "prompt_tokens": 10,
-                "completion_tokens": 2
+    fn surfaces_incomplete_reason() {
+        let parsed: OpenAiResponsesResponse = serde_json::from_value(json!({
+            "output": [],
+            "incomplete_details": {
+                "reason": "max_output_tokens"
             }
         }))
         .unwrap();
 
-        let response = parsed.into_completion_response();
-        assert_eq!(response.stop_reason.as_deref(), Some("stop"));
-        assert_eq!(response.content, "hello world");
-    }
-
-    #[test]
-    fn tool_results_are_emitted_as_tool_messages_without_placeholder_user_message() {
-        let mut messages = vec![OpenAiMessage {
-            role: "assistant".into(),
-            content: None,
-            tool_call_id: None,
-            tool_calls: Some(vec![OpenAiReqToolCall {
-                id: "call_123".into(),
-                tool_type: "function".into(),
-                function: OpenAiReqFunctionCall {
-                    name: "recall".into(),
-                    arguments: "{\"query\":\"hi\"}".into(),
-                },
-            }]),
-        }];
-
-        let message = Message {
-            role: "user".into(),
-            content: String::new(),
-            tool_calls: vec![],
-            tool_results: vec![crate::types::llm::ToolResult {
-                tool_call_id: "call_123".into(),
-                content: "result".into(),
-            }],
-        };
-        let tool_calls = if message.tool_calls.is_empty() {
-            None
-        } else {
-            unreachable!()
-        };
-        let should_emit_message =
-            !message.content.is_empty() || tool_calls.is_some() || message.tool_results.is_empty();
-        if should_emit_message {
-            messages.push(OpenAiMessage {
-                role: message.role.clone(),
-                content: Some(message.content.clone()),
-                tool_calls,
-                ..Default::default()
-            });
-        }
-        for tr in &message.tool_results {
-            messages.push(OpenAiMessage {
-                role: "tool".into(),
-                content: Some(tr.content.clone()),
-                tool_call_id: Some(tr.tool_call_id.clone()),
-                ..Default::default()
-            });
-        }
-
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[1].role, "tool");
-        assert_eq!(messages[1].tool_call_id.as_deref(), Some("call_123"));
-        assert_eq!(messages[1].content.as_deref(), Some("result"));
-    }
-
-    #[tokio::test]
-    #[ignore = "requires OPENAI_API_KEY"]
-    async fn integration_simple_prompt() {
-        let _ = dotenvy::dotenv();
-        let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
-        let client = OpenAiClient::new(
-            api_key,
-            std::env::var("LLM_MODEL").expect("LLM_MODEL must be set"),
-            None,
-            crate::llm::DEFAULT_TIMEOUT_SECS,
-            PromptCacheConfig::Disabled,
-        )
-        .unwrap();
-
-        let request = CompletionRequest {
-            messages: vec![Message::text("user", "Say hello in exactly 3 words.")],
-            max_tokens: Some(64),
-            temperature: Some(0.0),
-            ..Default::default()
-        };
-
-        let resp = client.complete(request).await.unwrap();
-        assert!(!resp.content.is_empty());
-    }
-
-    #[tokio::test]
-    #[ignore = "requires OPENAI_API_KEY"]
-    async fn integration_structured() {
-        let _ = dotenvy::dotenv();
-        use crate::llm::complete_structured;
-        use serde::Deserialize;
-
-        let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
-        let client = OpenAiClient::new(
-            api_key,
-            std::env::var("LLM_MODEL").expect("LLM_MODEL must be set"),
-            None,
-            crate::llm::DEFAULT_TIMEOUT_SECS,
-            PromptCacheConfig::Disabled,
-        )
-        .unwrap();
-
-        #[derive(Deserialize, Debug)]
-        struct Color {
-            name: String,
-            hex: String,
-        }
-
-        let request = CompletionRequest {
-            messages: vec![Message::text(
-                "user",
-                "Return a JSON object with fields \"name\" and \"hex\" for the color blue. Only output JSON, nothing else.",
-            )],
-            max_tokens: Some(64),
-            temperature: Some(0.0),
-            ..Default::default()
-        };
-
-        let color: Color = complete_structured(&client, request).await.unwrap();
-        assert!(!color.name.is_empty());
-        assert!(color.hex.starts_with('#'));
+        let response = CompletionResponse::from(parsed);
+        assert_eq!(response.stop_reason.as_deref(), Some("max_output_tokens"));
     }
 }

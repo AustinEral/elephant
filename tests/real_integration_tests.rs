@@ -6,6 +6,8 @@
 //!
 //! Keys are loaded from `.env` automatically.
 
+mod support;
+
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -17,7 +19,7 @@ use testcontainers_modules::testcontainers::ImageExt;
 
 use elephant::consolidation::{DefaultConsolidator, DefaultOpinionMerger};
 use elephant::embedding::{self, EmbeddingClient, EmbeddingConfig, EmbeddingProvider};
-use elephant::llm::{self, LlmClient, Provider, ProviderConfig};
+use elephant::llm::LlmClient;
 use elephant::recall::DefaultRecallPipeline;
 use elephant::recall::budget::EstimateTokenizer;
 use elephant::recall::graph::{GraphRetriever, GraphRetrieverConfig};
@@ -33,7 +35,6 @@ use elephant::retain::graph_builder::{DefaultGraphBuilder, GraphConfig};
 use elephant::retain::resolver::LayeredEntityResolver;
 use elephant::server::{AppState, router};
 use elephant::storage::pg::PgMemoryStore;
-use elephant::types::llm::PromptCacheConfig;
 use elephant::types::*;
 
 use axum::Router;
@@ -50,34 +51,13 @@ fn env(key: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| panic!("{key} must be set in .env"))
 }
 
-fn llm_api_key() -> String {
-    env("LLM_API_KEY")
-}
-fn llm_model() -> String {
-    env("LLM_MODEL")
-}
-fn llm_provider() -> Provider {
-    std::env::var("LLM_PROVIDER")
-        .unwrap_or_else(|_| Provider::Anthropic.as_str().to_string())
-        .parse::<Provider>()
-        .expect("LLM_PROVIDER must be a supported provider")
-}
-fn llm_base_url() -> Option<String> {
-    std::env::var("LLM_BASE_URL").ok()
-}
-
 fn make_test_llm() -> Arc<dyn LlmClient> {
-    Arc::from(
-        llm::build_client(&ProviderConfig {
-            provider: llm_provider(),
-            api_key: llm_api_key(),
-            model: llm_model(),
-            base_url: llm_base_url(),
-            timeout_secs: llm::DEFAULT_TIMEOUT_SECS,
-            prompt_cache: PromptCacheConfig::Disabled,
-        })
-        .unwrap(),
-    )
+    let model_vars: &[&str] = if std::env::var("LLM_MODEL").is_ok() {
+        &["LLM_MODEL"]
+    } else {
+        &["RETAIN_LLM_MODEL"]
+    };
+    Arc::from(support::build_client_from_env(model_vars).unwrap())
 }
 fn embedding_model_path() -> String {
     env("EMBEDDING_MODEL_PATH")

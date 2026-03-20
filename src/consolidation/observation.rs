@@ -16,11 +16,10 @@ use tracing::{Instrument, debug, info, info_span, warn};
 
 use crate::embedding::EmbeddingClient;
 use crate::error::Result;
-use crate::llm::{LlmClient, complete_structured};
+use crate::llm::{CompletionRequest, LlmClient, Message, ReasoningEffortConfig, complete_structured};
 use crate::recall::RecallPipeline;
 use crate::storage::MemoryStore;
 use crate::types::id::{BankId, FactId};
-use crate::types::llm::{CompletionRequest, Message, ReasoningEffortConfig};
 use crate::types::{
     ConsolidationReport, Fact, FactFilter, FactType, NetworkType, RecallQuery, TemporalRange,
 };
@@ -303,15 +302,12 @@ impl DefaultConsolidator {
                 .replace("{facts}", &facts_text)
                 .replace("{observations}", &obs_text);
 
-            let request = CompletionRequest {
-                model: String::new(),
-                messages: vec![Message::text("user", prompt)],
-                max_tokens: Some(self.config.max_tokens),
-                temperature: Some(CONSOLIDATE_TEMPERATURE),
-                reasoning_effort: ReasoningEffortConfig::current()?.consolidate,
-                system: None,
-                ..Default::default()
-            };
+            let request = CompletionRequest::builder()
+                .message(Message::user(prompt))
+                .max_tokens(self.config.max_tokens)
+                .temperature(CONSOLIDATE_TEMPERATURE)
+                .reasoning_effort_opt(ReasoningEffortConfig::current()?.consolidate)
+                .build();
 
             let resp: ConsolidateResponse = complete_structured(self.llm.as_ref(), request).await?;
 
