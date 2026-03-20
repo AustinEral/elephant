@@ -23,8 +23,7 @@ use crate::recall::RecallPipeline;
 use crate::storage::MemoryStore;
 use crate::types::{
     Fact, FactId, NetworkType, RecallQuery, ReflectDoneTrace, ReflectQuery, ReflectResult,
-    ReflectStopReason, ReflectTraceStep, RetrievedFact, RetrievedSource, Source, SourceId,
-    TurnId,
+    ReflectStopReason, ReflectTraceStep, RetrievedFact, RetrievedSource, Source, SourceId, TurnId,
 };
 
 use disposition::verbalize_bank_profile;
@@ -636,6 +635,11 @@ impl DefaultReflectPipeline {
     ) -> (DoneArgs, ReflectDoneTrace) {
         match serde_json::from_value::<DoneArgs>(arguments.clone()) {
             Ok(args) => {
+                let normalized_source_ids = Self::normalize_done_source_ids(&args.source_ids);
+                let args = DoneArgs {
+                    response: args.response,
+                    source_ids: normalized_source_ids.clone(),
+                };
                 let trace = ReflectDoneTrace {
                     iteration,
                     assistant_content: assistant_content.to_string(),
@@ -644,21 +648,22 @@ impl DefaultReflectPipeline {
                     parse_error: None,
                     stop_reason: stop_reason.map(ReflectStopReason::from_provider),
                     response: args.response.clone(),
-                    source_ids: args.source_ids.clone(),
+                    source_ids: normalized_source_ids,
                 };
                 (args, trace)
             }
             Err(err) => {
                 // LLM sometimes sends source_ids as a string instead of array.
-                // Fall back to extracting just the response field.
+                // Fall back to extracting the response and any salvageable source IDs.
                 let response = arguments
                     .get("response")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+                let source_ids = Self::normalize_done_source_ids_value(arguments.get("source_ids"));
                 let args = DoneArgs {
                     response: response.clone(),
-                    source_ids: vec![],
+                    source_ids: source_ids.clone(),
                 };
                 let trace = ReflectDoneTrace {
                     iteration,
@@ -668,11 +673,58 @@ impl DefaultReflectPipeline {
                     parse_error: Some(err.to_string()),
                     stop_reason: stop_reason.map(ReflectStopReason::from_provider),
                     response,
-                    source_ids: vec![],
+                    source_ids,
                 };
                 (args, trace)
             }
         }
+    }
+
+    fn normalize_done_source_ids(source_ids: &[String]) -> Vec<String> {
+        let mut normalized = Vec::new();
+        let mut seen = HashSet::new();
+
+        for source_id in source_ids {
+            let Some(id) = Self::parse_done_source_id(source_id) else {
+                continue;
+            };
+            if seen.insert(id) {
+                normalized.push(id.to_string());
+            }
+        }
+
+        normalized
+    }
+
+    fn normalize_done_source_ids_value(value: Option<&serde_json::Value>) -> Vec<String> {
+        match value {
+            Some(serde_json::Value::Array(items)) => {
+                let source_ids = items
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>();
+                Self::normalize_done_source_ids(&source_ids)
+            }
+            Some(serde_json::Value::String(source_id)) => {
+                Self::normalize_done_source_ids(std::slice::from_ref(source_id))
+            }
+            _ => vec![],
+        }
+    }
+
+    fn parse_done_source_id(raw: &str) -> Option<FactId> {
+        let trimmed = raw.trim();
+        trimmed.parse::<FactId>().ok().or_else(|| {
+            trimmed
+                .split(|ch: char| !ch.is_ascii_alphanumeric())
+                .filter(|part| !part.is_empty())
+                .find_map(|part| {
+                    part.parse::<FactId>()
+                        .ok()
+                        .or_else(|| part.to_ascii_uppercase().parse::<FactId>().ok())
+                })
+        })
     }
 
     async fn support_turn_ids_for_fact(
@@ -772,6 +824,7 @@ mod tests {
     use crate::embedding::EmbeddingClient;
     use crate::embedding::mock::MockEmbeddings;
     use crate::llm::mock::MockLlmClient;
+    use crate::llm::{CompletionResponse, ToolCall};
     use crate::recall::budget::EstimateTokenizer;
     use crate::recall::graph::{GraphRetriever, GraphRetrieverConfig};
     use crate::recall::keyword::KeywordRetriever;
@@ -781,7 +834,6 @@ mod tests {
     use crate::recall::{DefaultRecallPipeline, RecallPipeline};
     use crate::storage::MemoryStore;
     use crate::storage::mock::MockMemoryStore;
-    use crate::llm::{CompletionResponse, ToolCall};
     use crate::types::*;
     use chrono::{TimeZone, Utc};
 
@@ -1389,40 +1441,28 @@ mod tests {
 
         let (tools, choice) = tool_defs_for_iteration(true, 0, last_iteration);
         assert_eq!(
-            tools
-                .iter()
-                .map(|tool| tool.name())
-                .collect::<Vec<_>>(),
+            tools.iter().map(|tool| tool.name()).collect::<Vec<_>>(),
             vec!["search_observations"]
         );
         assert_eq!(choice, ToolChoice::Specific("search_observations".into()));
 
         let (tools, choice) = tool_defs_for_iteration(true, 1, last_iteration);
         assert_eq!(
-            tools
-                .iter()
-                .map(|tool| tool.name())
-                .collect::<Vec<_>>(),
+            tools.iter().map(|tool| tool.name()).collect::<Vec<_>>(),
             vec!["recall"]
         );
         assert_eq!(choice, ToolChoice::Specific("recall".into()));
 
         let (tools, choice) = tool_defs_for_iteration(true, 2, last_iteration);
         assert_eq!(
-            tools
-                .iter()
-                .map(|tool| tool.name())
-                .collect::<Vec<_>>(),
+            tools.iter().map(|tool| tool.name()).collect::<Vec<_>>(),
             vec!["search_observations", "recall", "lookup_sources", "done"]
         );
         assert_eq!(choice, ToolChoice::Required);
 
         let (tools, choice) = tool_defs_for_iteration(false, last_iteration, last_iteration);
         assert_eq!(
-            tools
-                .iter()
-                .map(|tool| tool.name())
-                .collect::<Vec<_>>(),
+            tools.iter().map(|tool| tool.name()).collect::<Vec<_>>(),
             vec!["done"]
         );
         assert_eq!(choice, ToolChoice::Specific("done".into()));
@@ -1575,7 +1615,7 @@ mod tests {
                 name: "done".into(),
                 arguments: serde_json::json!({
                     "response": format!("Testing is important [{}].", fact_id),
-                    "source_ids": [fact_id.to_string(), FactId::new().to_string()]
+                    "source_ids": [format!("[FACT {fact_id}]"), format!("FACT_{}", FactId::new())]
                 }),
             }],
             prompt_cache: None,
@@ -1595,6 +1635,52 @@ mod tests {
         // Hallucinated ID should be dropped, only the real one kept
         assert_eq!(result.sources.len(), 1);
         assert!(result.sources.contains(&fact_id));
+        let final_done = result.final_done.expect("final done trace");
+        assert_eq!(final_done.source_ids.len(), 2);
+        assert_eq!(final_done.source_ids[0], fact_id.to_string());
+    }
+
+    #[test]
+    fn parse_done_call_normalizes_fact_wrappers() {
+        let fact_id = FactId::new();
+        let (args, final_done) = DefaultReflectPipeline::parse_done_call(
+            2,
+            Some("tool_use"),
+            "",
+            &serde_json::json!({
+                "response": "ok",
+                "source_ids": [
+                    format!("[FACT {fact_id}]"),
+                    format!("FACT_{fact_id}"),
+                    format!("Fact: {fact_id}"),
+                    "not-an-id"
+                ]
+            }),
+        );
+
+        assert_eq!(args.source_ids, vec![fact_id.to_string()]);
+        assert_eq!(final_done.source_ids, vec![fact_id.to_string()]);
+        assert_eq!(final_done.stop_reason, Some(ReflectStopReason::ToolCall));
+    }
+
+    #[test]
+    fn parse_done_call_fallback_salvages_string_source_id() {
+        let fact_id = FactId::new();
+        let (args, final_done) = DefaultReflectPipeline::parse_done_call(
+            2,
+            Some("max_tokens"),
+            "partial",
+            &serde_json::json!({
+                "response": "partial",
+                "source_ids": format!("[FACT {fact_id}]")
+            }),
+        );
+
+        assert!(final_done.used_fallback);
+        assert_eq!(args.source_ids, vec![fact_id.to_string()]);
+        assert_eq!(final_done.source_ids, vec![fact_id.to_string()]);
+        assert_eq!(final_done.assistant_content, "partial");
+        assert_eq!(final_done.stop_reason, Some(ReflectStopReason::MaxTokens));
     }
 
     #[tokio::test]
