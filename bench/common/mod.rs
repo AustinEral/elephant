@@ -1,3 +1,4 @@
+pub mod failure;
 pub mod fingerprint;
 pub mod io;
 pub mod judge;

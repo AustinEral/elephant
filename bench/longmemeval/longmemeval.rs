@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use tokio::sync::{Mutex, Semaphore};
+use tokio::task::JoinSet;
 
 use chrono::Utc;
 use serde::de::DeserializeOwned;
@@ -2071,7 +2072,7 @@ async fn main() {
 
     let resume_statuses = Arc::new(resume_instance_status);
 
-    let mut handles = Vec::new();
+    let mut handles = JoinSet::new();
     for instance in instances {
         let sem = semaphore.clone();
         let runtime = runtime.clone();
@@ -2081,7 +2082,7 @@ async fn main() {
         let completed = completed.clone();
         let resume_statuses = resume_statuses.clone();
 
-        handles.push(tokio::spawn(async move {
+        handles.spawn(async move {
             let _permit = sem
                 .acquire()
                 .await
@@ -2330,6 +2331,7 @@ async fn main() {
 
             let qa_start = Instant::now();
             eprintln!("  {qid} reflecting...");
+            let mut fatal_error: Option<String> = None;
 
             let reflect_result = with_scoped_collector(
                 metrics.clone(),
@@ -2376,6 +2378,11 @@ async fn main() {
                     Err(e) => {
                         let err_msg = format!("{e}");
                         eprintln!("  reflect error ({qid}): {err_msg}");
+                        if common::failure::is_fatal_bench_error(&e) {
+                            fatal_error = Some(format!(
+                                "aborting benchmark after fatal reflect error ({qid}): {err_msg}"
+                            ));
+                        }
                         (
                             String::new(),
                             vec![],
@@ -2401,8 +2408,14 @@ async fn main() {
                 match common::judge::llm_judge(judge.as_ref().unwrap().as_ref(), &rendered).await {
                     Ok((correct, reasoning)) => (correct, reasoning, "ok".into(), None),
                     Err(e) => {
-                        eprintln!("  judge error ({qid}): {e}");
-                        (false, e.clone(), "judge_error".into(), Some(e))
+                        let err_msg = e.to_string();
+                        eprintln!("  judge error ({qid}): {err_msg}");
+                        if fatal_error.is_none() && e.is_fatal() {
+                            fatal_error = Some(format!(
+                                "aborting benchmark after fatal judge error ({qid}): {err_msg}"
+                            ));
+                        }
+                        (false, err_msg.clone(), "judge_error".into(), Some(err_msg))
                     }
                 }
             };
@@ -2443,6 +2456,10 @@ async fn main() {
                 s.push_and_flush(qr, dr);
             }
 
+            if let Some(fatal_error) = fatal_error {
+                return Err(fatal_error);
+            }
+
             let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
             eprintln!(
                 "[{done}/{total_instances}] {qid} {} ingest {:.1}s qa {:.1}s",
@@ -2452,14 +2469,22 @@ async fn main() {
             );
 
             Ok::<(), String>(())
-        }));
+        });
     }
 
-    for handle in handles {
-        match handle.await {
+    while let Some(joined) = handles.join_next().await {
+        match joined {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => eprintln!("instance failed: {e}"),
-            Err(e) => eprintln!("instance task panicked: {e}"),
+            Ok(Err(err)) => {
+                handles.abort_all();
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+            Err(err) => {
+                handles.abort_all();
+                eprintln!("instance task panicked: {err}");
+                std::process::exit(1);
+            }
         }
     }
 

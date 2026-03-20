@@ -23,6 +23,7 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use tokio::task::JoinSet;
 use tokio::sync::{Mutex, Semaphore, mpsc};
 
 use elephant::MemoryStore;
@@ -677,7 +678,7 @@ async fn llm_judge(
     question: &str,
     gold_answer: &str,
     generated_answer: &str,
-) -> Result<(bool, String), String> {
+) -> Result<(bool, String), common::judge::JudgeError> {
     let rendered = JUDGE_PROMPT
         .replace("{question}", question)
         .replace("{gold_answer}", gold_answer)
@@ -3108,7 +3109,7 @@ async fn run_conversation(
 
     let turn_refs = Arc::new(shared.lock().await.turn_refs.clone());
     let qa_sem = Arc::new(Semaphore::new(options.question_concurrency));
-    let mut qa_handles = Vec::new();
+    let mut qa_handles = JoinSet::new();
 
     for qa in qa_list.iter().filter(|qa| should_score_question(qa)) {
         let sem = qa_sem.clone();
@@ -3125,6 +3126,7 @@ async fn run_conversation(
         );
         let category = qa.category;
         let qa_len = scored_questions;
+        let question_id = question_id_for(&sample_id, &question);
         let local_correct = local_correct.clone();
         let local_total = local_total.clone();
         let completed = completed.clone();
@@ -3134,10 +3136,11 @@ async fn run_conversation(
         let conversation_metrics = conversation_metrics.clone();
         let question_metrics = Arc::new(MetricsCollector::new());
 
-        qa_handles.push(tokio::spawn(async move {
+        qa_handles.spawn(async move {
             let _permit = sem.acquire().await.expect("semaphore closed");
             let cat_name = category_name(category);
             let question_started = Instant::now();
+            let mut fatal_error: Option<String> = None;
 
             let question_metrics_for_scope = question_metrics.clone();
             let conversation_metrics_for_scope = conversation_metrics.clone();
@@ -3270,18 +3273,27 @@ async fn run_conversation(
                                 elapsed,
                             )
                         }
-                        Err(e) => (
-                            String::new(),
-                            0.0,
-                            Vec::new(),
-                            Vec::new(),
-                            Vec::new(),
-                            Vec::new(),
-                            None,
-                            "reflect_error".to_string(),
-                            Some(e.to_string()),
-                            elapsed,
-                        ),
+                        Err(e) => {
+                            let err_msg = e.to_string();
+                            eprintln!("[{tag}] reflect error ({question_id}): {err_msg}");
+                            if common::failure::is_fatal_bench_error(&e) {
+                                fatal_error = Some(format!(
+                                    "[{tag}] aborting benchmark after fatal reflect error ({question_id}): {err_msg}"
+                                ));
+                            }
+                            (
+                                String::new(),
+                                0.0,
+                                Vec::new(),
+                                Vec::new(),
+                                Vec::new(),
+                                Vec::new(),
+                                None,
+                                "reflect_error".to_string(),
+                                Some(err_msg),
+                                elapsed,
+                            )
+                        }
                     }
                 }),
             )
@@ -3320,12 +3332,16 @@ async fn run_conversation(
                 .await
                 {
                     Ok((correct, reasoning)) => (correct, reasoning, status, error),
-                    Err(judge_error) => (
-                        false,
-                        judge_error.clone(),
-                        "judge_error".into(),
-                        Some(judge_error),
-                    ),
+                    Err(judge_error) => {
+                        let err_msg = judge_error.to_string();
+                        eprintln!("[{tag}] judge error ({question_id}): {err_msg}");
+                        if fatal_error.is_none() && judge_error.is_fatal() {
+                            fatal_error = Some(format!(
+                                "[{tag}] aborting benchmark after fatal judge error ({question_id}): {err_msg}"
+                            ));
+                        }
+                        (false, err_msg.clone(), "judge_error".into(), Some(err_msg))
+                    }
                 }
             };
             let elapsed = question_started.elapsed().as_secs_f64();
@@ -3337,7 +3353,7 @@ async fn run_conversation(
             let done = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
 
             let result = QuestionResult {
-                question_id: question_id_for(&sample_id, &question),
+                question_id: question_id.clone(),
                 sample_id: sample_id.clone(),
                 question,
                 ground_truth: gold,
@@ -3373,6 +3389,10 @@ async fn run_conversation(
                 conversation_metrics.snapshot(),
             );
 
+            if let Some(fatal_error) = fatal_error {
+                return Err(fatal_error);
+            }
+
             let total = local_total.load(std::sync::atomic::Ordering::Relaxed);
             let correct = local_correct.load(std::sync::atomic::Ordering::Relaxed);
             let running_acc = if total > 0 {
@@ -3398,12 +3418,21 @@ async fn run_conversation(
                 fmt_elapsed(qa_elapsed),
                 fmt_elapsed(eta),
             );
-        }));
+            Ok::<(), String>(())
+        });
     }
 
-    for handle in qa_handles {
-        if let Err(e) = handle.await {
-            eprintln!("[{tag}] question task failed: {e}");
+    while let Some(joined) = qa_handles.join_next().await {
+        match joined {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                qa_handles.abort_all();
+                return Err(err);
+            }
+            Err(err) => {
+                qa_handles.abort_all();
+                return Err(format!("[{tag}] question task panicked: {err}"));
+            }
         }
     }
 
@@ -3862,7 +3891,7 @@ async fn main() {
     }));
 
     let semaphore = Arc::new(Semaphore::new(config.conversation_jobs));
-    let mut handles = Vec::new();
+    let mut handles = JoinSet::new();
 
     for (conv_idx, entry) in dataset.into_iter().enumerate() {
         let sem = semaphore.clone();
@@ -3893,20 +3922,28 @@ async fn main() {
         let tag = format!("conv {}/{total_convs}", conv_idx + 1);
         let shared = shared.clone();
 
-        handles.push(tokio::spawn(async move {
+        handles.spawn(async move {
             let _permit = sem
                 .acquire()
                 .await
                 .map_err(|e| format!("semaphore closed: {e}"))?;
             run_conversation(tag, runtime, entry, judge, options, shared).await
-        }));
+        });
     }
 
-    for handle in handles {
-        match handle.await {
+    while let Some(joined) = handles.join_next().await {
+        match joined {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => eprintln!("conversation failed: {e}"),
-            Err(e) => eprintln!("conversation task panicked: {e}"),
+            Ok(Err(err)) => {
+                handles.abort_all();
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+            Err(err) => {
+                handles.abort_all();
+                eprintln!("conversation task panicked: {err}");
+                std::process::exit(1);
+            }
         }
     }
 

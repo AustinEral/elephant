@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
+use crate::common::failure;
 use elephant::llm::retry::{RetryPolicy, RetryingLlmClient};
 use elephant::llm::{self, CompletionRequest, LlmClient, Message};
 use elephant::metrics::{LlmStage, MeteredLlmClient, MetricsCollector};
@@ -25,6 +26,25 @@ pub struct JudgeOverrides {
     pub model: Option<String>,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum JudgeError {
+    #[error("judge error: {0}")]
+    Llm(elephant::error::Error),
+    #[error("could not parse judge response: {0}")]
+    Parse(String),
+    #[error("judge failed after retries")]
+    RetriesExhausted,
+}
+
+impl JudgeError {
+    pub fn is_fatal(&self) -> bool {
+        match self {
+            Self::Llm(err) => failure::is_fatal_bench_error(err),
+            Self::Parse(_) | Self::RetriesExhausted => false,
+        }
+    }
+}
+
 /// Send a pre-rendered prompt to the judge LLM and parse the CORRECT/WRONG verdict.
 ///
 /// The caller is responsible for rendering the prompt template with the appropriate
@@ -34,7 +54,7 @@ pub struct JudgeOverrides {
 pub async fn llm_judge(
     judge: &dyn LlmClient,
     rendered_prompt: &str,
-) -> Result<(bool, String), String> {
+) -> Result<(bool, String), JudgeError> {
     let request = CompletionRequest::builder()
         .message(Message::user(rendered_prompt))
         .max_tokens(JUDGE_MAX_TOKENS)
@@ -56,18 +76,18 @@ pub async fn llm_judge(
                     return Ok((correct, parsed.reasoning));
                 }
                 if attempt + 1 == JUDGE_MAX_ATTEMPTS {
-                    return Err(format!(
+                    return Err(JudgeError::Parse(format!(
                         "could not parse judge response: {}",
                         &resp.content[..resp.content.len().min(120)]
-                    ));
+                    )));
                 }
             }
             Err(e) => {
-                return Err(format!("judge error: {e}"));
+                return Err(JudgeError::Llm(e));
             }
         }
     }
-    Err("judge failed after retries".into())
+    Err(JudgeError::RetriesExhausted)
 }
 
 /// Build an LLM client configured for judge duty.

@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
 
 use crate::error::{Error, Result};
 use crate::llm::{
@@ -156,9 +157,144 @@ impl From<ToolDefinition> for OpenAiResponsesTool {
             tool_type: "function",
             name: tool.name().to_string(),
             description: tool.description().to_string(),
-            parameters: tool.input_schema().clone(),
+            parameters: normalize_openai_tool_schema(tool.input_schema()),
             strict: true,
         }
+    }
+}
+
+fn normalize_openai_tool_schema(schema: &Value) -> Value {
+    let mut normalized = schema.clone();
+    normalize_openai_tool_schema_node(&mut normalized);
+    normalized
+}
+
+fn normalize_openai_tool_schema_node(node: &mut Value) {
+    match node {
+        Value::Object(map) => {
+            normalize_openai_object_schema(map);
+
+            if let Some(Value::Array(items)) = map.get_mut("anyOf") {
+                for item in items {
+                    normalize_openai_tool_schema_node(item);
+                }
+            }
+            if let Some(Value::Array(items)) = map.get_mut("oneOf") {
+                for item in items {
+                    normalize_openai_tool_schema_node(item);
+                }
+            }
+            if let Some(Value::Array(items)) = map.get_mut("allOf") {
+                for item in items {
+                    normalize_openai_tool_schema_node(item);
+                }
+            }
+            if let Some(items) = map.get_mut("items") {
+                normalize_openai_tool_schema_node(items);
+            }
+            if let Some(Value::Object(defs)) = map.get_mut("$defs") {
+                for def in defs.values_mut() {
+                    normalize_openai_tool_schema_node(def);
+                }
+            }
+            if let Some(Value::Object(defs)) = map.get_mut("definitions") {
+                for def in defs.values_mut() {
+                    normalize_openai_tool_schema_node(def);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                normalize_openai_tool_schema_node(item);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
+fn normalize_openai_object_schema(map: &mut Map<String, Value>) {
+    let is_object_schema = matches!(map.get("type"), Some(Value::String(kind)) if kind == "object")
+        || map.contains_key("properties");
+
+    if !is_object_schema {
+        return;
+    }
+
+    let original_required = map
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect::<std::collections::BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+
+    let property_names = if let Some(Value::Object(properties)) = map.get_mut("properties") {
+        for (name, property_schema) in properties.iter_mut() {
+            normalize_openai_tool_schema_node(property_schema);
+            if !original_required.contains(name) {
+                make_openai_schema_nullable(property_schema);
+            }
+        }
+
+        properties.keys().cloned().collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+
+    map.insert(
+        "required".into(),
+        Value::Array(
+            property_names
+                .into_iter()
+                .map(Value::String)
+                .collect::<Vec<_>>(),
+        ),
+    );
+    map.insert("additionalProperties".into(), Value::Bool(false));
+}
+
+fn make_openai_schema_nullable(schema: &mut Value) {
+    if schema_allows_null(schema) {
+        return;
+    }
+
+    let existing = std::mem::replace(schema, Value::Null);
+    *schema = json!({
+        "anyOf": [
+            existing,
+            { "type": "null" }
+        ]
+    });
+}
+
+fn schema_allows_null(schema: &Value) -> bool {
+    match schema {
+        Value::Object(map) => {
+            if let Some(Value::String(kind)) = map.get("type")
+                && kind == "null"
+            {
+                return true;
+            }
+            if let Some(Value::Array(kinds)) = map.get("type")
+                && kinds
+                    .iter()
+                    .any(|kind| matches!(kind, Value::String(name) if name == "null"))
+            {
+                return true;
+            }
+            ["anyOf", "oneOf"]
+                .iter()
+                .filter_map(|key| map.get(*key))
+                .filter_map(Value::as_array)
+                .any(|variants| variants.iter().any(schema_allows_null))
+        }
+        Value::Array(items) => items.iter().any(schema_allows_null),
+        Value::Null => true,
+        Value::Bool(_) | Value::Number(_) | Value::String(_) => false,
     }
 }
 
@@ -447,10 +583,12 @@ impl LlmClient for OpenAiClient {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::llm::{ToolDefinition, ToolResult};
-    use serde_json::json;
+    mod tests {
+        use super::*;
+        use crate::llm::{ToolDefinition, ToolResult};
+        use schemars::JsonSchema;
+        use serde_json::json;
+        use serde::Deserialize;
 
     #[test]
     fn serializes_responses_request_from_completion_request() {
@@ -493,12 +631,13 @@ mod tests {
         assert!((value["temperature"].as_f64().unwrap() - 0.2).abs() < 1e-6);
         assert_eq!(value["reasoning"]["effort"], "none");
         assert_eq!(value["prompt_cache_key"], "elephant:reflect");
-        assert_eq!(value["prompt_cache_retention"], "in-memory");
+        assert_eq!(value["prompt_cache_retention"], "in_memory");
         assert_eq!(value["parallel_tool_calls"], true);
         assert_eq!(value["tool_choice"]["type"], "function");
         assert_eq!(value["tool_choice"]["name"], "lookup");
         assert_eq!(value["tools"][0]["type"], "function");
         assert_eq!(value["tools"][0]["strict"], true);
+        assert_eq!(value["tools"][0]["parameters"]["additionalProperties"], false);
         assert_eq!(value["input"][0]["type"], "message");
         assert_eq!(value["input"][0]["role"], "user");
         assert_eq!(value["input"][0]["content"][0]["type"], "input_text");
@@ -607,5 +746,39 @@ mod tests {
 
         let response = CompletionResponse::from(parsed);
         assert_eq!(response.stop_reason.as_deref(), Some("max_output_tokens"));
+    }
+
+    #[derive(Debug, Deserialize, JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    struct OptionalToolArgs {
+        query: String,
+        #[serde(default)]
+        limit: Option<usize>,
+    }
+
+    #[test]
+    fn normalizes_optional_tool_fields_for_openai_strict_mode() {
+        let request = CompletionRequest::builder()
+            .message(Message::user("hello"))
+            .tools(vec![ToolDefinition::from_schema::<OptionalToolArgs>(
+                "lookup",
+                "Look something up",
+            )])
+            .build();
+
+        let body = OpenAiResponsesRequest::from_completion_request(&request, "gpt-5.4-mini".into(), None);
+        let value = serde_json::to_value(&body).unwrap();
+        let parameters = &value["tools"][0]["parameters"];
+        let mut required = parameters["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        required.sort_unstable();
+
+        assert_eq!(parameters["additionalProperties"], false);
+        assert_eq!(required, vec!["limit", "query"]);
+        assert!(schema_allows_null(&parameters["properties"]["limit"]));
     }
 }
