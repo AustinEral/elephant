@@ -78,6 +78,17 @@ Full config reference in [`.env.example`](.env.example). `LLM_PROVIDER` supports
 
 Optional prompt caching is supported for Anthropic, OpenAI Chat Completions, and OpenAI Responses. Enable it with `LLM_PROMPT_CACHE_ENABLED=1`; OpenAI also supports optional `OPENAI_PROMPT_CACHE_KEY` and `OPENAI_PROMPT_CACHE_RETENTION`, and Anthropic supports `ANTHROPIC_PROMPT_CACHE_TTL`.
 
+### Vendored docs
+
+The Rust API Guidelines are vendored into this repo under [`docs/vendor/rust-api-guidelines`](docs/vendor/rust-api-guidelines), with the book source in [`docs/vendor/rust-api-guidelines/src`](docs/vendor/rust-api-guidelines/src).
+
+To update the vendored copy:
+
+```sh
+git fetch rust-api-guidelines
+git subtree pull --prefix=docs/vendor/rust-api-guidelines rust-api-guidelines master --squash
+```
+
 ## How It Works
 
 ```mermaid
