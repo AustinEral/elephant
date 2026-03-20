@@ -38,6 +38,13 @@ The runner uses the same environment variables as Elephant itself:
 - `DATABASE_URL`
 - `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL`
 - `RETAIN_LLM_MODEL`, `REFLECT_LLM_MODEL` if split models are desired
+- optional reasoning-effort envs:
+  - `RETAIN_EXTRACT_REASONING_EFFORT`
+  - `RETAIN_RESOLVE_REASONING_EFFORT`
+  - `RETAIN_GRAPH_REASONING_EFFORT`
+  - `REFLECT_REASONING_EFFORT`
+  - `CONSOLIDATE_REASONING_EFFORT`
+  - `OPINION_MERGE_REASONING_EFFORT`
 - optional prompt-cache envs:
   - `LLM_PROMPT_CACHE_ENABLED`
   - `OPENAI_PROMPT_CACHE_KEY`
@@ -46,6 +53,8 @@ The runner uses the same environment variables as Elephant itself:
 - embedding and reranker env vars
 
 Judge env vars remain independently overridable through `JUDGE_*`.
+
+For OpenAI `gpt-5.4-mini`, `REFLECT_REASONING_EFFORT=high` is a useful non-default benchmark tuning when you want stronger reflect tool use, at the cost of higher latency and token usage.
 
 For benchmark hygiene, use an isolated Postgres instance instead of your normal development database. Docker is the easiest option:
 

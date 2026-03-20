@@ -3806,6 +3806,10 @@ async fn main() {
     println!("reflect_model: {}", runtime.info.reflect_model);
     println!("reranker_model: {}", runtime.info.reranker_model);
     println!("embedding_model: {}", runtime.info.embedding_model);
+    println!(
+        "Reasoning effort: {}",
+        common::format_reasoning_effort_summary(&runtime.info.tuning)
+    );
     println!("LLM judge: {judge_label}");
     println!("Profile: {}", config.profile.as_str());
     println!("Mode: {}", command.as_str());

@@ -1844,6 +1844,10 @@ async fn main() {
     eprintln!("  reflect_model:  {}", runtime.info.reflect_model);
     eprintln!("  embedding_model: {}", runtime.info.embedding_model);
     eprintln!("  reranker_model: {}", runtime.info.reranker_model);
+    eprintln!(
+        "  reasoning_effort: {}",
+        common::format_reasoning_effort_summary(&runtime.info.tuning)
+    );
     if let Some(ref judge) = config.judge_model {
         eprintln!("  judge_model:    {judge}");
     }
