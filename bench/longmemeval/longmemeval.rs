@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use tokio::sync::{Mutex, Semaphore};
+use tokio::task::JoinSet;
 
 use chrono::Utc;
 use serde::de::DeserializeOwned;
@@ -77,15 +78,21 @@ fn judge_prompt_hash() -> String {
     common::fnv1a64_hex(&combined)
 }
 
-/// Resolve the judge model from config + env, defaulting to gpt-4o per EVAL-01.
-fn resolve_judge_model(config: &RunConfig) -> Option<String> {
+/// Resolve the judge overrides from config + env, defaulting to OpenAI `gpt-4o` per EVAL-01.
+fn resolve_judge_overrides(config: &RunConfig) -> common::judge::JudgeOverrides {
     if config.judge_model.is_some() {
-        return config.judge_model.clone();
+        return common::judge::JudgeOverrides {
+            provider: None,
+            model: config.judge_model.clone(),
+        };
     }
     if env::var("JUDGE_MODEL").is_ok() {
-        return None; // let common::judge use the env var
+        return common::judge::JudgeOverrides::default();
     }
-    Some("gpt-4o".into())
+    common::judge::JudgeOverrides {
+        provider: Some(elephant::llm::Provider::OpenAi),
+        model: Some("gpt-4o".into()),
+    }
 }
 
 // --- CLI ---
@@ -1837,6 +1844,10 @@ async fn main() {
     eprintln!("  reflect_model:  {}", runtime.info.reflect_model);
     eprintln!("  embedding_model: {}", runtime.info.embedding_model);
     eprintln!("  reranker_model: {}", runtime.info.reranker_model);
+    eprintln!(
+        "  reasoning_effort: {}",
+        common::format_reasoning_effort_summary(&runtime.info.tuning)
+    );
     if let Some(ref judge) = config.judge_model {
         eprintln!("  judge_model:    {judge}");
     }
@@ -1998,18 +2009,18 @@ async fn main() {
     };
 
     // Build judge client (only needed for Run/Qa)
-    let judge_override = resolve_judge_model(&config);
+    let judge_overrides = resolve_judge_overrides(&config);
     let judge: Option<Arc<dyn elephant::llm::LlmClient>> =
         if !matches!(command, BenchCommand::Ingest) {
             Some(common::judge::build_judge_client(
                 metrics.clone(),
-                judge_override.clone(),
+                &judge_overrides,
             ))
         } else {
             None
         };
     let jl = if !matches!(command, BenchCommand::Ingest) {
-        common::judge::judge_label(&judge_override)
+        common::judge::judge_label(&judge_overrides)
     } else {
         String::new()
     };
@@ -2065,7 +2076,7 @@ async fn main() {
 
     let resume_statuses = Arc::new(resume_instance_status);
 
-    let mut handles = Vec::new();
+    let mut handles = JoinSet::new();
     for instance in instances {
         let sem = semaphore.clone();
         let runtime = runtime.clone();
@@ -2075,7 +2086,7 @@ async fn main() {
         let completed = completed.clone();
         let resume_statuses = resume_statuses.clone();
 
-        handles.push(tokio::spawn(async move {
+        handles.spawn(async move {
             let _permit = sem
                 .acquire()
                 .await
@@ -2324,6 +2335,7 @@ async fn main() {
 
             let qa_start = Instant::now();
             eprintln!("  {qid} reflecting...");
+            let mut fatal_error: Option<String> = None;
 
             let reflect_result = with_scoped_collector(
                 metrics.clone(),
@@ -2370,6 +2382,11 @@ async fn main() {
                     Err(e) => {
                         let err_msg = format!("{e}");
                         eprintln!("  reflect error ({qid}): {err_msg}");
+                        if common::failure::is_fatal_bench_error(&e) {
+                            fatal_error = Some(format!(
+                                "aborting benchmark after fatal reflect error ({qid}): {err_msg}"
+                            ));
+                        }
                         (
                             String::new(),
                             vec![],
@@ -2395,8 +2412,14 @@ async fn main() {
                 match common::judge::llm_judge(judge.as_ref().unwrap().as_ref(), &rendered).await {
                     Ok((correct, reasoning)) => (correct, reasoning, "ok".into(), None),
                     Err(e) => {
-                        eprintln!("  judge error ({qid}): {e}");
-                        (false, e.clone(), "judge_error".into(), Some(e))
+                        let err_msg = e.to_string();
+                        eprintln!("  judge error ({qid}): {err_msg}");
+                        if fatal_error.is_none() && e.is_fatal() {
+                            fatal_error = Some(format!(
+                                "aborting benchmark after fatal judge error ({qid}): {err_msg}"
+                            ));
+                        }
+                        (false, err_msg.clone(), "judge_error".into(), Some(err_msg))
                     }
                 }
             };
@@ -2437,6 +2460,10 @@ async fn main() {
                 s.push_and_flush(qr, dr);
             }
 
+            if let Some(fatal_error) = fatal_error {
+                return Err(fatal_error);
+            }
+
             let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
             eprintln!(
                 "[{done}/{total_instances}] {qid} {} ingest {:.1}s qa {:.1}s",
@@ -2446,14 +2473,22 @@ async fn main() {
             );
 
             Ok::<(), String>(())
-        }));
+        });
     }
 
-    for handle in handles {
-        match handle.await {
+    while let Some(joined) = handles.join_next().await {
+        match joined {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => eprintln!("instance failed: {e}"),
-            Err(e) => eprintln!("instance task panicked: {e}"),
+            Ok(Err(err)) => {
+                handles.abort_all();
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+            Err(err) => {
+                handles.abort_all();
+                eprintln!("instance task panicked: {err}");
+                std::process::exit(1);
+            }
         }
     }
 
@@ -3764,20 +3799,32 @@ mod tests {
     }
 
     #[test]
-    fn resolve_judge_model_with_config_override() {
+    fn resolve_judge_overrides_with_config_override() {
         let config = RunConfig {
             judge_model: Some("claude-3".into()),
             ..Default::default()
         };
-        assert_eq!(resolve_judge_model(&config), Some("claude-3".into()));
+        assert_eq!(
+            resolve_judge_overrides(&config),
+            common::judge::JudgeOverrides {
+                provider: None,
+                model: Some("claude-3".into()),
+            }
+        );
     }
 
     #[test]
-    fn resolve_judge_model_default_gpt4o() {
+    fn resolve_judge_overrides_default_to_openai_gpt4o() {
         // Ensure JUDGE_MODEL is not set for this test
         let _guard = env_guard("JUDGE_MODEL");
         let config = RunConfig::default();
-        assert_eq!(resolve_judge_model(&config), Some("gpt-4o".into()));
+        assert_eq!(
+            resolve_judge_overrides(&config),
+            common::judge::JudgeOverrides {
+                provider: Some(elephant::llm::Provider::OpenAi),
+                model: Some("gpt-4o".into()),
+            }
+        );
     }
 
     /// RAII guard that removes an env var for the test scope and restores it after.

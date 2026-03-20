@@ -1,4 +1,5 @@
-use std::env;
+mod support;
+
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -7,10 +8,9 @@ use chrono::{DateTime, Utc};
 use datatest_stable::harness;
 use dotenvy::dotenv;
 use elephant::llm::retry::{RetryPolicy, RetryingLlmClient};
-use elephant::llm::{self, LlmClient, Provider, ProviderConfig};
+use elephant::llm::LlmClient;
 use elephant::retain::chunker::{Chunker, SimpleChunker};
 use elephant::retain::extractor::{FactExtractor, LlmFactExtractor};
-use elephant::types::llm::PromptCacheConfig;
 use elephant::types::{BankId, ChunkConfig, ExtractionInput};
 use serde::Deserialize;
 
@@ -59,30 +59,8 @@ struct Assertion {
 fn build_llm() -> Result<Arc<dyn LlmClient>, String> {
     dotenv().ok();
 
-    let provider_str =
-        env::var("LLM_PROVIDER").map_err(|e| format!("LLM_PROVIDER must be set: {e}"))?;
-    let api_key = env::var("LLM_API_KEY").map_err(|e| format!("LLM_API_KEY must be set: {e}"))?;
-    let model = env::var("RETAIN_LLM_MODEL")
-        .or_else(|_| env::var("LLM_MODEL"))
-        .map_err(|e| format!("RETAIN_LLM_MODEL or LLM_MODEL must be set: {e}"))?;
-    let base_url = env::var("LLM_BASE_URL").ok();
-
-    let provider = match provider_str.as_str() {
-        "openai" => Provider::OpenAi,
-        _ => Provider::Anthropic,
-    };
-
-    let config = ProviderConfig {
-        provider,
-        api_key,
-        model,
-        base_url,
-        timeout_secs: llm::DEFAULT_TIMEOUT_SECS,
-        prompt_cache: PromptCacheConfig::Disabled,
-    };
-    let base: Arc<dyn LlmClient> = Arc::from(
-        llm::build_client(&config).map_err(|e| format!("failed to build LLM client: {e}"))?,
-    );
+    let base: Arc<dyn LlmClient> =
+        Arc::from(support::build_client_from_env(&["RETAIN_LLM_MODEL", "LLM_MODEL"])?);
     Ok(Arc::new(RetryingLlmClient::new(
         base,
         RetryPolicy::default(),

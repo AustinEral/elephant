@@ -1,23 +1,27 @@
 //! LLM client abstraction and provider implementations.
 
 pub mod anthropic;
+mod config;
 pub mod mock;
 pub mod openai;
 pub mod retry;
-
-use std::env;
+mod types;
 
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 
-/// Default HTTP timeout for LLM API requests (seconds).
-pub const DEFAULT_TIMEOUT_SECS: u64 = 600;
+pub use config::{
+    judge_client_config_from_env, runtime_config_from_env, AnthropicConfig,
+    AnthropicPromptCacheConfig, AnthropicPromptCacheTtl, ClientConfig, LlmConfig, OpenAiConfig,
+    OpenAiPromptCacheConfig, OpenAiPromptCacheRetention, Provider, DEFAULT_TIMEOUT_SECS,
+};
+pub use types::{
+    CompletionRequest, CompletionRequestBuilder, CompletionResponse, Message, MessageRole,
+    PromptCacheUsage, ReasoningEffort, ReasoningEffortConfig, ToolCall, ToolChoice,
+    ToolDefinition, ToolResult,
+};
 
 use crate::error::{Error, Result};
-use crate::types::llm::{
-    AnthropicPromptCacheConfig, AnthropicPromptCacheTtl, CompletionRequest, CompletionResponse,
-    OpenAiPromptCacheConfig, OpenAiPromptCacheRetention, PromptCacheConfig,
-};
 
 /// Trait abstraction over LLM providers.
 ///
@@ -42,19 +46,16 @@ pub async fn complete_structured<T: DeserializeOwned>(
     request: CompletionRequest,
 ) -> Result<T> {
     let response = client.complete(request).await?;
-    // Handle refusals — model declined to respond
     if response.stop_reason.as_deref() == Some("refusal") {
         return Err(Error::LlmRefusal);
     }
-    // Handle empty responses
     if response.content.is_empty() {
         return Err(Error::Llm("model returned empty response".into()));
     }
-    // Fast path: parse via Value (tolerates duplicate keys)
+
     let value: serde_json::Value = match serde_json::from_str(&response.content) {
         Ok(v) => v,
         Err(_) => {
-            // Slow path: extract JSON from surrounding text
             let json_str = extract_json(&response.content).map_err(|e| {
                 tracing::warn!(
                     content_len = response.content.len(),
@@ -69,6 +70,7 @@ pub async fn complete_structured<T: DeserializeOwned>(
                 .map_err(|e| Error::Llm(format!("JSON parse error: {e}")))?
         }
     };
+
     serde_json::from_value::<T>(value).map_err(|e| Error::Llm(format!("JSON structure error: {e}")))
 }
 
@@ -79,10 +81,8 @@ pub async fn complete_structured<T: DeserializeOwned>(
 /// 2. Find first `{` or `[` and match to last `}` or `]`
 /// 3. Return that substring
 pub fn extract_json(text: &str) -> Result<String> {
-    // Strip markdown fences
     let stripped = if let Some(start) = text.find("```") {
         let after_fence = &text[start + 3..];
-        // Skip optional language tag on the same line
         let content_start = after_fence.find('\n').map(|i| i + 1).unwrap_or(0);
         let content = &after_fence[content_start..];
         if let Some(end) = content.find("```") {
@@ -94,12 +94,10 @@ pub fn extract_json(text: &str) -> Result<String> {
         text.trim()
     };
 
-    // Try parsing stripped content directly
     if serde_json::from_str::<serde_json::Value>(stripped).is_ok() {
         return Ok(stripped.to_string());
     }
 
-    // Find first { or [ and match to last } or ]
     let obj_start = stripped.find('{');
     let arr_start = stripped.find('[');
 
@@ -107,9 +105,7 @@ pub fn extract_json(text: &str) -> Result<String> {
         (Some(o), Some(a)) => o.min(a),
         (Some(o), None) => o,
         (None, Some(a)) => a,
-        (None, None) => {
-            return Err(Error::LlmNoJson);
-        }
+        (None, None) => return Err(Error::LlmNoJson),
     };
 
     let (open, close) = if stripped.as_bytes()[start] == b'{' {
@@ -118,7 +114,6 @@ pub fn extract_json(text: &str) -> Result<String> {
         (b'[', b']')
     };
 
-    // Walk forward counting braces to find the matching close
     let mut depth = 0i32;
     let mut in_string = false;
     let mut escape_next = false;
@@ -154,7 +149,6 @@ pub fn extract_json(text: &str) -> Result<String> {
     let end = end_pos.ok_or_else(|| Error::Llm("unbalanced JSON in response".into()))?;
     let candidate = &stripped[start..end];
 
-    // Validate it actually parses
     serde_json::from_str::<serde_json::Value>(candidate)
         .map_err(|e| Error::Llm(format!("extracted JSON is invalid: {e}")))?;
 
@@ -162,10 +156,6 @@ pub fn extract_json(text: &str) -> Result<String> {
 }
 
 /// Map an HTTP error response to the appropriate error variant.
-///
-/// Shared by both provider implementations — the error classification logic
-/// (429 → RateLimit, 5xx → ServerError, else → Llm) is the same regardless
-/// of wire format.
 pub(crate) fn classify_api_error(
     provider: &str,
     status: reqwest::StatusCode,
@@ -181,8 +171,6 @@ pub(crate) fn classify_api_error(
 }
 
 /// Shared API error response shape: `{"error": {"message": "..."}}`.
-///
-/// Both OpenAI and Anthropic use this identical structure for error responses.
 #[derive(serde::Deserialize)]
 pub(crate) struct ApiErrorBody {
     pub error: ApiErrorDetail,
@@ -194,18 +182,15 @@ pub(crate) struct ApiErrorDetail {
 }
 
 /// Resolve the model: use the request's model if set, otherwise the client default.
-pub(crate) fn resolve_model(request_model: String, default_model: &str) -> String {
+pub(crate) fn resolve_model(request_model: &str, default_model: &str) -> String {
     if request_model.is_empty() {
         default_model.to_string()
     } else {
-        request_model
+        request_model.to_string()
     }
 }
 
 /// Send a request and handle the response/error boilerplate shared by all providers.
-///
-/// On success, returns the raw response text for provider-specific parsing.
-/// On failure, parses the `{"error": {"message": ...}}` body and classifies the error.
 pub(crate) async fn send_and_check(
     provider: &str,
     request_builder: reqwest::RequestBuilder,
@@ -235,180 +220,19 @@ pub(crate) async fn send_and_check(
     Err(classify_api_error(provider, status, msg))
 }
 
-/// LLM provider selection.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Provider {
-    /// Anthropic Claude API.
-    Anthropic,
-    /// OpenAI API.
-    OpenAi,
-}
-
-/// Configuration for a single LLM provider.
-#[derive(Debug, Clone)]
-pub struct ProviderConfig {
-    /// Which provider to use.
-    pub provider: Provider,
-    /// API key for authentication.
-    pub api_key: String,
-    /// Model name/ID to use.
-    pub model: String,
-    /// Optional base URL override for OpenAI-compatible providers.
-    pub base_url: Option<String>,
-    /// HTTP timeout for provider requests.
-    pub timeout_secs: u64,
-    /// Prompt caching configuration for this provider.
-    pub prompt_cache: PromptCacheConfig,
-}
-
-fn env_bool(name: &str, default: bool) -> Result<bool> {
-    match env::var(name) {
-        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
-            "1" | "true" | "yes" | "on" => Ok(true),
-            "0" | "false" | "no" | "off" => Ok(false),
-            other => Err(Error::Internal(format!(
-                "{name} must be a boolean, got: {other}"
-            ))),
-        },
-        Err(_) => Ok(default),
-    }
-}
-
-/// Read the shared LLM HTTP timeout from environment.
-pub fn timeout_secs_from_env() -> u64 {
-    env::var("LLM_TIMEOUT_SECS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_TIMEOUT_SECS)
-}
-
-/// Read prompt-cache config from environment for a specific provider.
-pub fn prompt_cache_config_from_env(provider: &str) -> Result<PromptCacheConfig> {
-    if !env_bool("LLM_PROMPT_CACHE_ENABLED", false)? {
-        return Ok(PromptCacheConfig::Disabled);
-    }
-
-    match provider {
-        "openai" => {
-            let retention = match env::var("OPENAI_PROMPT_CACHE_RETENTION") {
-                Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
-                    "in_memory" => Some(OpenAiPromptCacheRetention::InMemory),
-                    "24h" => Some(OpenAiPromptCacheRetention::Hours24),
-                    other => {
-                        return Err(Error::Internal(format!(
-                            "OPENAI_PROMPT_CACHE_RETENTION must be one of: in_memory, 24h; got: {other}"
-                        )));
-                    }
-                },
-                Err(_) => None,
-            };
-
-            Ok(PromptCacheConfig::OpenAi(OpenAiPromptCacheConfig {
-                key: env::var("OPENAI_PROMPT_CACHE_KEY").ok(),
-                retention,
-            }))
-        }
-        "anthropic" => {
-            let ttl = match env::var("ANTHROPIC_PROMPT_CACHE_TTL") {
-                Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
-                    "5m" => Some(AnthropicPromptCacheTtl::Minutes5),
-                    "1h" => Some(AnthropicPromptCacheTtl::Hours1),
-                    other => {
-                        return Err(Error::Internal(format!(
-                            "ANTHROPIC_PROMPT_CACHE_TTL must be one of: 5m, 1h; got: {other}"
-                        )));
-                    }
-                },
-                Err(_) => None,
-            };
-
-            Ok(PromptCacheConfig::Anthropic(AnthropicPromptCacheConfig {
-                ttl,
-            }))
-        }
-        _ => Ok(PromptCacheConfig::Disabled),
-    }
-}
-
-/// Configuration for LLM usage across the system.
-///
-/// Supports per-operation model selection: a strong model for retain/extraction,
-/// a cheaper model for reflect, etc.
-#[derive(Debug, Clone)]
-pub struct LlmConfig {
-    /// Default provider config used for all operations.
-    pub default: ProviderConfig,
-    /// Optional override for retain/extraction operations.
-    pub retain_override: Option<ProviderConfig>,
-    /// Optional override for reflect operations.
-    pub reflect_override: Option<ProviderConfig>,
-}
-
-/// Build an LLM client from a provider configuration.
-pub fn build_client(config: &ProviderConfig) -> crate::error::Result<Box<dyn LlmClient>> {
-    match config.provider {
-        Provider::Anthropic => Ok(Box::new(anthropic::AnthropicClient::new(
-            config.api_key.clone(),
-            config.model.clone(),
-            config.timeout_secs,
-            config.prompt_cache.clone(),
+/// Build an LLM client from a validated configuration.
+pub fn build_client(config: &ClientConfig) -> Result<Box<dyn LlmClient>> {
+    match config {
+        ClientConfig::Anthropic(config) => Ok(Box::new(anthropic::AnthropicClient::new(
+            config.clone(),
         )?)),
-        Provider::OpenAi => Ok(Box::new(openai::OpenAiClient::new(
-            config.api_key.clone(),
-            config.model.clone(),
-            config.base_url.clone(),
-            config.timeout_secs,
-            config.prompt_cache.clone(),
-        )?)),
+        ClientConfig::OpenAi(config) => Ok(Box::new(openai::OpenAiClient::new(config.clone())?)),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::collections::BTreeMap;
-    use std::sync::{Mutex, OnceLock};
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    fn with_env_vars<F>(overrides: &[(&str, Option<&str>)], test: F)
-    where
-        F: FnOnce(),
-    {
-        let _guard = env_lock().lock().unwrap();
-        let keys = [
-            "LLM_PROMPT_CACHE_ENABLED",
-            "OPENAI_PROMPT_CACHE_KEY",
-            "OPENAI_PROMPT_CACHE_RETENTION",
-            "ANTHROPIC_PROMPT_CACHE_TTL",
-            "LLM_TIMEOUT_SECS",
-        ];
-
-        let mut original = BTreeMap::new();
-        for key in keys {
-            original.insert(key, std::env::var(key).ok());
-            unsafe { std::env::remove_var(key) };
-        }
-
-        for (key, value) in overrides {
-            match value {
-                Some(value) => unsafe { std::env::set_var(key, value) },
-                None => unsafe { std::env::remove_var(key) },
-            }
-        }
-
-        test();
-
-        for (key, value) in original {
-            match value {
-                Some(value) => unsafe { std::env::set_var(key, value) },
-                None => unsafe { std::env::remove_var(key) },
-            }
-        }
-    }
+    use super::extract_json;
 
     #[test]
     fn extract_json_clean() {
@@ -457,90 +281,5 @@ mod tests {
         let input = r#"{"msg": "hello {world}"}"#;
         let result = extract_json(input).unwrap();
         assert_eq!(result, input);
-    }
-
-    #[test]
-    fn prompt_cache_config_defaults_to_disabled() {
-        with_env_vars(&[], || {
-            assert_eq!(
-                prompt_cache_config_from_env("openai").unwrap(),
-                PromptCacheConfig::Disabled
-            );
-        });
-    }
-
-    #[test]
-    fn prompt_cache_config_parses_openai_values() {
-        with_env_vars(
-            &[
-                ("LLM_PROMPT_CACHE_ENABLED", Some("1")),
-                ("OPENAI_PROMPT_CACHE_KEY", Some("elephant:reflect")),
-                ("OPENAI_PROMPT_CACHE_RETENTION", Some("24h")),
-            ],
-            || {
-                assert_eq!(
-                    prompt_cache_config_from_env("openai").unwrap(),
-                    PromptCacheConfig::OpenAi(OpenAiPromptCacheConfig {
-                        key: Some("elephant:reflect".into()),
-                        retention: Some(OpenAiPromptCacheRetention::Hours24),
-                    })
-                );
-            },
-        );
-    }
-
-    #[test]
-    fn prompt_cache_config_parses_anthropic_values() {
-        with_env_vars(
-            &[
-                ("LLM_PROMPT_CACHE_ENABLED", Some("true")),
-                ("ANTHROPIC_PROMPT_CACHE_TTL", Some("1h")),
-            ],
-            || {
-                assert_eq!(
-                    prompt_cache_config_from_env("anthropic").unwrap(),
-                    PromptCacheConfig::Anthropic(AnthropicPromptCacheConfig {
-                        ttl: Some(AnthropicPromptCacheTtl::Hours1),
-                    })
-                );
-            },
-        );
-    }
-
-    #[test]
-    fn prompt_cache_config_rejects_invalid_openai_retention() {
-        with_env_vars(
-            &[
-                ("LLM_PROMPT_CACHE_ENABLED", Some("1")),
-                ("OPENAI_PROMPT_CACHE_RETENTION", Some("forever")),
-            ],
-            || {
-                assert!(prompt_cache_config_from_env("openai").is_err());
-            },
-        );
-    }
-
-    #[test]
-    fn prompt_cache_config_rejects_invalid_anthropic_ttl() {
-        with_env_vars(
-            &[
-                ("LLM_PROMPT_CACHE_ENABLED", Some("1")),
-                ("ANTHROPIC_PROMPT_CACHE_TTL", Some("24h")),
-            ],
-            || {
-                assert!(prompt_cache_config_from_env("anthropic").is_err());
-            },
-        );
-    }
-
-    #[test]
-    fn timeout_secs_from_env_uses_default_and_override() {
-        with_env_vars(&[], || {
-            assert_eq!(timeout_secs_from_env(), DEFAULT_TIMEOUT_SECS);
-        });
-
-        with_env_vars(&[("LLM_TIMEOUT_SECS", Some("42"))], || {
-            assert_eq!(timeout_secs_from_env(), 42);
-        });
     }
 }

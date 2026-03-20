@@ -1,14 +1,13 @@
 //! Prompt-agnostic LLM judge infrastructure shared by all benchmark harnesses.
 
-use std::env;
 use std::sync::Arc;
 
 use serde::Deserialize;
 
+use crate::common::failure;
 use elephant::llm::retry::{RetryPolicy, RetryingLlmClient};
-use elephant::llm::{self, LlmClient, Provider, ProviderConfig};
+use elephant::llm::{self, CompletionRequest, LlmClient, Message};
 use elephant::metrics::{LlmStage, MeteredLlmClient, MetricsCollector};
-use elephant::types::{CompletionRequest, Message};
 
 /// Parsed judge LLM response.
 #[derive(Debug, Deserialize)]
@@ -21,6 +20,31 @@ pub const JUDGE_TEMPERATURE: f32 = 0.0;
 pub const JUDGE_MAX_TOKENS: usize = 200;
 pub const JUDGE_MAX_ATTEMPTS: usize = 3;
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct JudgeOverrides {
+    pub provider: Option<llm::Provider>,
+    pub model: Option<String>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum JudgeError {
+    #[error("judge error: {0}")]
+    Llm(elephant::error::Error),
+    #[error("could not parse judge response: {0}")]
+    Parse(String),
+    #[error("judge failed after retries")]
+    RetriesExhausted,
+}
+
+impl JudgeError {
+    pub fn is_fatal(&self) -> bool {
+        match self {
+            Self::Llm(err) => failure::is_fatal_bench_error(err),
+            Self::Parse(_) | Self::RetriesExhausted => false,
+        }
+    }
+}
+
 /// Send a pre-rendered prompt to the judge LLM and parse the CORRECT/WRONG verdict.
 ///
 /// The caller is responsible for rendering the prompt template with the appropriate
@@ -30,15 +54,12 @@ pub const JUDGE_MAX_ATTEMPTS: usize = 3;
 pub async fn llm_judge(
     judge: &dyn LlmClient,
     rendered_prompt: &str,
-) -> Result<(bool, String), String> {
-    let request = CompletionRequest {
-        model: String::new(),
-        messages: vec![Message::text("user", rendered_prompt)],
-        max_tokens: Some(JUDGE_MAX_TOKENS),
-        temperature: Some(JUDGE_TEMPERATURE),
-        system: None,
-        ..Default::default()
-    };
+) -> Result<(bool, String), JudgeError> {
+    let request = CompletionRequest::builder()
+        .message(Message::user(rendered_prompt))
+        .max_tokens(JUDGE_MAX_TOKENS)
+        .temperature(JUDGE_TEMPERATURE)
+        .build();
 
     for attempt in 0..JUDGE_MAX_ATTEMPTS {
         let result = judge.complete(request.clone()).await;
@@ -55,53 +76,31 @@ pub async fn llm_judge(
                     return Ok((correct, parsed.reasoning));
                 }
                 if attempt + 1 == JUDGE_MAX_ATTEMPTS {
-                    return Err(format!(
+                    return Err(JudgeError::Parse(format!(
                         "could not parse judge response: {}",
                         &resp.content[..resp.content.len().min(120)]
-                    ));
+                    )));
                 }
             }
             Err(e) => {
-                return Err(format!("judge error: {e}"));
+                return Err(JudgeError::Llm(e));
             }
         }
     }
-    Err("judge failed after retries".into())
+    Err(JudgeError::RetriesExhausted)
 }
 
 /// Build an LLM client configured for judge duty.
 ///
 /// Uses env var fallback chain: JUDGE_PROVIDER -> LLM_PROVIDER, JUDGE_API_KEY -> LLM_API_KEY,
-/// JUDGE_MODEL -> LLM_MODEL. The `override_model` replaces the env var chain for model selection.
+/// JUDGE_MODEL -> LLM_MODEL, and JUDGE_BASE_URL -> LLM_BASE_URL. `overrides` can replace
+/// the resolved provider and/or model.
 pub fn build_judge_client(
     metrics: Arc<MetricsCollector>,
-    override_model: Option<String>,
+    overrides: &JudgeOverrides,
 ) -> Arc<dyn LlmClient> {
-    let judge_provider_str = env::var("JUDGE_PROVIDER")
-        .or_else(|_| env::var("LLM_PROVIDER"))
-        .expect("JUDGE_PROVIDER or LLM_PROVIDER must be set");
-    let judge_api_key = env::var("JUDGE_API_KEY")
-        .or_else(|_| env::var("LLM_API_KEY"))
-        .expect("JUDGE_API_KEY or LLM_API_KEY must be set");
-    let judge_model = override_model.unwrap_or_else(|| {
-        env::var("JUDGE_MODEL")
-            .or_else(|_| env::var("LLM_MODEL"))
-            .expect("JUDGE_MODEL or LLM_MODEL must be set")
-    });
-    let provider = match judge_provider_str.as_str() {
-        "openai" => Provider::OpenAi,
-        _ => Provider::Anthropic,
-    };
-    let judge_config = ProviderConfig {
-        provider,
-        api_key: judge_api_key,
-        model: judge_model,
-        base_url: env::var("JUDGE_BASE_URL")
-            .ok()
-            .or_else(|| env::var("LLM_BASE_URL").ok()),
-        timeout_secs: llm::timeout_secs_from_env(),
-        prompt_cache: llm::prompt_cache_config_from_env(&judge_provider_str).unwrap(),
-    };
+    let judge_config =
+        llm::judge_client_config_from_env(overrides.provider, overrides.model.as_deref()).unwrap();
     let inner: Arc<dyn LlmClient> = Arc::from(llm::build_client(&judge_config).unwrap());
     let metered: Arc<dyn LlmClient> =
         Arc::new(MeteredLlmClient::new(inner, metrics, LlmStage::Judge));
@@ -109,14 +108,8 @@ pub fn build_judge_client(
 }
 
 /// Returns "provider/model" string identifying the judge configuration.
-pub fn judge_label(override_model: &Option<String>) -> String {
-    let provider = env::var("JUDGE_PROVIDER")
-        .or_else(|_| env::var("LLM_PROVIDER"))
-        .expect("JUDGE_PROVIDER or LLM_PROVIDER must be set");
-    let model = override_model.clone().unwrap_or_else(|| {
-        env::var("JUDGE_MODEL")
-            .or_else(|_| env::var("LLM_MODEL"))
-            .expect("JUDGE_MODEL or LLM_MODEL must be set")
-    });
-    format!("{provider}/{model}")
+pub fn judge_label(overrides: &JudgeOverrides) -> String {
+    llm::judge_client_config_from_env(overrides.provider, overrides.model.as_deref())
+        .unwrap()
+        .label()
 }

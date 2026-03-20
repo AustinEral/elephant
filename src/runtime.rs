@@ -10,10 +10,8 @@ use crate::consolidation::opinion_merger;
 use crate::consolidation::{ConsolidationConfig, DefaultConsolidator, DefaultOpinionMerger};
 use crate::embedding::{self, EmbeddingClient, EmbeddingConfig, EmbeddingProvider};
 use crate::error::{Error, Result};
-use crate::llm::anthropic::AnthropicClient;
-use crate::llm::openai::OpenAiClient;
 use crate::llm::retry::{RetryPolicy, RetryingLlmClient};
-use crate::llm::{self, LlmClient};
+use crate::llm::{self, ClientConfig, LlmClient, ReasoningEffort, ReasoningEffortConfig};
 use crate::metrics::{LlmStage, MeteredLlmClient, MetricsCollector};
 use crate::recall::DefaultRecallPipeline;
 use crate::recall::RecallPipeline;
@@ -32,19 +30,8 @@ use crate::retain::{self, DefaultRetainPipeline, RetainPipeline};
 use crate::storage::MemoryStore;
 use crate::storage::pg::PgMemoryStore;
 use crate::types::ChunkConfig;
-use crate::types::llm::{PromptCacheConfig, ReasoningEffort, ReasoningEffortConfig};
 
 use crate::consolidation::{Consolidator, OpinionMerger};
-
-#[derive(Debug, Clone)]
-struct LlmConfig {
-    provider: String,
-    api_key: String,
-    model: String,
-    base_url: Option<String>,
-    timeout_secs: u64,
-    prompt_cache: PromptCacheConfig,
-}
 
 /// Stable prompt-template hash bundle for publication provenance.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -169,34 +156,16 @@ pub struct BuildRuntimeOptions {
     pub max_pool_connections: Option<u32>,
 }
 
-fn make_llm(config: &LlmConfig) -> Result<Box<dyn LlmClient>> {
-    match config.provider.as_str() {
-        "openai" => Ok(Box::new(OpenAiClient::new(
-            config.api_key.clone(),
-            config.model.clone(),
-            config.base_url.clone(),
-            config.timeout_secs,
-            config.prompt_cache.clone(),
-        )?)),
-        _ => Ok(Box::new(AnthropicClient::new(
-            config.api_key.clone(),
-            config.model.clone(),
-            config.timeout_secs,
-            config.prompt_cache.clone(),
-        )?)),
-    }
-}
-
 fn env_required(name: &str) -> Result<String> {
-    env::var(name).map_err(|e| Error::Internal(format!("{name} must be set: {e}")))
+    env::var(name).map_err(|e| Error::Configuration(format!("{name} must be set: {e}")))
 }
 
 fn stage_llm(
-    config: &LlmConfig,
+    config: &ClientConfig,
     stage: LlmStage,
     metrics: Option<&Arc<MetricsCollector>>,
 ) -> Result<Arc<dyn LlmClient>> {
-    let base: Arc<dyn LlmClient> = Arc::from(make_llm(config)?);
+    let base: Arc<dyn LlmClient> = Arc::from(llm::build_client(config)?);
     let inner: Arc<dyn LlmClient> = if let Some(collector) = metrics {
         Arc::new(MeteredLlmClient::new(base, collector.clone(), stage))
     } else {
@@ -269,12 +238,7 @@ fn runtime_prompt_hashes() -> RuntimePromptHashes {
 /// Build the full Elephant runtime from environment variables.
 pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<ElephantRuntime> {
     let database_url = env_required("DATABASE_URL")?;
-    let llm_provider = env_required("LLM_PROVIDER")?;
-    let llm_api_key = env_required("LLM_API_KEY")?;
-    let retain_model = env::var("RETAIN_LLM_MODEL").or_else(|_| env_required("LLM_MODEL"))?;
-    let reflect_model = env::var("REFLECT_LLM_MODEL").or_else(|_| env_required("LLM_MODEL"))?;
-    let llm_base_url = env::var("LLM_BASE_URL").ok();
-    let llm_timeout_secs = llm::timeout_secs_from_env();
+    let llm_configs = llm::runtime_config_from_env()?;
 
     let max_conns = options.max_pool_connections.unwrap_or(10);
     let pool = sqlx::postgres::PgPoolOptions::new()
@@ -283,24 +247,6 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
         .await?;
     let store = Arc::new(PgMemoryStore::new(pool.clone()));
     store.migrate().await?;
-    let prompt_cache = llm::prompt_cache_config_from_env(&llm_provider)?;
-
-    let retain_config = LlmConfig {
-        provider: llm_provider.clone(),
-        api_key: llm_api_key.clone(),
-        model: retain_model.clone(),
-        base_url: llm_base_url.clone(),
-        timeout_secs: llm_timeout_secs,
-        prompt_cache: prompt_cache.clone(),
-    };
-    let reflect_config = LlmConfig {
-        provider: llm_provider.clone(),
-        api_key: llm_api_key,
-        model: reflect_model.clone(),
-        base_url: llm_base_url,
-        timeout_secs: llm_timeout_secs,
-        prompt_cache,
-    };
 
     let emb_config = embedding::config_from_env()?;
     let embeddings: Arc<dyn EmbeddingClient> = Arc::from(embedding::build_client(&emb_config)?);
@@ -325,21 +271,21 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
     let retain = Arc::new(DefaultRetainPipeline::new(
         Box::new(SimpleChunker),
         Box::new(LlmFactExtractor::new(stage_llm(
-            &retain_config,
+            llm_configs.retain(),
             LlmStage::RetainExtract,
             options.metrics.as_ref(),
         )?)),
         Box::new(LayeredEntityResolver::new(
             embedding::build_client(&emb_config)?,
             stage_llm(
-                &retain_config,
+                llm_configs.retain(),
                 LlmStage::RetainResolve,
                 options.metrics.as_ref(),
             )?,
         )),
         Box::new(DefaultGraphBuilder::new(
             stage_llm(
-                &retain_config,
+                llm_configs.retain(),
                 LlmStage::RetainGraph,
                 options.metrics.as_ref(),
             )?,
@@ -348,7 +294,7 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
         Box::new(PgMemoryStore::new(pool.clone())),
         embedding::build_client(&emb_config)?,
         stage_llm(
-            &retain_config,
+            llm_configs.retain(),
             LlmStage::RetainOpinion,
             options.metrics.as_ref(),
         )?,
@@ -416,7 +362,7 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
     };
     let reflect = Arc::new(DefaultReflectPipeline::new_with_limits(
         recall.clone(),
-        stage_llm(&reflect_config, LlmStage::Reflect, options.metrics.as_ref())?,
+        stage_llm(llm_configs.reflect(), LlmStage::Reflect, options.metrics.as_ref())?,
         store.clone(),
         reflect_max_iter,
         reflect_max_tokens,
@@ -428,7 +374,7 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
     let consolidator = Arc::new(DefaultConsolidator::new(
         store.clone(),
         stage_llm(
-            &reflect_config,
+            llm_configs.reflect(),
             LlmStage::Consolidate,
             options.metrics.as_ref(),
         )?,
@@ -439,7 +385,7 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
     let opinion_merger = Arc::new(DefaultOpinionMerger::new(
         store.clone(),
         stage_llm(
-            &reflect_config,
+            llm_configs.reflect(),
             LlmStage::OpinionMerge,
             options.metrics.as_ref(),
         )?,
@@ -448,8 +394,16 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
 
     Ok(ElephantRuntime {
         info: RuntimeInfo {
-            retain_model: format!("{llm_provider}/{retain_model}"),
-            reflect_model: format!("{llm_provider}/{reflect_model}"),
+            retain_model: format!(
+                "{}/{}",
+                llm_configs.retain().provider().as_str(),
+                llm_configs.retain().model()
+            ),
+            reflect_model: format!(
+                "{}/{}",
+                llm_configs.reflect().provider().as_str(),
+                llm_configs.reflect().model()
+            ),
             embedding_model: embedding_label(&emb_config),
             reranker_model: reranker_label(&reranker_config),
             tuning: RuntimeTuning {

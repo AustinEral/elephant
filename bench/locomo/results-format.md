@@ -61,6 +61,13 @@ If you want to publish a benchmark externally, export a separate public bundle w
       "rerank_top_n": 50,
       "reflect_max_iterations": 8,
       "reflect_max_tokens": null,
+      "retain_extract_reasoning_effort": null,
+      "retain_resolve_reasoning_effort": null,
+      "retain_graph_reasoning_effort": null,
+      "reflect_enable_source_lookup": true,
+      "reflect_reasoning_effort": null,
+      "consolidate_reasoning_effort": null,
+      "opinion_merge_reasoning_effort": null,
       "reflect_budget_tokens": 4096,
       "judge_temperature": 0.0,
       "judge_max_tokens": 200,
@@ -230,7 +237,7 @@ If merged source runs differed only in provenance-style fields, the merged manif
       "source_ids": ["01KK54YT6PV3KG9GRYNV65TV0K"]
     },
     "used_fallback": false,
-    "stop_reason": "tool_use",
+    "stop_reason": "tool_call",
     "response": "Melanie painted a lake sunrise in 2022 [01KK54YT6PV3KG9GRYNV65TV0K].",
     "source_ids": ["01KK54YT6PV3KG9GRYNV65TV0K"]
   },
@@ -274,7 +281,20 @@ If merged source runs differed only in provenance-style fields, the merged manif
 }
 ```
 
-`final_done` is the raw final `done()` tool payload captured from the reflect loop. It exists to explain blank or malformed answers: you can see the original tool arguments, whether fallback parsing was used, the provider `stop_reason`, and the normalized response/source ids that actually fed the benchmark result.
+`final_done` is the raw final `done()` tool payload captured from the reflect loop. It exists to explain blank or malformed answers: you can see the original tool arguments, whether fallback parsing was used, the normalized `stop_reason`, and the normalized response/source ids that actually fed the benchmark result.
+
+## Status values
+
+Question records use `status` to distinguish a scored answer from harness failures:
+
+- `ok`: reflect completed and the judge ran successfully.
+- `reflect_error`: reflect failed before producing a hypothesis. `error` contains the failure message.
+- `judge_error`: reflect produced a hypothesis but judge evaluation failed. `error` contains the failure message.
+- `bank_error`: the harness failed to create or load the benchmark bank.
+- `ingest_error`: ingestion failed before QA.
+- `ingest-only`: ingest-mode run; no QA was attempted.
+
+Fatal harness/config/provider-contract failures abort the benchmark immediately after the failing row is flushed to the sidecar. That leaves a partial artifact on disk for diagnosis instead of silently folding the failure into benchmark accuracy.
 
 ## What matters most
 

@@ -265,6 +265,37 @@ pub struct ReflectTraceStep {
     pub latency_ms: u64,
 }
 
+/// Normalized final-completion stop reason recorded by the reflect loop.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReflectStopReason {
+    /// The model stopped because it emitted a tool call.
+    ToolCall,
+    /// The model hit a token limit.
+    MaxTokens,
+    /// The model explicitly refused to continue.
+    Refusal,
+    /// The model ended normally without another tool call.
+    Completed,
+    /// The provider returned a stop reason outside the normalized set.
+    Other,
+}
+
+impl ReflectStopReason {
+    /// Normalize a provider-specific stop reason into the reflect trace schema.
+    pub fn from_provider(reason: &str) -> Self {
+        match reason.trim().to_ascii_lowercase().as_str() {
+            "tool_use" | "tool_call" | "tool_calls" | "function_call" | "function_calls" => {
+                Self::ToolCall
+            }
+            "max_tokens" | "max_output_tokens" => Self::MaxTokens,
+            "refusal" => Self::Refusal,
+            "end_turn" | "stop" | "completed" | "complete" => Self::Completed,
+            _ => Self::Other,
+        }
+    }
+}
+
 /// Final `done()` tool call captured from the reflect loop for debugging.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ReflectDoneTrace {
@@ -280,9 +311,9 @@ pub struct ReflectDoneTrace {
     /// Parse error from the primary decoder, when fallback was used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parse_error: Option<String>,
-    /// Provider-specific stop reason for the final reflect completion.
+    /// Normalized stop reason for the final reflect completion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stop_reason: Option<String>,
+    pub stop_reason: Option<ReflectStopReason>,
     /// Normalized final response extracted from the tool call.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub response: String,
@@ -373,6 +404,26 @@ pub struct OpinionMergeReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reflect_stop_reason_normalizes_provider_values() {
+        assert_eq!(
+            ReflectStopReason::from_provider("tool_use"),
+            ReflectStopReason::ToolCall
+        );
+        assert_eq!(
+            ReflectStopReason::from_provider("max_output_tokens"),
+            ReflectStopReason::MaxTokens
+        );
+        assert_eq!(
+            ReflectStopReason::from_provider("end_turn"),
+            ReflectStopReason::Completed
+        );
+        assert_eq!(
+            ReflectStopReason::from_provider("something_new"),
+            ReflectStopReason::Other
+        );
+    }
 
     #[test]
     fn retain_input_roundtrip() {

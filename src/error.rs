@@ -55,6 +55,10 @@ pub enum Error {
     #[error("internal error: {0}")]
     Internal(String),
 
+    /// Invalid runtime or API configuration.
+    #[error("configuration error: {0}")]
+    Configuration(String),
+
     /// The bank's embedding config doesn't match the current embedding client.
     #[error(
         "embedding dimension mismatch: bank expects {expected} dims ({model}), but client produces {actual} dims"

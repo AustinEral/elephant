@@ -5,9 +5,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::error::Result;
-use crate::llm::LlmClient;
+use crate::llm::{CompletionRequest, LlmClient, Message, ReasoningEffortConfig};
 use crate::types::{
-    CompletionRequest, ExtractedFact, ExtractionInput, Message, ReasoningEffortConfig,
+    ExtractedFact, ExtractionInput,
 };
 
 /// Trait for extracting structured facts from raw text.
@@ -89,15 +89,13 @@ impl FactExtractor for LlmFactExtractor {
 
         let mut last_err = None;
         for attempt in 0..3 {
-            let req = CompletionRequest {
-                model: String::new(),
-                system: Some(system.clone()),
-                messages: vec![Message::text("user", user_msg.clone())],
-                temperature: Some(EXTRACT_TEMPERATURE),
-                reasoning_effort: ReasoningEffortConfig::current()?.retain_extract,
-                max_tokens: Some(EXTRACT_MAX_TOKENS),
-                ..Default::default()
-            };
+            let req = CompletionRequest::builder()
+                .system(system.clone())
+                .message(Message::user(user_msg.clone()))
+                .temperature(EXTRACT_TEMPERATURE)
+                .reasoning_effort_opt(ReasoningEffortConfig::current()?.retain_extract)
+                .max_tokens(EXTRACT_MAX_TOKENS)
+                .build();
             match crate::llm::complete_structured::<Vec<ExtractedFact>>(&*self.llm, req).await {
                 Ok(facts) => return Ok(facts),
                 Err(e @ (crate::error::Error::LlmNoJson | crate::error::Error::LlmRefusal)) => {

@@ -10,8 +10,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
-use crate::llm::LlmClient;
-use crate::types::llm::{CompletionRequest, CompletionResponse};
+use crate::llm::{CompletionRequest, CompletionResponse, LlmClient};
 
 tokio::task_local! {
     static ACTIVE_SCOPED_COLLECTORS: RefCell<Vec<Arc<MetricsCollector>>>;
@@ -266,7 +265,7 @@ impl LlmClient for MeteredLlmClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::llm::PromptCacheUsage;
+    use crate::llm::PromptCacheUsage;
 
     #[test]
     fn stage_usage_deserializes_legacy_token_names() {

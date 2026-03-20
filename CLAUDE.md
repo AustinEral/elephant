@@ -6,6 +6,11 @@ Rust reimplementation of the Hindsight memory architecture (arXiv:2512.12818). F
 
 Architecture reference: see `docs/architecture.md`
 
+Agent reading list: see `docs/agent-reading.md`
+
+Before starting any work, agents should read the full Rust API Guidelines:
+https://rust-lang.github.io/api-guidelines/
+
 ## Hindsight Memory (MCP)
 
 A Hindsight MCP server is available for project memory. Bank ID: `memory-engine`.

@@ -20,7 +20,9 @@ mkdir -p data
 cargo build --release --bin longmemeval-bench --bin longmemeval-view
 ```
 
-Same environment variables as Elephant itself (`DATABASE_URL`, `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL`, embedding/reranker vars). Optional prompt-cache envs are also supported: `LLM_PROMPT_CACHE_ENABLED`, `OPENAI_PROMPT_CACHE_KEY`, `OPENAI_PROMPT_CACHE_RETENTION`, and `ANTHROPIC_PROMPT_CACHE_TTL`. Judge defaults to GPT-4o, overridable with `--judge-model` or `JUDGE_MODEL` env var.
+Same environment variables as Elephant itself (`DATABASE_URL`, `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL`, embedding/reranker vars). Optional reasoning-effort envs are also supported: `RETAIN_EXTRACT_REASONING_EFFORT`, `RETAIN_RESOLVE_REASONING_EFFORT`, `RETAIN_GRAPH_REASONING_EFFORT`, `REFLECT_REASONING_EFFORT`, `CONSOLIDATE_REASONING_EFFORT`, and `OPINION_MERGE_REASONING_EFFORT`. Optional prompt-cache envs are also supported: `LLM_PROMPT_CACHE_ENABLED`, `OPENAI_PROMPT_CACHE_KEY`, `OPENAI_PROMPT_CACHE_RETENTION`, and `ANTHROPIC_PROMPT_CACHE_TTL`. Judge provider/auth/base URL follow `JUDGE_PROVIDER -> LLM_PROVIDER`, `JUDGE_API_KEY -> LLM_API_KEY`, and `JUDGE_BASE_URL -> LLM_BASE_URL`; if you do not set a judge model explicitly, LongMemEval defaults the judge to `openai/gpt-4o`. You can override that with `--judge-model` or `JUDGE_MODEL`.
+
+For OpenAI `gpt-5.4-mini`, `REFLECT_REASONING_EFFORT=high` is a useful non-default tuning when you want stronger reflect tool use, at the cost of higher latency and token usage.
 
 Use an isolated Postgres instance for benchmark runs (see [LoCoMo README](../locomo/README.md#setup) for Docker instructions).
 

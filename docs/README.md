@@ -19,6 +19,7 @@
 ## Contributor Docs
 
 - **[../STYLE.md](../STYLE.md)** — Rust engineering conventions for this repo
+- **[agent-reading.md](agent-reading.md)** — required reading for agents before starting work
 
 ## Internal
 

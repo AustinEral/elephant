@@ -5,8 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::error::{Error, Result};
-use crate::llm::LlmClient;
-use crate::types::llm::{CompletionRequest, CompletionResponse};
+use crate::llm::{CompletionRequest, CompletionResponse, LlmClient};
 
 /// Configurable retry policy for LLM calls.
 #[derive(Debug, Clone)]
@@ -146,14 +145,7 @@ mod tests {
     }
 
     fn test_request() -> CompletionRequest {
-        CompletionRequest {
-            model: String::new(),
-            messages: vec![],
-            max_tokens: None,
-            temperature: None,
-            system: None,
-            ..Default::default()
-        }
+        CompletionRequest::builder().build()
     }
 
     #[tokio::test]

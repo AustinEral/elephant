@@ -7,11 +7,12 @@
 //! Run with:
 //!   cargo test --test prompt_eval -- --ignored --nocapture
 //!
-//! Only requires LLM_API_KEY + LLM_MODEL from .env.
+//! Only requires LLM_PROVIDER + LLM_API_KEY + LLM_MODEL from .env.
 
-use elephant::llm::anthropic::AnthropicClient;
+mod support;
+
 use elephant::llm::complete_structured;
-use elephant::types::llm::{CompletionRequest, Message, PromptCacheConfig};
+use elephant::llm::{CompletionRequest, LlmClient, Message};
 use elephant::types::pipeline::ExtractedFact;
 
 use serde::Deserialize;
@@ -24,21 +25,8 @@ fn init() {
     let _ = dotenvy::dotenv();
 }
 
-fn env(key: &str) -> String {
-    std::env::var(key).unwrap_or_else(|_| panic!("{key} must be set in .env"))
-}
-
-fn llm_client() -> AnthropicClient {
-    let model = std::env::var("LLM_MODEL")
-        .or_else(|_| std::env::var("RETAIN_LLM_MODEL"))
-        .unwrap_or_else(|_| panic!("LLM_MODEL or RETAIN_LLM_MODEL must be set in .env"));
-    AnthropicClient::new(
-        env("LLM_API_KEY"),
-        model,
-        elephant::llm::DEFAULT_TIMEOUT_SECS,
-        PromptCacheConfig::Disabled,
-    )
-    .unwrap()
+fn llm_client() -> Box<dyn LlmClient> {
+    support::build_client_from_env(&["LLM_MODEL", "RETAIN_LLM_MODEL"]).unwrap()
 }
 
 fn extraction_request(content: &str, speaker: Option<&str>) -> CompletionRequest {
@@ -48,14 +36,11 @@ fn extraction_request(content: &str, speaker: Option<&str>) -> CompletionRequest
         user_msg.push_str(&format!("Speaker: {name}\n\n"));
     }
     user_msg.push_str(content);
-    CompletionRequest {
-        model: String::new(),
-        messages: vec![Message::text("user", user_msg)],
-        max_tokens: None,
-        temperature: Some(0.0),
-        system: Some(system),
-        ..Default::default()
-    }
+    CompletionRequest::builder()
+        .message(Message::user(user_msg))
+        .temperature(0.0)
+        .system(system)
+        .build()
 }
 
 fn reflect_request(context: &str, opinions: &str, question: &str) -> CompletionRequest {
@@ -64,17 +49,10 @@ fn reflect_request(context: &str, opinions: &str, question: &str) -> CompletionR
         .replace("{context}", context)
         .replace("{opinions}", opinions)
         .replace("{question}", question);
-    CompletionRequest {
-        model: String::new(),
-        messages: vec![Message::text("user", user_prompt)],
-        max_tokens: None,
-        temperature: Some(0.3),
-        reasoning_effort: None,
-        system: None,
-        tools: None,
-        tool_choice: None,
-        tool_results: vec![],
-    }
+    CompletionRequest::builder()
+        .message(Message::user(user_prompt))
+        .temperature(0.3)
+        .build()
 }
 
 fn synthesize_observation_request(entity_name: &str, facts: &str) -> CompletionRequest {
@@ -82,33 +60,19 @@ fn synthesize_observation_request(entity_name: &str, facts: &str) -> CompletionR
     let user_prompt = template
         .replace("{entity_name}", entity_name)
         .replace("{facts}", facts);
-    CompletionRequest {
-        model: String::new(),
-        messages: vec![Message::text("user", user_prompt)],
-        max_tokens: None,
-        temperature: Some(0.3),
-        reasoning_effort: None,
-        system: None,
-        tools: None,
-        tool_choice: None,
-        tool_results: vec![],
-    }
+    CompletionRequest::builder()
+        .message(Message::user(user_prompt))
+        .temperature(0.3)
+        .build()
 }
 
 fn merge_opinions_request(opinions: &str) -> CompletionRequest {
     let template = include_str!("../prompts/merge_opinions.txt");
     let user_prompt = template.replace("{opinions}", opinions);
-    CompletionRequest {
-        model: String::new(),
-        messages: vec![Message::text("user", user_prompt)],
-        max_tokens: None,
-        temperature: Some(0.0),
-        reasoning_effort: None,
-        system: None,
-        tools: None,
-        tool_choice: None,
-        tool_results: vec![],
-    }
+    CompletionRequest::builder()
+        .message(Message::user(user_prompt))
+        .temperature(0.0)
+        .build()
 }
 
 // ---------------------------------------------------------------------------
@@ -160,7 +124,7 @@ async fn eval_extract_simple() {
     let input = "Alice works at Acme Corp as a senior engineer. She joined in 2020 and uses Rust and Python daily.";
 
     let request = extraction_request(input, None);
-    let facts: Vec<ExtractedFact> = complete_structured(&client, request)
+    let facts: Vec<ExtractedFact> = complete_structured(&*client, request)
         .await
         .expect("LLM call failed");
 
@@ -221,7 +185,7 @@ async fn eval_extract_conversational() {
                  for the new project. He thinks it's better for our use case.";
 
     let request = extraction_request(input, Some("Austin"));
-    let facts: Vec<ExtractedFact> = complete_structured(&client, request)
+    let facts: Vec<ExtractedFact> = complete_structured(&*client, request)
         .await
         .expect("LLM call failed");
 
@@ -271,7 +235,7 @@ async fn eval_extract_selectivity() {
                  Cool, let me know if you have questions.";
 
     let request = extraction_request(input, Some("Austin"));
-    let facts: Vec<ExtractedFact> = complete_structured(&client, request)
+    let facts: Vec<ExtractedFact> = complete_structured(&*client, request)
         .await
         .expect("LLM call failed");
 
@@ -327,7 +291,7 @@ async fn eval_reflect_with_context() {
     let question = "What role did Alice play in the database migration?";
 
     let request = reflect_request(context, opinions, question);
-    let resp: ReflectResponse = complete_structured(&client, request)
+    let resp: ReflectResponse = complete_structured(&*client, request)
         .await
         .expect("LLM call failed");
 
@@ -362,7 +326,7 @@ async fn eval_reflect_insufficient() {
     let question = "What programming language does the team use for the backend?";
 
     let request = reflect_request(context, opinions, question);
-    let resp: ReflectResponse = complete_structured(&client, request)
+    let resp: ReflectResponse = complete_structured(&*client, request)
         .await
         .expect("LLM call failed");
 
@@ -394,7 +358,7 @@ async fn eval_synthesize_observation() {
 - Database backups run nightly via pg_dump to S3.";
 
     let request = synthesize_observation_request(entity_name, facts);
-    let resp: ObservationResponse = complete_structured(&client, request)
+    let resp: ObservationResponse = complete_structured(&*client, request)
         .await
         .expect("LLM call failed");
 
@@ -427,7 +391,7 @@ async fn eval_merge_consistent_opinions() {
 2. Rust provides stronger memory safety guarantees than C++ through its borrow checker, which catches use-after-free and data race bugs before the program runs.";
 
     let request = merge_opinions_request(opinions);
-    let resp: MergeResponse = complete_structured(&client, request)
+    let resp: MergeResponse = complete_structured(&*client, request)
         .await
         .expect("LLM call failed");
 
