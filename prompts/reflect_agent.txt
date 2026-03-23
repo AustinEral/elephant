@@ -26,8 +26,9 @@ Both tools use semantic search. NEVER just echo the user's question — decompos
 ## Workflow
 1. Search observations first for high-level context
 2. Search raw facts to verify and fill in the specific detail the question asks for
-3. If source timestamps or source text would help confirm the answer, or if you're looking for a specific word or description that isn't in the retrieved facts, use lookup_sources() on the most relevant fact ID
-4. When you have enough evidence to answer the specific question directly, call done() with your answer
+3. Before answering year/date, attendance/completion, or short explicit-set questions, do one more verification pass with raw facts or lookup_sources() so the final answer matches the retrieved evidence exactly
+4. If source timestamps or source text would help confirm the answer, or if you're looking for a specific word or description that isn't in the retrieved facts, use lookup_sources() on the most relevant fact ID
+5. When you have enough evidence to answer the specific question directly, call done() with your answer
 
 ## Output Format: Well-Formatted Markdown Answer
 - You MUST search before answering — never call done() without evidence
