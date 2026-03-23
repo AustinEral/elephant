@@ -19,8 +19,8 @@ pub use network::{ExtractedNetworkType, NetworkType};
 pub use pipeline::{
     AssembledContext, BankPromptContext, Chunk, ChunkConfig, ConsolidationReport, ExtractedFact,
     ExtractionInput, FactFilter, OpinionMergeReport, RecallQuery, RecallResult, ReflectDoneTrace,
-    ReflectQuery, ReflectResult, ReflectStopReason, ReflectTraceStep, ResolvedEntity,
-    RetainInput, RetainOutput, RetrievedFact, RetrievedSource,
+    ReflectQuery, ReflectResult, ReflectStopReason, ReflectTraceStep, ResolvedEntity, RetainInput,
+    RetainOutput, RetrievedFact, RetrievedSource,
 };
 pub use source::{FactSource, FactSourceLookup, Source};
 pub use temporal::TemporalRange;

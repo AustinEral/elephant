@@ -23,8 +23,8 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use tokio::task::JoinSet;
 use tokio::sync::{Mutex, Semaphore, mpsc};
+use tokio::task::JoinSet;
 
 use elephant::MemoryStore;
 use elephant::consolidation::ConsolidationProgress;

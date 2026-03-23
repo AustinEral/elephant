@@ -7,8 +7,8 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use datatest_stable::harness;
 use dotenvy::dotenv;
-use elephant::llm::retry::{RetryPolicy, RetryingLlmClient};
 use elephant::llm::LlmClient;
+use elephant::llm::retry::{RetryPolicy, RetryingLlmClient};
 use elephant::retain::chunker::{Chunker, SimpleChunker};
 use elephant::retain::extractor::{FactExtractor, LlmFactExtractor};
 use elephant::types::{BankId, ChunkConfig, ExtractionInput};
@@ -59,8 +59,10 @@ struct Assertion {
 fn build_llm() -> Result<Arc<dyn LlmClient>, String> {
     dotenv().ok();
 
-    let base: Arc<dyn LlmClient> =
-        Arc::from(support::build_client_from_env(&["RETAIN_LLM_MODEL", "LLM_MODEL"])?);
+    let base: Arc<dyn LlmClient> = Arc::from(support::build_client_from_env(&[
+        "RETAIN_LLM_MODEL",
+        "LLM_MODEL",
+    ])?);
     Ok(Arc::new(RetryingLlmClient::new(
         base,
         RetryPolicy::default(),

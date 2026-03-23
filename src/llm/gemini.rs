@@ -843,6 +843,7 @@ mod tests {
         assert!(matches!(err, Error::LlmRefusal));
     }
 
+    #[allow(dead_code)]
     #[derive(Debug, Deserialize, JsonSchema)]
     #[serde(deny_unknown_fields)]
     struct OptionalToolArgs {

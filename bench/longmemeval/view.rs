@@ -3,6 +3,7 @@
 //! Usage:
 //!     cargo run --bin longmemeval-view -- <file.json>
 //!     cargo run --bin longmemeval-view -- [--verbose] <file.json> [file2.json]
+#![allow(dead_code)]
 
 use std::collections::BTreeMap;
 use std::env;

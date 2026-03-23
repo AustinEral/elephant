@@ -102,9 +102,12 @@ impl OpenAiResponsesRequest {
             input.extend(OpenAiResponsesInputItem::from_message(message));
         }
 
-        let tools = request
-            .tools()
-            .map(|defs| defs.iter().cloned().map(OpenAiResponsesTool::from).collect());
+        let tools = request.tools().map(|defs| {
+            defs.iter()
+                .cloned()
+                .map(OpenAiResponsesTool::from)
+                .collect()
+        });
         let parallel_tool_calls = tools.as_ref().map(|_| true);
         let supports_reasoning = Self::supports_reasoning(&model);
         let temperature =
@@ -122,7 +125,10 @@ impl OpenAiResponsesRequest {
             temperature,
             reasoning,
             tools,
-            tool_choice: request.tool_choice().cloned().map(OpenAiResponsesToolChoice::from),
+            tool_choice: request
+                .tool_choice()
+                .cloned()
+                .map(OpenAiResponsesToolChoice::from),
             prompt_cache_key: prompt_cache.and_then(|config| config.key().map(str::to_string)),
             prompt_cache_retention: prompt_cache.and_then(|config| config.retention()),
             parallel_tool_calls,
@@ -583,12 +589,12 @@ impl LlmClient for OpenAiClient {
 }
 
 #[cfg(test)]
-    mod tests {
-        use super::*;
-        use crate::llm::{ToolDefinition, ToolResult};
-        use schemars::JsonSchema;
-        use serde_json::json;
-        use serde::Deserialize;
+mod tests {
+    use super::*;
+    use crate::llm::{ToolDefinition, ToolResult};
+    use schemars::JsonSchema;
+    use serde::Deserialize;
+    use serde_json::json;
 
     #[test]
     fn serializes_responses_request_from_completion_request() {
@@ -637,7 +643,10 @@ impl LlmClient for OpenAiClient {
         assert_eq!(value["tool_choice"]["name"], "lookup");
         assert_eq!(value["tools"][0]["type"], "function");
         assert_eq!(value["tools"][0]["strict"], true);
-        assert_eq!(value["tools"][0]["parameters"]["additionalProperties"], false);
+        assert_eq!(
+            value["tools"][0]["parameters"]["additionalProperties"],
+            false
+        );
         assert_eq!(value["input"][0]["type"], "message");
         assert_eq!(value["input"][0]["role"], "user");
         assert_eq!(value["input"][0]["content"][0]["type"], "input_text");
@@ -658,8 +667,7 @@ impl LlmClient for OpenAiClient {
             .reasoning_effort(ReasoningEffort::Low)
             .build();
 
-        let body =
-            OpenAiResponsesRequest::from_completion_request(&request, "gpt-5".into(), None);
+        let body = OpenAiResponsesRequest::from_completion_request(&request, "gpt-5".into(), None);
         let value = serde_json::to_value(&body).unwrap();
         assert!(value.get("temperature").is_none());
         assert_eq!(value["reasoning"]["effort"], "low");
@@ -748,6 +756,7 @@ impl LlmClient for OpenAiClient {
         assert_eq!(response.stop_reason.as_deref(), Some("max_output_tokens"));
     }
 
+    #[allow(dead_code)]
     #[derive(Debug, Deserialize, JsonSchema)]
     #[serde(deny_unknown_fields)]
     struct OptionalToolArgs {
@@ -766,7 +775,8 @@ impl LlmClient for OpenAiClient {
             )])
             .build();
 
-        let body = OpenAiResponsesRequest::from_completion_request(&request, "gpt-5.4-mini".into(), None);
+        let body =
+            OpenAiResponsesRequest::from_completion_request(&request, "gpt-5.4-mini".into(), None);
         let value = serde_json::to_value(&body).unwrap();
         let parameters = &value["tools"][0]["parameters"];
         let mut required = parameters["required"]

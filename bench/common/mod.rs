@@ -6,9 +6,12 @@ pub mod judge;
 use elephant::llm::ReasoningEffort;
 use elephant::runtime::RuntimeTuning as ElephantRuntimeTuning;
 
+#[allow(unused_imports)]
 pub use fingerprint::{fnv1a64, fnv1a64_hex};
+#[allow(unused_imports)]
 pub use io::{append_jsonl, sidecar_path};
 
+#[allow(dead_code)]
 fn format_reasoning_effort(effort: Option<ReasoningEffort>) -> &'static str {
     match effort {
         Some(ReasoningEffort::Minimal) => "minimal",
@@ -21,6 +24,7 @@ fn format_reasoning_effort(effort: Option<ReasoningEffort>) -> &'static str {
     }
 }
 
+#[allow(dead_code)]
 pub fn format_reasoning_effort_summary(tuning: &ElephantRuntimeTuning) -> String {
     format!(
         "extract={} resolve={} graph={} reflect={} consolidate={} opinion_merge={}",

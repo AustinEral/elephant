@@ -53,7 +53,6 @@ pub struct DefaultRetainPipeline {
     graph_builder: Box<dyn GraphBuilder>,
     store: Box<dyn MemoryStore>,
     embeddings: Box<dyn EmbeddingClient>,
-    llm: Arc<dyn LlmClient>,
     chunk_config: crate::types::ChunkConfig,
     dedup_threshold: Option<f32>,
 }
@@ -68,7 +67,7 @@ impl DefaultRetainPipeline {
         graph_builder: Box<dyn GraphBuilder>,
         store: Box<dyn MemoryStore>,
         embeddings: Box<dyn EmbeddingClient>,
-        llm: Arc<dyn LlmClient>,
+        _llm: Arc<dyn LlmClient>,
         chunk_config: crate::types::ChunkConfig,
         dedup_threshold: Option<f32>,
     ) -> Self {
@@ -79,7 +78,6 @@ impl DefaultRetainPipeline {
             graph_builder,
             store,
             embeddings,
-            llm,
             chunk_config,
             dedup_threshold,
         }

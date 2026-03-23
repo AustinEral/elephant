@@ -16,7 +16,9 @@ use tracing::{Instrument, debug, info, info_span, warn};
 
 use crate::embedding::EmbeddingClient;
 use crate::error::Result;
-use crate::llm::{CompletionRequest, LlmClient, Message, ReasoningEffortConfig, complete_structured};
+use crate::llm::{
+    CompletionRequest, LlmClient, Message, ReasoningEffortConfig, complete_structured,
+};
 use crate::recall::RecallPipeline;
 use crate::storage::MemoryStore;
 use crate::types::id::{BankId, FactId};

@@ -362,7 +362,11 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
     };
     let reflect = Arc::new(DefaultReflectPipeline::new_with_limits(
         recall.clone(),
-        stage_llm(llm_configs.reflect(), LlmStage::Reflect, options.metrics.as_ref())?,
+        stage_llm(
+            llm_configs.reflect(),
+            LlmStage::Reflect,
+            options.metrics.as_ref(),
+        )?,
         store.clone(),
         reflect_max_iter,
         reflect_max_tokens,

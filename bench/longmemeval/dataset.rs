@@ -21,6 +21,7 @@ pub enum QuestionType {
 }
 
 /// A single conversation turn (user or assistant message).
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct Turn {
     pub role: String,
@@ -28,6 +29,7 @@ pub struct Turn {
 }
 
 /// A single LongMemEval benchmark instance.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct LongMemEvalInstance {
     pub question_id: String,
@@ -67,6 +69,7 @@ impl LongMemEvalInstance {
     }
 
     /// Coerce the mixed-type `answer` field to a string.
+    #[allow(dead_code)]
     pub fn answer_string(&self) -> String {
         answer_to_string(&self.answer)
     }

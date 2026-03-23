@@ -19,6 +19,7 @@ pub fn sidecar_path(output_path: &Path, suffix: &str) -> PathBuf {
 }
 
 /// Atomically write a JSON value to a file (write-to-tmp then rename).
+#[allow(dead_code)]
 pub fn atomic_write_json<T: Serialize>(path: &Path, value: &T) {
     let json = match serde_json::to_string_pretty(value) {
         Ok(j) => j,

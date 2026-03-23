@@ -6,9 +6,7 @@ use async_trait::async_trait;
 
 use crate::error::Result;
 use crate::llm::{CompletionRequest, LlmClient, Message, ReasoningEffortConfig};
-use crate::types::{
-    ExtractedFact, ExtractionInput,
-};
+use crate::types::{ExtractedFact, ExtractionInput};
 
 /// Trait for extracting structured facts from raw text.
 #[async_trait]

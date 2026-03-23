@@ -8,9 +8,7 @@ use chrono::Duration;
 use crate::error::Result;
 use crate::llm::{CompletionRequest, LlmClient, Message, ReasoningEffortConfig};
 use crate::storage::MemoryStore;
-use crate::types::{
-    BankId, Fact, FactFilter, GraphLink, LinkType, NetworkType,
-};
+use crate::types::{BankId, Fact, FactFilter, GraphLink, LinkType, NetworkType};
 use crate::util::cosine_similarity;
 
 /// Trait for building graph links between facts.

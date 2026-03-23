@@ -21,9 +21,7 @@ impl IntoResponse for Error {
             Error::InvalidDisposition(_)
             | Error::InvalidId(_)
             | Error::Serialization(_)
-            | Error::Configuration(_) => {
-                StatusCode::BAD_REQUEST
-            }
+            | Error::Configuration(_) => StatusCode::BAD_REQUEST,
             Error::Llm(_)
             | Error::LlmNoJson
             | Error::LlmRefusal

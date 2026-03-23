@@ -9,9 +9,7 @@ use crate::embedding::EmbeddingClient;
 use crate::error::Result;
 use crate::llm::{CompletionRequest, LlmClient, Message, ReasoningEffortConfig};
 use crate::storage::MemoryStore;
-use crate::types::{
-    BankId, Entity, EntityId, EntityType, ResolvedEntity,
-};
+use crate::types::{BankId, Entity, EntityId, EntityType, ResolvedEntity};
 use crate::util::cosine_similarity;
 
 /// Trait for resolving raw entity mention strings to canonical entities.
@@ -390,7 +388,7 @@ mod tests {
 
     #[tokio::test]
     async fn llm_confirm_borderline_match() {
-        let (store, embeddings, llm, bank_id) = setup().await;
+        let (_store, embeddings, llm, bank_id) = setup().await;
 
         // We can't easily control mock embedding similarity, but we can
         // test the LLM confirmation path directly

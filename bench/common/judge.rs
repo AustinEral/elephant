@@ -1,4 +1,5 @@
 //! Prompt-agnostic LLM judge infrastructure shared by all benchmark harnesses.
+#![allow(dead_code)]
 
 use std::sync::Arc;
 

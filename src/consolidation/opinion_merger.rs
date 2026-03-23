@@ -8,7 +8,9 @@ use serde::Deserialize;
 
 use crate::embedding::EmbeddingClient;
 use crate::error::Result;
-use crate::llm::{CompletionRequest, LlmClient, Message, ReasoningEffortConfig, complete_structured};
+use crate::llm::{
+    CompletionRequest, LlmClient, Message, ReasoningEffortConfig, complete_structured,
+};
 use crate::storage::MemoryStore;
 use crate::types::id::BankId;
 use crate::types::{FactFilter, NetworkType, OpinionMergeReport};
