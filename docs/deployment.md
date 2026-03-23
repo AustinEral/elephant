@@ -1,10 +1,8 @@
 # Deployment
 
-This document covers the deployment modes Elephant supports today and the operational assumptions behind each one.
+This document covers the deployment modes described in this repository and the operational assumptions behind each one.
 
-Elephant is currently best treated as a **technical preview** for teams comfortable running their own infrastructure.
-
-## Supported Deployment Modes
+## Deployment Modes
 
 ### 1. Local / dev
 
@@ -15,7 +13,7 @@ Supported and recommended for:
 - benchmark work
 - small internal demos
 
-This is the most exercised path in the repo today.
+This is the most exercised path in the repository.
 
 ### 2. Self-hosted single-node
 
@@ -28,19 +26,15 @@ This means:
 - provider-backed LLM access
 - persistent disk for database state
 
-This is the clearest current production path.
+This is the simplest production-oriented path described here.
 
 ### 3. Managed / hosted Elephant
 
-Not currently offered.
-
-If you want Elephant as a managed service, treat that as future roadmap territory, not a present deployment mode.
+This repository does not provide a managed Elephant service.
 
 ### 4. Multi-node / HA / internet-wide public API
 
-Not yet a polished supported story.
-
-Elephant can sit behind standard infrastructure, but this repo does not yet ship a complete opinionated deployment package for:
+Elephant can sit behind standard infrastructure, but this repository does not include a complete opinionated deployment package for:
 
 - autoscaling
 - rolling upgrades across multiple app nodes
@@ -65,7 +59,7 @@ The server auto-runs database migrations on startup.
 
 ## Security Reality
 
-Elephant does **not** currently ship with built-in API auth, and the server uses permissive CORS by default.
+Elephant does **not** ship with built-in API auth, and the server uses permissive CORS by default.
 
 That means:
 
@@ -220,7 +214,7 @@ If you use local model files outside Docker, manage those separately from databa
 
 ## Upgrades
 
-Current expectation:
+Recommended upgrade flow:
 
 - review release notes / code changes
 - deploy new app version
@@ -230,9 +224,9 @@ Current expectation:
 
 For cautious environments, use a staging database and restore path before production upgrades.
 
-## What Is Still Rough
+## Not Provided By This Repository
 
-These areas are not yet presented as polished production product features:
+These areas are not provided as polished built-in product features:
 
 - built-in auth and tenant isolation
 - turnkey multi-node deployment
@@ -240,7 +234,7 @@ These areas are not yet presented as polished production product features:
 - opinionated observability stack
 - one-click cloud deployment templates
 
-If you are comfortable wiring those pieces yourself, Elephant is already usable. If you need them provided out of the box, the project is not there yet.
+If you are comfortable wiring those pieces yourself, Elephant is usable as infrastructure. If you need them provided out of the box, add them at your platform layer or wait for explicit support to be documented.
 
 ## Related Docs
 

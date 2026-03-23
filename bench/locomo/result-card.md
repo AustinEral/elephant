@@ -9,7 +9,7 @@
 | Publication status | **Historical canonical full 10-conversation run** |
 | Series | series1 |
 | Artifacts | 10 per-conversation artifacts in `results/canonical/series1/` |
-| Interpretation | Historical reference run retained in-repo; not yet replaced by a fresh full-series same-judge rerun under the current comparison policy |
+| Interpretation | Historical reference run retained in-repo; see the benchmark protocol for how same-judge reruns and other comparison policies are handled |
 
 ### Scope
 
@@ -83,9 +83,9 @@ Per conversation:
 
 This artifact is retained as the canonical historical `series1` run.
 
-A fresh full-series rerun under the current preferred same-judge comparison policy has not yet been published.
+Same-judge reruns and other comparison policies are described separately in the benchmark protocol.
 
-Treat `91.2%` as the historical reference result for this checked-in run, not as the final word on current benchmark positioning.
+Treat `91.2%` as the result of this checked-in run, not as a universal headline for every evaluation policy.
 
 ### Reproduction
 

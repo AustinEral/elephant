@@ -5,7 +5,7 @@ Elephant exposes two interfaces:
 - a REST API under `/v1`
 - an MCP server under `/mcp`
 
-This document describes the current public surface in the repo today.
+This document describes the public surface exposed by this repository.
 
 ## Base URLs
 
@@ -17,7 +17,7 @@ This document describes the current public surface in the repo today.
 - All REST requests and responses use JSON.
 - IDs are opaque string identifiers. Treat them as stable IDs, not user-facing names.
 - Most write/query endpoints are bank-scoped under `/v1/banks/{id}/...`.
-- For current bank-scoped POST endpoints, include `bank_id` in the JSON body as well as in the path. The handler overwrites it from the path, but the request still must deserialize successfully.
+- For bank-scoped POST endpoints, include `bank_id` in the JSON body as well as in the path. The handler overwrites it from the path, but the request body must deserialize successfully.
 - Timestamps should be RFC 3339 / ISO 8601 UTC strings like `2024-03-01T00:00:00Z`.
 
 ## Error Model
@@ -291,7 +291,7 @@ The MCP surface is intentionally narrower than the REST API. It is designed for 
 
 - `create_bank`
   - accepts `bank_id`, optional `name`, optional `mission`
-  - if `bank_id` parses as an existing bank ID, the current bank is returned instead of creating a new one
+  - if `bank_id` parses as an existing bank ID, that bank is returned instead of creating a new one
 - `retain`
   - accepts `bank_id`, `content`, optional `context`, optional `timestamp`
 - `recall`

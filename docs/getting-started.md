@@ -109,7 +109,7 @@ Use this if you want to run Elephant directly with `cargo run`.
 
 ### 1. Start PostgreSQL + pgvector
 
-The simplest path is still Docker:
+The simplest path is Docker:
 
 ```bash
 docker compose up -d postgres
