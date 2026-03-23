@@ -2,7 +2,14 @@
 name = "elephant"
 version = "0.1.0"
 edition = "2024"
+description = "Long-term memory infrastructure for AI agents with structured extraction, retrieval, and reflection."
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/AustinEral/elephant"
+homepage = "https://github.com/AustinEral/elephant"
+documentation = "https://github.com/AustinEral/elephant/tree/main/docs"
+readme = "README.md"
+keywords = ["memory", "agents", "rag", "mcp", "postgres"]
+categories = ["database", "web-programming::http-server", "api-bindings"]
 
 [dev-dependencies]
 anyhow = "1.0.102"
