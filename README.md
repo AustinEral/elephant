@@ -12,7 +12,7 @@
   <img src="https://img.shields.io/badge/license-MIT%2FApache--2.0-green" alt="License">
 </p>
 
-<p align="center"><b>91.2% accuracy</b> on <a href="bench/locomo/README.md">LoCoMo</a> (1,540 questions, 10 conversations, Cat.1–4)</p>
+<p align="center"><b>Historical canonical LoCoMo run:</b> 91.2% accuracy (1,540 questions, 10 conversations, Cat.1–4)</p>
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> · <a href="#how-it-works">How It Works</a> · <a href="#features">Features</a> · <a href="#benchmarks">Benchmarks</a>
@@ -22,32 +22,81 @@
 
 Most memory systems are a vector store with a prompt. Elephant is a full extraction and reasoning pipeline built in Rust — it pulls structured facts out of conversations, resolves entities across sessions, tracks preferences with confidence scores, and synthesizes answers conditioned on what it actually knows about you.
 
+## Why Elephant
+
+A vector store plus prompt can retrieve similar text, but it usually leaves the hard memory problems to the model at answer time.
+
+Elephant does more work up front:
+
+- it extracts structured facts instead of storing only raw chunks
+- it resolves entities across sessions instead of hoping names match cleanly
+- it tracks temporal information, preferences, and opinions as first-class memory
+- it consolidates and links memory so retrieval is not just nearest-neighbor search
+- it exposes retrieval traces and grounded sources so answers are easier to inspect
+
+That makes Elephant a better fit when you need memory to be:
+
+- durable across long-running agent sessions
+- inspectable when answers are wrong
+- benchmarkable with a repeatable evaluation harness
+- deployable as infrastructure, not just a prompt recipe
+
 ## Quick Start
 
 Copy `.env.example` to `.env`, set your `LLM_API_KEY`, and:
 
 ```sh
 cp .env.example .env
-docker compose up -d
+docker compose up -d --build
+```
+
+Create a bank:
+
+```sh
+export BANK_ID=$(
+  curl -s localhost:3001/v1/banks \
+    -H 'content-type: application/json' \
+    -d '{
+      "name": "demo",
+      "mission": "Remember user facts, events, and preferences"
+    }' | jq -r '.id'
+)
 ```
 
 Store a memory:
 
 ```sh
-curl localhost:3001/v1/retain -d '{
-  "bank_id": "demo",
-  "content": "Alice joined Acme Corp in March 2024. She prefers Rust over Go."
-}'
+curl localhost:3001/v1/banks/$BANK_ID/retain \
+  -H 'content-type: application/json' \
+  -d "$(
+    jq -nc --arg bank_id "$BANK_ID" '{
+      bank_id: $bank_id,
+      content: "Alice joined Acme Corp in March 2024. She prefers Rust over Go.",
+      timestamp: "2024-03-01T00:00:00Z",
+      turn_id: null,
+      context: null,
+      custom_instructions: null,
+      speaker: "Alice"
+    }'
+  )"
 ```
 
 Ask a question:
 
 ```sh
-curl localhost:3001/v1/reflect -d '{
-  "bank_id": "demo",
-  "query": "When did Alice join her company and what role?"
-}'
+curl localhost:3001/v1/banks/$BANK_ID/reflect \
+  -H 'content-type: application/json' \
+  -d "$(
+    jq -nc --arg bank_id "$BANK_ID" '{
+      bank_id: $bank_id,
+      question: "When did Alice join her company?",
+      budget_tokens: 2048,
+      temporal_context: null
+    }'
+  )"
 ```
+
+For a cleaner source-install path, see [docs/getting-started.md](docs/getting-started.md).
 
 ### MCP
 
@@ -132,7 +181,7 @@ Long-context conversational memory (ACL 2024). Full 10-conversation benchmark (s
 | **Temporal** | 66.7% | 96 |
 | **Overall** | **91.2%** | **1,540** |
 
-<sub>Sonnet 4.6 · bge-small-en-v1.5 local embeddings · <a href="bench/locomo/protocol.md">protocol</a> · <a href="bench/locomo/result-card.md">result card</a></sub>
+<sub>Historical `series1` reference run · Sonnet 4.6 reflect + judge · bge-small-en-v1.5 local embeddings · <a href="bench/locomo/protocol.md">protocol</a> · <a href="bench/locomo/result-card.md">result card</a></sub>
 
 ### [LongMemEval](bench/longmemeval/README.md)
 

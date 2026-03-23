@@ -6,9 +6,10 @@
 
 | Field | Value |
 |---|---|
-| Publication status | **Full 10-conversation benchmark** |
+| Publication status | **Historical canonical full 10-conversation run** |
 | Series | series1 |
 | Artifacts | 10 per-conversation artifacts in `results/canonical/series1/` |
+| Interpretation | Historical reference run retained in-repo; not yet replaced by a fresh full-series same-judge rerun under the current comparison policy |
 
 ### Scope
 
@@ -80,7 +81,11 @@ Per conversation:
 
 ### Variance
 
-Not yet measured. A judge-only variance pass or clean rerun would strengthen the result.
+This artifact is retained as the canonical historical `series1` run.
+
+A fresh full-series rerun under the current preferred same-judge comparison policy has not yet been published.
+
+Treat `91.2%` as the historical reference result for this checked-in run, not as the final word on current benchmark positioning.
 
 ### Reproduction
 

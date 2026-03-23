@@ -11,3 +11,4 @@ bench/locomo/results/local/*
 bench/locomo/published/
 bench/longmemeval/results/local/*
 !bench/longmemeval/results/local/.gitkeep
+.planning/
