@@ -74,9 +74,9 @@ Requires Postgres 16 + pgvector, ONNX Runtime 1.23, and local models for embeddi
 cargo run --release
 ```
 
-Full config reference in [`.env.example`](.env.example). `LLM_PROVIDER` supports `anthropic` and `openai`, where `openai` uses the OpenAI Responses API.
+Full config reference in [`.env.example`](.env.example). `LLM_PROVIDER` supports `anthropic`, `openai`, `gemini`, and `vertex`. `openai` uses the OpenAI Responses API. `gemini` and `vertex` both use Gemini's native `generateContent` API, with `vertex` targeting Google Cloud Vertex AI project/location endpoints.
 
-Optional prompt caching is supported for Anthropic and OpenAI Responses. Enable it with `LLM_PROMPT_CACHE_ENABLED=1`; OpenAI also supports optional `OPENAI_PROMPT_CACHE_KEY` and `OPENAI_PROMPT_CACHE_RETENTION` (`in_memory` or `24h`), and Anthropic supports `ANTHROPIC_PROMPT_CACHE_TTL`.
+Optional prompt caching is supported for Anthropic and OpenAI Responses. Enable it with `LLM_PROMPT_CACHE_ENABLED=1`; OpenAI also supports optional `OPENAI_PROMPT_CACHE_KEY` and `OPENAI_PROMPT_CACHE_RETENTION` (`in_memory` or `24h`), and Anthropic supports `ANTHROPIC_PROMPT_CACHE_TTL`. Gemini reports implicit cache hits automatically when the API provides them.
 
 ## How It Works
 
@@ -115,7 +115,7 @@ flowchart TB
 - **CARA reasoning** — preference-conditioned answer synthesis
 - **Entity resolution** — cross-session deduplication via embeddings + LLM verification
 - **Consolidation** — merges related facts into observations, detects and reconciles opinions
-- **Local or cloud** — ONNX embeddings or OpenAI; Anthropic or OpenAI for LLM
+- **Local or cloud** — ONNX embeddings or OpenAI; Anthropic, OpenAI, Gemini Developer API, or Vertex AI for LLM
 - **MCP + REST** — single server, PostgreSQL + pgvector
 
 ## Benchmarks

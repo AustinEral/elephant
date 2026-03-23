@@ -111,6 +111,10 @@ pub enum Provider {
     Anthropic,
     /// OpenAI Responses API.
     OpenAi,
+    /// Google Gemini API.
+    Gemini,
+    /// Google Gemini on Vertex AI.
+    Vertex,
 }
 
 impl Provider {
@@ -119,6 +123,8 @@ impl Provider {
         match self {
             Self::Anthropic => "anthropic",
             Self::OpenAi => "openai",
+            Self::Gemini => "gemini",
+            Self::Vertex => "vertex",
         }
     }
 }
@@ -130,8 +136,10 @@ impl FromStr for Provider {
         match value.trim().to_ascii_lowercase().as_str() {
             "anthropic" => Ok(Self::Anthropic),
             "openai" => Ok(Self::OpenAi),
+            "gemini" => Ok(Self::Gemini),
+            "vertex" => Ok(Self::Vertex),
             other => Err(Error::Configuration(format!(
-                "LLM provider must be one of: anthropic, openai; got: {other}"
+                "LLM provider must be one of: anthropic, openai, gemini, vertex; got: {other}"
             ))),
         }
     }
@@ -144,6 +152,10 @@ pub enum ClientConfig {
     Anthropic(AnthropicConfig),
     /// OpenAI client configuration.
     OpenAi(OpenAiConfig),
+    /// Gemini client configuration.
+    Gemini(GeminiConfig),
+    /// Vertex AI Gemini client configuration.
+    Vertex(VertexConfig),
 }
 
 impl ClientConfig {
@@ -152,6 +164,8 @@ impl ClientConfig {
         match self {
             Self::Anthropic(_) => Provider::Anthropic,
             Self::OpenAi(_) => Provider::OpenAi,
+            Self::Gemini(_) => Provider::Gemini,
+            Self::Vertex(_) => Provider::Vertex,
         }
     }
 
@@ -160,6 +174,8 @@ impl ClientConfig {
         match self {
             Self::Anthropic(config) => config.model(),
             Self::OpenAi(config) => config.model(),
+            Self::Gemini(config) => config.model(),
+            Self::Vertex(config) => config.model(),
         }
     }
 
@@ -230,6 +246,152 @@ pub struct OpenAiConfig {
     base_url: Option<String>,
     timeout_secs: u64,
     prompt_cache: Option<OpenAiPromptCacheConfig>,
+}
+
+/// Gemini-specific client configuration.
+#[derive(Debug, Clone)]
+pub struct GeminiConfig {
+    api_key: String,
+    model: String,
+    base_url: Option<String>,
+    timeout_secs: u64,
+    supports_function_call_ids: bool,
+}
+
+/// Vertex AI-specific client configuration.
+#[derive(Debug, Clone)]
+pub struct VertexConfig {
+    api_key: String,
+    model: String,
+    project: String,
+    location: String,
+    base_url: Option<String>,
+    timeout_secs: u64,
+}
+
+impl GeminiConfig {
+    /// Create a new Gemini client configuration.
+    pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Result<Self> {
+        Ok(Self {
+            api_key: validate_nonempty("api_key", api_key.into())?,
+            model: validate_nonempty("model", model.into())?,
+            base_url: None,
+            timeout_secs: DEFAULT_TIMEOUT_SECS,
+            supports_function_call_ids: true,
+        })
+    }
+
+    /// Override the API base URL.
+    pub fn with_base_url(mut self, base_url: impl Into<String>) -> Result<Self> {
+        self.base_url = Some(validate_nonempty("base_url", base_url.into())?);
+        Ok(self)
+    }
+
+    /// Set the HTTP timeout in seconds.
+    pub fn with_timeout_secs(mut self, timeout_secs: u64) -> Result<Self> {
+        self.timeout_secs = validate_timeout_secs(timeout_secs)?;
+        Ok(self)
+    }
+
+    /// Control whether function-call IDs are sent in tool history parts.
+    pub(crate) fn with_function_call_ids(mut self, enabled: bool) -> Self {
+        self.supports_function_call_ids = enabled;
+        self
+    }
+
+    /// Return the configured API key.
+    pub fn api_key(&self) -> &str {
+        &self.api_key
+    }
+
+    /// Return the configured model.
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    /// Return the optional base URL override.
+    pub fn base_url(&self) -> Option<&str> {
+        self.base_url.as_deref()
+    }
+
+    /// Return the configured timeout.
+    pub fn timeout_secs(&self) -> u64 {
+        self.timeout_secs
+    }
+
+    /// Return whether the transport supports function-call IDs in request history.
+    pub(crate) fn supports_function_call_ids(&self) -> bool {
+        self.supports_function_call_ids
+    }
+}
+
+impl VertexConfig {
+    /// Default Vertex AI location.
+    pub const DEFAULT_LOCATION: &'static str = "global";
+
+    /// Create a new Vertex AI client configuration.
+    pub fn new(
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+        project: impl Into<String>,
+    ) -> Result<Self> {
+        Ok(Self {
+            api_key: validate_nonempty("api_key", api_key.into())?,
+            model: validate_nonempty("model", model.into())?,
+            project: validate_nonempty("project", project.into())?,
+            location: Self::DEFAULT_LOCATION.into(),
+            base_url: None,
+            timeout_secs: DEFAULT_TIMEOUT_SECS,
+        })
+    }
+
+    /// Override the Vertex project location.
+    pub fn with_location(mut self, location: impl Into<String>) -> Result<Self> {
+        self.location = validate_nonempty("location", location.into())?;
+        Ok(self)
+    }
+
+    /// Override the API base URL.
+    pub fn with_base_url(mut self, base_url: impl Into<String>) -> Result<Self> {
+        self.base_url = Some(validate_nonempty("base_url", base_url.into())?);
+        Ok(self)
+    }
+
+    /// Set the HTTP timeout in seconds.
+    pub fn with_timeout_secs(mut self, timeout_secs: u64) -> Result<Self> {
+        self.timeout_secs = validate_timeout_secs(timeout_secs)?;
+        Ok(self)
+    }
+
+    /// Return the configured API key.
+    pub fn api_key(&self) -> &str {
+        &self.api_key
+    }
+
+    /// Return the configured model.
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    /// Return the Google Cloud project ID.
+    pub fn project(&self) -> &str {
+        &self.project
+    }
+
+    /// Return the Vertex location.
+    pub fn location(&self) -> &str {
+        &self.location
+    }
+
+    /// Return the optional base URL override.
+    pub fn base_url(&self) -> Option<&str> {
+        self.base_url.as_deref()
+    }
+
+    /// Return the configured timeout.
+    pub fn timeout_secs(&self) -> u64 {
+        self.timeout_secs
+    }
 }
 
 impl OpenAiConfig {
@@ -375,6 +537,17 @@ fn timeout_secs_from_env() -> Result<u64> {
     }
 }
 
+fn vertex_project_from_env(names: &[&str]) -> Result<String> {
+    required_env_any(names)
+}
+
+fn vertex_location_from_env(names: &[&str]) -> Result<String> {
+    match optional_env_any(names) {
+        Some(value) => validate_nonempty("location", value),
+        None => Ok(VertexConfig::DEFAULT_LOCATION.into()),
+    }
+}
+
 fn prompt_cache_config_from_env(provider: Provider) -> Result<PromptCacheConfig> {
     if !env_bool("LLM_PROMPT_CACHE_ENABLED", false)? {
         return Ok(PromptCacheConfig::Disabled);
@@ -424,6 +597,7 @@ fn prompt_cache_config_from_env(provider: Provider) -> Result<PromptCacheConfig>
             }
             Ok(PromptCacheConfig::Anthropic(config))
         }
+        Provider::Gemini | Provider::Vertex => Ok(PromptCacheConfig::Disabled),
     }
 }
 
@@ -431,13 +605,16 @@ fn build_client_config(
     provider: Provider,
     api_key: String,
     model: String,
+    vertex_project: Option<String>,
+    vertex_location: Option<String>,
     base_url: Option<String>,
     timeout_secs: u64,
     prompt_cache: PromptCacheConfig,
 ) -> Result<ClientConfig> {
     match provider {
         Provider::Anthropic => {
-            let mut config = AnthropicConfig::new(api_key, model)?.with_timeout_secs(timeout_secs)?;
+            let mut config =
+                AnthropicConfig::new(api_key, model)?.with_timeout_secs(timeout_secs)?;
             if let PromptCacheConfig::Anthropic(prompt_cache) = prompt_cache {
                 config = config.with_prompt_cache(prompt_cache);
             }
@@ -453,6 +630,30 @@ fn build_client_config(
             }
             Ok(ClientConfig::OpenAi(config))
         }
+        Provider::Gemini => {
+            let mut config = GeminiConfig::new(api_key, model)?.with_timeout_secs(timeout_secs)?;
+            if let Some(base_url) = base_url {
+                config = config.with_base_url(base_url)?;
+            }
+            Ok(ClientConfig::Gemini(config))
+        }
+        Provider::Vertex => {
+            let project = vertex_project.ok_or_else(|| {
+                Error::Configuration(
+                    "LLM_VERTEX_PROJECT or GOOGLE_CLOUD_PROJECT must be set for provider=vertex"
+                        .into(),
+                )
+            })?;
+            let mut config =
+                VertexConfig::new(api_key, model, project)?.with_timeout_secs(timeout_secs)?;
+            if let Some(location) = vertex_location {
+                config = config.with_location(location)?;
+            }
+            if let Some(base_url) = base_url {
+                config = config.with_base_url(base_url)?;
+            }
+            Ok(ClientConfig::Vertex(config))
+        }
     }
 }
 
@@ -462,16 +663,29 @@ fn client_config_from_env_vars(
     provider_vars: &[&str],
     api_key_vars: &[&str],
     model_vars: &[&str],
+    vertex_project_vars: &[&str],
+    vertex_location_vars: &[&str],
     base_url_vars: &[&str],
 ) -> Result<ClientConfig> {
     let provider = required_env_any(provider_vars)?.parse::<Provider>()?;
     let api_key = required_env_any(api_key_vars)?;
     let model = required_env_any(model_vars)?;
+    let vertex_project = optional_env_any(vertex_project_vars);
+    let vertex_location = optional_env_any(vertex_location_vars);
     let base_url = optional_env_any(base_url_vars);
     let timeout_secs = timeout_secs_from_env()?;
     let prompt_cache = prompt_cache_config_from_env(provider)?;
 
-    build_client_config(provider, api_key, model, base_url, timeout_secs, prompt_cache)
+    build_client_config(
+        provider,
+        api_key,
+        model,
+        vertex_project,
+        vertex_location,
+        base_url,
+        timeout_secs,
+        prompt_cache,
+    )
 }
 
 /// Build the retain and reflect client configs from the standard runtime environment.
@@ -480,6 +694,22 @@ pub fn runtime_config_from_env() -> Result<LlmConfig> {
     let api_key = required_env_any(&["LLM_API_KEY"])?;
     let retain_model = required_env_any(&["RETAIN_LLM_MODEL", "LLM_MODEL"])?;
     let reflect_model = required_env_any(&["REFLECT_LLM_MODEL", "LLM_MODEL"])?;
+    let vertex_project = if provider == Provider::Vertex {
+        Some(vertex_project_from_env(&[
+            "LLM_VERTEX_PROJECT",
+            "GOOGLE_CLOUD_PROJECT",
+        ])?)
+    } else {
+        None
+    };
+    let vertex_location = if provider == Provider::Vertex {
+        Some(vertex_location_from_env(&[
+            "LLM_VERTEX_LOCATION",
+            "GOOGLE_CLOUD_LOCATION",
+        ])?)
+    } else {
+        None
+    };
     let base_url = optional_env_any(&["LLM_BASE_URL"]);
     let timeout_secs = timeout_secs_from_env()?;
     let prompt_cache = prompt_cache_config_from_env(provider)?;
@@ -488,6 +718,8 @@ pub fn runtime_config_from_env() -> Result<LlmConfig> {
         provider,
         api_key.clone(),
         retain_model,
+        vertex_project.clone(),
+        vertex_location.clone(),
         base_url.clone(),
         timeout_secs,
         prompt_cache.clone(),
@@ -497,6 +729,8 @@ pub fn runtime_config_from_env() -> Result<LlmConfig> {
         provider,
         api_key,
         reflect_model,
+        vertex_project,
+        vertex_location,
         base_url,
         timeout_secs,
         prompt_cache,
@@ -519,11 +753,38 @@ pub fn judge_client_config_from_env(
         .map(str::to_string)
         .map(Ok)
         .unwrap_or_else(|| required_env_any(&["JUDGE_MODEL", "LLM_MODEL"]))?;
+    let vertex_project = if provider == Provider::Vertex {
+        Some(vertex_project_from_env(&[
+            "JUDGE_VERTEX_PROJECT",
+            "LLM_VERTEX_PROJECT",
+            "GOOGLE_CLOUD_PROJECT",
+        ])?)
+    } else {
+        None
+    };
+    let vertex_location = if provider == Provider::Vertex {
+        Some(vertex_location_from_env(&[
+            "JUDGE_VERTEX_LOCATION",
+            "LLM_VERTEX_LOCATION",
+            "GOOGLE_CLOUD_LOCATION",
+        ])?)
+    } else {
+        None
+    };
     let base_url = optional_env_any(&["JUDGE_BASE_URL", "LLM_BASE_URL"]);
     let timeout_secs = timeout_secs_from_env()?;
     let prompt_cache = prompt_cache_config_from_env(provider)?;
 
-    build_client_config(provider, api_key, model, base_url, timeout_secs, prompt_cache)
+    build_client_config(
+        provider,
+        api_key,
+        model,
+        vertex_project,
+        vertex_location,
+        base_url,
+        timeout_secs,
+        prompt_cache,
+    )
 }
 
 #[cfg(test)]
@@ -548,10 +809,16 @@ mod tests {
             "LLM_MODEL",
             "RETAIN_LLM_MODEL",
             "REFLECT_LLM_MODEL",
+            "LLM_VERTEX_PROJECT",
+            "LLM_VERTEX_LOCATION",
+            "GOOGLE_CLOUD_PROJECT",
+            "GOOGLE_CLOUD_LOCATION",
             "LLM_BASE_URL",
             "JUDGE_PROVIDER",
             "JUDGE_API_KEY",
             "JUDGE_MODEL",
+            "JUDGE_VERTEX_PROJECT",
+            "JUDGE_VERTEX_LOCATION",
             "JUDGE_BASE_URL",
             "LLM_PROMPT_CACHE_ENABLED",
             "OPENAI_PROMPT_CACHE_KEY",
@@ -610,12 +877,59 @@ mod tests {
     }
 
     #[test]
+    fn runtime_config_loads_gemini() {
+        with_env_vars(
+            &[
+                ("LLM_PROVIDER", Some("gemini")),
+                ("LLM_API_KEY", Some("gemini-test-key")),
+                ("RETAIN_LLM_MODEL", Some("gemini-2.5-flash")),
+                ("REFLECT_LLM_MODEL", Some("gemini-2.5-pro")),
+                (
+                    "LLM_BASE_URL",
+                    Some("https://generativelanguage.googleapis.com/v1beta"),
+                ),
+            ],
+            || {
+                let config = runtime_config_from_env().unwrap();
+                assert_eq!(config.retain().provider(), Provider::Gemini);
+                assert_eq!(config.reflect().provider(), Provider::Gemini);
+            },
+        );
+    }
+
+    #[test]
     fn timeout_rejects_zero() {
         with_env_vars(&[("LLM_TIMEOUT_SECS", Some("0"))], || {
-            let err = client_config_from_env_vars(&["LLM_PROVIDER"], &["LLM_API_KEY"], &["LLM_MODEL"], &[])
-                .unwrap_err();
+            let err = client_config_from_env_vars(
+                &["LLM_PROVIDER"],
+                &["LLM_API_KEY"],
+                &["LLM_MODEL"],
+                &[],
+                &[],
+                &[],
+            )
+            .unwrap_err();
             assert!(matches!(err, Error::Configuration(_)));
         });
+    }
+
+    #[test]
+    fn runtime_config_loads_vertex() {
+        with_env_vars(
+            &[
+                ("LLM_PROVIDER", Some("vertex")),
+                ("LLM_API_KEY", Some("vertex-test-key")),
+                ("LLM_VERTEX_PROJECT", Some("vertex-project")),
+                ("LLM_VERTEX_LOCATION", Some("us-central1")),
+                ("RETAIN_LLM_MODEL", Some("gemini-3.1-pro-preview")),
+                ("REFLECT_LLM_MODEL", Some("gemini-3.1-pro-preview")),
+            ],
+            || {
+                let config = runtime_config_from_env().unwrap();
+                assert_eq!(config.retain().provider(), Provider::Vertex);
+                assert_eq!(config.reflect().provider(), Provider::Vertex);
+            },
+        );
     }
 
     #[test]
@@ -629,8 +943,8 @@ mod tests {
                 ("JUDGE_BASE_URL", Some("https://openai.invalid/v1")),
             ],
             || {
-                let config = judge_client_config_from_env(Some(Provider::OpenAi), Some("gpt-4o"))
-                    .unwrap();
+                let config =
+                    judge_client_config_from_env(Some(Provider::OpenAi), Some("gpt-4o")).unwrap();
                 match config {
                     ClientConfig::OpenAi(config) => {
                         assert_eq!(config.model(), "gpt-4o");

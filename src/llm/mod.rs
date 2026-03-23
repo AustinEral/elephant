@@ -2,23 +2,26 @@
 
 pub mod anthropic;
 mod config;
+pub mod gemini;
 pub mod mock;
 pub mod openai;
 pub mod retry;
 mod types;
+pub mod vertex;
 
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 
 pub use config::{
-    judge_client_config_from_env, runtime_config_from_env, AnthropicConfig,
-    AnthropicPromptCacheConfig, AnthropicPromptCacheTtl, ClientConfig, LlmConfig, OpenAiConfig,
-    OpenAiPromptCacheConfig, OpenAiPromptCacheRetention, Provider, DEFAULT_TIMEOUT_SECS,
+    AnthropicConfig, AnthropicPromptCacheConfig, AnthropicPromptCacheTtl, ClientConfig,
+    DEFAULT_TIMEOUT_SECS, GeminiConfig, LlmConfig, OpenAiConfig, OpenAiPromptCacheConfig,
+    OpenAiPromptCacheRetention, Provider, VertexConfig, judge_client_config_from_env,
+    runtime_config_from_env,
 };
 pub use types::{
     CompletionRequest, CompletionRequestBuilder, CompletionResponse, Message, MessageRole,
-    PromptCacheUsage, ReasoningEffort, ReasoningEffortConfig, ToolCall, ToolChoice,
-    ToolDefinition, ToolResult,
+    PromptCacheUsage, ReasoningEffort, ReasoningEffortConfig, ToolCall, ToolChoice, ToolDefinition,
+    ToolResult,
 };
 
 use crate::error::{Error, Result};
@@ -223,10 +226,12 @@ pub(crate) async fn send_and_check(
 /// Build an LLM client from a validated configuration.
 pub fn build_client(config: &ClientConfig) -> Result<Box<dyn LlmClient>> {
     match config {
-        ClientConfig::Anthropic(config) => Ok(Box::new(anthropic::AnthropicClient::new(
-            config.clone(),
-        )?)),
+        ClientConfig::Anthropic(config) => {
+            Ok(Box::new(anthropic::AnthropicClient::new(config.clone())?))
+        }
         ClientConfig::OpenAi(config) => Ok(Box::new(openai::OpenAiClient::new(config.clone())?)),
+        ClientConfig::Gemini(config) => Ok(Box::new(gemini::GeminiClient::new(config.clone())?)),
+        ClientConfig::Vertex(config) => Ok(Box::new(vertex::VertexClient::new(config.clone())?)),
     }
 }
 

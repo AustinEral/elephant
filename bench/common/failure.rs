@@ -14,9 +14,7 @@ pub fn is_fatal_bench_error(error: &Error) -> bool {
         | Error::Configuration(_)
         | Error::EmbeddingDimensionMismatch { .. } => true,
         Error::Llm(message) => is_fatal_llm_error_message(message),
-        Error::LlmNoJson | Error::LlmRefusal | Error::RateLimit(_) | Error::ServerError(_) => {
-            false
-        }
+        Error::LlmNoJson | Error::LlmRefusal | Error::RateLimit(_) | Error::ServerError(_) => false,
     }
 }
 
@@ -29,6 +27,7 @@ fn is_fatal_llm_error_message(message: &str) -> bool {
 
     lower.contains("failed to parse openai response")
         || lower.contains("failed to parse anthropic response")
+        || lower.contains("failed to parse gemini response")
 }
 
 fn api_error_status_code(message: &str) -> Option<u16> {

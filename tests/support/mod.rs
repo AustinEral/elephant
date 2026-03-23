@@ -2,7 +2,8 @@ use std::env;
 
 use elephant::llm::{
     self, AnthropicConfig, AnthropicPromptCacheConfig, AnthropicPromptCacheTtl, ClientConfig,
-    LlmClient, OpenAiConfig, OpenAiPromptCacheConfig, OpenAiPromptCacheRetention, Provider,
+    GeminiConfig, LlmClient, OpenAiConfig, OpenAiPromptCacheConfig, OpenAiPromptCacheRetention,
+    Provider, VertexConfig,
 };
 
 fn required_env_any(names: &[&str]) -> Result<String, String> {
@@ -112,6 +113,31 @@ pub fn client_config_from_env(model_vars: &[&str]) -> Result<ClientConfig, Strin
                 config = config.with_prompt_cache(prompt_cache);
             }
             Ok(ClientConfig::OpenAi(config))
+        }
+        Provider::Gemini => {
+            let mut config = GeminiConfig::new(api_key, model)
+                .map_err(|e| e.to_string())?
+                .with_timeout_secs(timeout_secs)
+                .map_err(|e| e.to_string())?;
+            if let Some(base_url) = base_url {
+                config = config.with_base_url(base_url).map_err(|e| e.to_string())?;
+            }
+            Ok(ClientConfig::Gemini(config))
+        }
+        Provider::Vertex => {
+            let project = required_env_any(&["LLM_VERTEX_PROJECT", "GOOGLE_CLOUD_PROJECT"])?;
+            let location = optional_env_any(&["LLM_VERTEX_LOCATION", "GOOGLE_CLOUD_LOCATION"])
+                .unwrap_or_else(|| VertexConfig::DEFAULT_LOCATION.into());
+            let mut config = VertexConfig::new(api_key, model, project)
+                .map_err(|e| e.to_string())?
+                .with_location(location)
+                .map_err(|e| e.to_string())?
+                .with_timeout_secs(timeout_secs)
+                .map_err(|e| e.to_string())?;
+            if let Some(base_url) = base_url {
+                config = config.with_base_url(base_url).map_err(|e| e.to_string())?;
+            }
+            Ok(ClientConfig::Vertex(config))
         }
     }
 }
