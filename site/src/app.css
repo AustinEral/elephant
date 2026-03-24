@@ -330,6 +330,22 @@ button {
 	margin-right: 8px;
 }
 
+.hero-benchmark {
+	align-items: flex-start;
+	display: grid;
+	gap: 8px;
+	justify-items: start;
+}
+
+.hero-benchmark-label {
+	color: color-mix(in srgb, var(--ink-soft) 72%, var(--accent) 28%);
+	font-family: var(--mono);
+	font-feature-settings: 'zero' 1;
+	font-size: 0.74rem;
+	letter-spacing: 0.12em;
+	text-transform: uppercase;
+}
+
 .hero-links {
 	display: inline-flex;
 	flex-wrap: wrap;
@@ -405,7 +421,7 @@ button {
 }
 
 .why-label {
-	color: var(--ink-strong);
+	color: color-mix(in srgb, var(--ink-soft) 66%, var(--accent) 34%);
 	font-family: var(--mono);
 	font-feature-settings: 'zero' 1;
 	font-size: 0.78rem;
@@ -466,6 +482,8 @@ button {
 .mechanics-stage {
 	display: grid;
 	gap: 12px;
+	grid-template-rows: auto auto 1fr;
+	align-content: start;
 	min-height: 220px;
 	padding: 22px 22px 24px;
 	position: relative;

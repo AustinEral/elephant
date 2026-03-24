@@ -15,7 +15,7 @@
 <p align="center"><b>Historical canonical LoCoMo run:</b> 91.2% accuracy (1,540 questions, 10 conversations, Cat.1–4)</p>
 
 <p align="center">
-  <a href="#quick-start">Quick Start</a> · <a href="#how-it-works">How It Works</a> · <a href="#features">Features</a> · <a href="#benchmarks">Benchmarks</a>
+  <a href="https://austineral.github.io/elephant/">Website</a> · <a href="#quick-start">Quick Start</a> · <a href="#how-it-works">How It Works</a> · <a href="#features">Features</a> · <a href="#benchmarks">Benchmarks</a>
 </p>
 
 <br>

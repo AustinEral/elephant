@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { base } from '$app/paths';
 	import SiteNav from '$lib/components/SiteNav.svelte';
 	import { benchmarkReadmeUrl, docsUrl, protocolUrl, repoUrl, resultCardUrl } from '$lib/site';
 
@@ -51,7 +52,7 @@
 		{
 			id: '04',
 			name: 'Retrieve',
-			detail: 'Search semantic, keyword, graph, and temporal channels for relevant memory.'
+			detail: 'Search memory by meaning, keywords, relationships, and time.'
 		},
 		{
 			id: '05',
@@ -60,7 +61,7 @@
 		}
 	] as const;
 
-	const heroImageUrl = '/hero-elephant.png';
+	const heroImageUrl = `${base}/hero-elephant.png`;
 </script>
 
 <svelte:head>
@@ -122,10 +123,13 @@
 			{/each}
 		</ul>
 
-		<div class="hero-links">
-			<a href={benchmarkReadmeUrl} target="_blank" rel="noreferrer">Benchmark README</a>
-			<a href={protocolUrl} target="_blank" rel="noreferrer">Protocol</a>
-			<a href={resultCardUrl} target="_blank" rel="noreferrer">Result card</a>
+		<div class="hero-benchmark">
+			<div class="hero-benchmark-label">Benchmark evidence</div>
+			<div class="hero-links">
+				<a href={benchmarkReadmeUrl} target="_blank" rel="noreferrer">LoCoMo README</a>
+				<a href={protocolUrl} target="_blank" rel="noreferrer">Benchmark protocol</a>
+				<a href={resultCardUrl} target="_blank" rel="noreferrer">Result card</a>
+			</div>
 		</div>
 	</div>
 </section>
@@ -159,8 +163,8 @@
 	<div class="mechanics-copy">
 		<h2 id="mechanics-title">A memory pipeline</h2>
 		<p>
-			Elephant ingests conversation history, stores memory in structured form, retrieves across
-			several channels, and answers from the retrieved record.
+			Elephant ingests conversation history, stores memory in structured form, retrieves by
+			meaning, keywords, relationships, and time, and answers from the retrieved record.
 		</p>
 	</div>
 
