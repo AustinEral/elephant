@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use regex::Regex;
 
 use crate::error::Result;
@@ -198,20 +198,6 @@ pub fn parse_temporal_reference(query: &str, now: DateTime<Utc>) -> Option<Tempo
         });
     }
 
-    // ISO date: YYYY-MM-DD
-    let iso_re = Regex::new(r"\b(\d{4}-\d{2}-\d{2})\b").unwrap();
-    if let Some(caps) = iso_re.captures(query) {
-        let date_str = &caps[1];
-        if let Ok(date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
-            let start = date.and_hms_opt(0, 0, 0)?;
-            let end = date.and_hms_opt(23, 59, 59)?;
-            return Some(TemporalRange {
-                start: Some(DateTime::from_naive_utc_and_offset(start, Utc)),
-                end: Some(DateTime::from_naive_utc_and_offset(end, Utc)),
-            });
-        }
-    }
-
     // ISO date range: YYYY-MM-DD to YYYY-MM-DD
     let range_re = Regex::new(r"\b(\d{4}-\d{2}-\d{2})\s+to\s+(\d{4}-\d{2}-\d{2})\b").unwrap();
     if let Some(caps) = range_re.captures(query) {
@@ -230,6 +216,50 @@ pub fn parse_temporal_reference(query: &str, now: DateTime<Utc>) -> Option<Tempo
         }
     }
 
+    // ISO date: YYYY-MM-DD
+    let iso_re = Regex::new(r"\b(\d{4}-\d{2}-\d{2})\b").unwrap();
+    if let Some(caps) = iso_re.captures(query) {
+        let date_str = &caps[1];
+        if let Ok(date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+            let start = date.and_hms_opt(0, 0, 0)?;
+            let end = date.and_hms_opt(23, 59, 59)?;
+            return Some(TemporalRange {
+                start: Some(DateTime::from_naive_utc_and_offset(start, Utc)),
+                end: Some(DateTime::from_naive_utc_and_offset(end, Utc)),
+            });
+        }
+    }
+
+    None
+}
+
+/// Parse a caller-supplied time reference into a concrete UTC instant.
+///
+/// This accepts benchmark-style formats like `2023/05/25 (Thu) 14:30` in
+/// addition to standard ISO-8601 and date-only values. Date-only inputs are
+/// normalized to `23:59:59Z` so same-day relative queries stay inclusive.
+pub fn parse_reference_datetime(raw: &str) -> Option<DateTime<Utc>> {
+    let trimmed = raw.trim();
+
+    if let Ok(dt) = DateTime::parse_from_rfc3339(trimmed) {
+        return Some(dt.with_timezone(&Utc));
+    }
+
+    for fmt in ["%Y/%m/%d (%a) %H:%M", "%Y/%m/%d %H:%M", "%Y-%m-%d %H:%M"] {
+        if let Ok(dt) = NaiveDateTime::parse_from_str(trimmed, fmt) {
+            return Some(DateTime::from_naive_utc_and_offset(dt, Utc));
+        }
+    }
+
+    for fmt in ["%Y-%m-%d", "%Y/%m/%d"] {
+        if let Ok(date) = NaiveDate::parse_from_str(trimmed, fmt) {
+            return Some(DateTime::from_naive_utc_and_offset(
+                date.and_hms_opt(23, 59, 59)?,
+                Utc,
+            ));
+        }
+    }
+
     None
 }
 
@@ -243,7 +273,7 @@ fn start_of_day(dt: DateTime<Utc>) -> DateTime<Utc> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
+    use chrono::{TimeZone, Timelike};
 
     fn fixed_now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 2, 25, 12, 0, 0).unwrap()
@@ -313,6 +343,35 @@ mod tests {
         let result = parse_temporal_reference("events on 2026-01-15", fixed_now()).unwrap();
         assert_eq!(result.start.unwrap().day(), 15);
         assert_eq!(result.start.unwrap().month(), 1);
+    }
+
+    #[test]
+    fn parse_iso_date_range_before_single_date() {
+        let result =
+            parse_temporal_reference("events from 2026-01-15 to 2026-01-20", fixed_now()).unwrap();
+        assert_eq!(result.start.unwrap().day(), 15);
+        assert_eq!(result.end.unwrap().day(), 20);
+    }
+
+    #[test]
+    fn parse_reference_datetime_accepts_benchmark_format() {
+        let result = parse_reference_datetime("2023/05/25 (Thu) 14:30").unwrap();
+        assert_eq!(result.year(), 2023);
+        assert_eq!(result.month(), 5);
+        assert_eq!(result.day(), 25);
+        assert_eq!(result.hour(), 14);
+        assert_eq!(result.minute(), 30);
+    }
+
+    #[test]
+    fn parse_reference_datetime_date_only_uses_end_of_day() {
+        let result = parse_reference_datetime("2023-05-25").unwrap();
+        assert_eq!(result.year(), 2023);
+        assert_eq!(result.month(), 5);
+        assert_eq!(result.day(), 25);
+        assert_eq!(result.hour(), 23);
+        assert_eq!(result.minute(), 59);
+        assert_eq!(result.second(), 59);
     }
 
     #[test]

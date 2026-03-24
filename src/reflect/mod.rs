@@ -20,6 +20,7 @@ use crate::llm::{
     ToolResult,
 };
 use crate::recall::RecallPipeline;
+use crate::recall::temporal::{parse_reference_datetime, parse_temporal_reference};
 use crate::storage::MemoryStore;
 use crate::types::{
     Fact, FactId, NetworkType, RecallQuery, ReflectDoneTrace, ReflectQuery, ReflectResult,
@@ -208,7 +209,45 @@ impl ReflectPipeline for DefaultReflectPipeline {
 }
 
 impl DefaultReflectPipeline {
+    fn build_user_message(query: &ReflectQuery) -> String {
+        let mut sections = Vec::new();
+        if let Some(ref tc) = query.temporal_context {
+            sections.push(format!("[Current date: {tc}]"));
+        }
+        if let Some(ref context) = query.context
+            && !context.trim().is_empty()
+        {
+            sections.push(format!("Context:\n{}", context.trim()));
+        }
+        sections.push(query.question.clone());
+        sections.join("\n\n")
+    }
+
+    fn reference_now(temporal_context: Option<&str>) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+        match temporal_context {
+            Some(raw) => parse_reference_datetime(raw)
+                .map(Some)
+                .ok_or_else(|| crate::error::Error::Configuration(format!(
+                    "invalid temporal_context: {raw}"
+                ))),
+            None => Ok(None),
+        }
+    }
+
+    fn temporal_anchor_for_search(
+        reference_now: Option<chrono::DateTime<chrono::Utc>>,
+        search_query: &str,
+        fallback_anchor: Option<&crate::types::TemporalRange>,
+    ) -> Option<crate::types::TemporalRange> {
+        let reference_now = reference_now.unwrap_or_else(chrono::Utc::now);
+        parse_temporal_reference(search_query, reference_now).or_else(|| fallback_anchor.cloned())
+    }
+
     async fn reflect_inner(&self, query: &ReflectQuery) -> Result<ReflectResult> {
+        let reference_now = Self::reference_now(query.temporal_context.as_deref())?;
+        let question_temporal_anchor =
+            Self::temporal_anchor_for_search(reference_now, &query.question, None);
+
         // Load bank profile for system prompt
         let bank = self.store.get_bank(query.bank_id).await?;
         let bank_profile = verbalize_bank_profile(&bank);
@@ -223,11 +262,7 @@ impl DefaultReflectPipeline {
         let system_prompt = system_parts.join("\n\n");
 
         // Conversation messages for the agent loop
-        let user_content = if let Some(ref tc) = query.temporal_context {
-            format!("[Current date: {tc}]\n\n{}", query.question)
-        } else {
-            query.question.clone()
-        };
+        let user_content = Self::build_user_message(query);
         let mut messages: Vec<Message> = vec![Message::user(user_content)];
 
         let mut seen_fact_ids: HashSet<FactId> = HashSet::new();
@@ -305,6 +340,11 @@ impl DefaultReflectPipeline {
                             });
 
                         let recall_start = Instant::now();
+                        let temporal_anchor = Self::temporal_anchor_for_search(
+                            reference_now,
+                            &args.query,
+                            question_temporal_anchor.as_ref(),
+                        );
                         let result = self
                             .recall
                             .recall(&RecallQuery {
@@ -312,7 +352,7 @@ impl DefaultReflectPipeline {
                                 query: args.query.clone(),
                                 budget_tokens: query.budget_tokens,
                                 network_filter,
-                                temporal_anchor: None,
+                                temporal_anchor,
                             })
                             .await?;
                         let recall_ms = recall_start.elapsed().as_millis() as u64;
@@ -978,6 +1018,7 @@ mod tests {
             .reflect(&ReflectQuery {
                 bank_id: h.bank_id,
                 question: "How does Rust handle memory?".into(),
+                context: None,
                 budget_tokens: 2000,
                 temporal_context: None,
             })
@@ -1047,6 +1088,7 @@ mod tests {
             .reflect(&ReflectQuery {
                 bank_id: h.bank_id,
                 question: "Why did fallback happen?".into(),
+                context: None,
                 budget_tokens: 2000,
                 temporal_context: None,
             })
@@ -1153,6 +1195,7 @@ mod tests {
             .reflect(&ReflectQuery {
                 bank_id: h.bank_id,
                 question: "When was the project timeline finished?".into(),
+                context: None,
                 budget_tokens: 2000,
                 temporal_context: None,
             })
@@ -1262,6 +1305,7 @@ mod tests {
             .reflect(&ReflectQuery {
                 bank_id: h.bank_id,
                 question: "When did Avery say the launch plan was shared?".into(),
+                context: None,
                 budget_tokens: 2000,
                 temporal_context: None,
             })
@@ -1395,6 +1439,7 @@ mod tests {
             .reflect(&ReflectQuery {
                 bank_id: h.bank_id,
                 question: "Did both launch facts come from the same meeting?".into(),
+                context: None,
                 budget_tokens: 2000,
                 temporal_context: None,
             })
@@ -1552,6 +1597,7 @@ mod tests {
             .reflect(&ReflectQuery {
                 bank_id: h.bank_id,
                 question: "Tell me about data".into(),
+                context: None,
                 budget_tokens: 2000,
                 temporal_context: None,
             })
@@ -1626,6 +1672,7 @@ mod tests {
             .reflect(&ReflectQuery {
                 bank_id: h.bank_id,
                 question: "Is testing important?".into(),
+                context: None,
                 budget_tokens: 2000,
                 temporal_context: None,
             })
@@ -1737,6 +1784,7 @@ mod tests {
             .reflect(&ReflectQuery {
                 bank_id: h.bank_id,
                 question: "What is the meaning of life?".into(),
+                context: None,
                 budget_tokens: 2000,
                 temporal_context: None,
             })
@@ -1812,6 +1860,7 @@ mod tests {
             .reflect(&ReflectQuery {
                 bank_id: h.bank_id,
                 question: "Analyze something".into(),
+                context: None,
                 budget_tokens: 2000,
                 temporal_context: None,
             })
@@ -1844,6 +1893,7 @@ mod tests {
             .reflect(&ReflectQuery {
                 bank_id: bogus_bank,
                 question: "anything".into(),
+                context: None,
                 budget_tokens: 2000,
                 temporal_context: None,
             })
@@ -1937,6 +1987,7 @@ mod tests {
             .reflect(&ReflectQuery {
                 bank_id: h.bank_id,
                 question: "What about data?".into(),
+                context: None,
                 budget_tokens: 2000,
                 temporal_context: None,
             })
@@ -1950,23 +2001,85 @@ mod tests {
 
     #[test]
     fn temporal_context_in_user_message() {
-        // When temporal_context is Some, user message gets a [Current date: ...] prefix.
-        let tc = Some("2023-05-25".to_string());
-        let question = "What happened?";
-        let content = if let Some(ref tc) = tc {
-            format!("[Current date: {tc}]\n\n{question}")
-        } else {
-            question.to_string()
+        let query = ReflectQuery {
+            bank_id: BankId::new(),
+            question: "What happened?".into(),
+            context: Some("Investigate the production incident.".into()),
+            budget_tokens: 2000,
+            temporal_context: Some("2023-05-25".into()),
         };
-        assert_eq!(content, "[Current date: 2023-05-25]\n\nWhat happened?");
+        assert_eq!(
+            DefaultReflectPipeline::build_user_message(&query),
+            "[Current date: 2023-05-25]\n\nContext:\nInvestigate the production incident.\n\nWhat happened?"
+        );
 
-        // When temporal_context is None, user message is just the question.
-        let tc: Option<String> = None;
-        let content = if let Some(ref tc) = tc {
-            format!("[Current date: {tc}]\n\n{question}")
-        } else {
-            question.to_string()
+        let query = ReflectQuery {
+            bank_id: BankId::new(),
+            question: "What happened?".into(),
+            context: None,
+            budget_tokens: 2000,
+            temporal_context: None,
         };
-        assert_eq!(content, "What happened?");
+        assert_eq!(
+            DefaultReflectPipeline::build_user_message(&query),
+            "What happened?"
+        );
+    }
+
+    #[test]
+    fn temporal_context_drives_relative_temporal_anchor() {
+        let reference_now =
+            DefaultReflectPipeline::reference_now(Some("2023/05/25 (Thu) 14:30")).unwrap();
+        let anchor =
+            DefaultReflectPipeline::temporal_anchor_for_search(
+                reference_now,
+                "what happened last week?",
+                None,
+            )
+                .unwrap();
+
+        assert_eq!(anchor.start.unwrap().date_naive().to_string(), "2023-05-18");
+        assert_eq!(anchor.end.unwrap().date_naive().to_string(), "2023-05-25");
+    }
+
+    #[test]
+    fn date_only_temporal_context_keeps_today_queries_inclusive() {
+        let reference_now = DefaultReflectPipeline::reference_now(Some("2023-05-25")).unwrap();
+        let anchor =
+            DefaultReflectPipeline::temporal_anchor_for_search(
+                reference_now,
+                "what happened today?",
+                None,
+            )
+                .unwrap();
+
+        assert_eq!(anchor.start.unwrap().to_rfc3339(), "2023-05-25T00:00:00+00:00");
+        assert_eq!(anchor.end.unwrap().to_rfc3339(), "2023-05-25T23:59:59+00:00");
+    }
+
+    #[test]
+    fn invalid_temporal_context_is_rejected() {
+        let err = DefaultReflectPipeline::reference_now(Some("not-a-date")).unwrap_err();
+        assert!(err.to_string().contains("invalid temporal_context"));
+    }
+
+    #[test]
+    fn decomposed_search_inherits_question_temporal_anchor() {
+        let reference_now =
+            DefaultReflectPipeline::reference_now(Some("2023/05/25 (Thu) 14:30")).unwrap();
+        let question_anchor = DefaultReflectPipeline::temporal_anchor_for_search(
+            reference_now,
+            "what happened last week?",
+            None,
+        )
+        .unwrap();
+        let search_anchor = DefaultReflectPipeline::temporal_anchor_for_search(
+            reference_now,
+            "release notes",
+            Some(&question_anchor),
+        )
+        .unwrap();
+
+        assert_eq!(search_anchor, question_anchor);
     }
 }

@@ -1,13 +1,14 @@
 //! Temporal range for time-bounded facts.
 
 use chrono::{DateTime, NaiveDate, Utc};
+use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// A time range with optional start and end bounds.
 ///
 /// Both bounds are inclusive. If `start` is `None`, the range extends
 /// infinitely into the past. If `end` is `None`, it extends into the future.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TemporalRange {
     /// Start of the range (inclusive). `None` means unbounded past.
     #[serde(default, deserialize_with = "deserialize_flexible_datetime")]

@@ -202,7 +202,11 @@ Required fields:
 
 Optional fields:
 
+- `context`
 - `temporal_context`
+  - full datetimes are used as-is
+  - date-only values such as `2023-05-25` are treated as the end of that UTC day
+  - invalid values are rejected
 
 Example request:
 
@@ -211,6 +215,7 @@ Example request:
   "bank_id": "01KMCM5R8X4T25KEZWYH0D3NMR",
   "question": "When did Alice join her company?",
   "budget_tokens": 2048,
+  "context": null,
   "temporal_context": null
 }
 ```
@@ -279,8 +284,9 @@ Elephant also exposes an MCP server at `/mcp`.
 
 Current tools:
 
-- `create_bank`
 - `list_banks`
+- `get_bank`
+- `create_bank`
 - `retain`
 - `recall`
 - `reflect`
@@ -289,15 +295,21 @@ The MCP surface is intentionally narrower than the REST API. It is designed for 
 
 ### MCP tool notes
 
+- `get_bank`
+  - accepts `bank_id`
+  - returns the matching bank
 - `create_bank`
-  - accepts `bank_id`, optional `name`, optional `mission`
-  - if `bank_id` parses as an existing bank ID, that bank is returned instead of creating a new one
+  - accepts required `name` and optional `mission`
+  - always creates a new bank with a generated ID
 - `retain`
   - accepts `bank_id`, `content`, optional `context`, optional `timestamp`
+  - also accepts optional `speaker`
+  - invalid `timestamp` values are rejected
 - `recall`
-  - accepts `bank_id`, `query`, optional `max_tokens`
+  - accepts `bank_id`, `query`, optional `max_tokens`, optional `temporal_anchor`
 - `reflect`
-  - accepts `bank_id`, `query`, optional `context`, `budget` (`low`, `mid`, `high`)
+  - accepts `bank_id`, `query`, optional `context`, optional `temporal_context`, and `budget` (`low`, `mid`, `high`)
+  - invalid `temporal_context` values are rejected
 
 ## Related Docs
 

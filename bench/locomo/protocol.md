@@ -17,6 +17,8 @@ The harness excludes Category 5 by `qa.category`, not by whether `answer` is pre
 
 The benchmark runs Elephant in process against the shared runtime builder. It meters stage-level LLM usage directly and defaults to session-level ingest because that is closer to Elephant's intended retention shape and closer to Hindsight-style document/session retention. `--ingest turn` remains available as an explicit provenance-focused ablation when turn-level evidence tracing matters. The CLI is profile-driven and intentionally strict: serious runs start from the `run` subcommand with `--profile full` or a checked-in `--config`. If banks have already been built, `qa <artifact>` is the supported way to skip ingest and consolidation while preserving the original bank ids.
 
+During QA, reflect is anchored to the latest valid session timestamp in the conversation so relative-time questions resolve against the conversation timeline rather than the machine clock.
+
 ### Image handling
 
 Per the [LoCoMo evaluation protocol](https://arxiv.org/abs/2402.17753), images are replaced with their BLIP-2 captions inline in the conversation text. This is the default behavior. Use `--ingest raw-json` only for explicit unfair-comparator reproduction.

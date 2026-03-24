@@ -52,9 +52,6 @@ pub struct RetainParams {
     /// Optional ISO 8601 timestamp for when the event occurred.
     #[serde(default)]
     pub timestamp: Option<String>,
-    /// Optional speaker/author for resolving first-person references.
-    #[serde(default)]
-    pub speaker: Option<String>,
 }
 
 /// Parameters for the recall tool.
@@ -164,7 +161,7 @@ impl RetainParams {
             turn_id: None,
             context: normalize_optional_text(self.context),
             custom_instructions: None,
-            speaker: normalize_optional_text(self.speaker),
+            speaker: None,
         })
     }
 }
@@ -486,7 +483,6 @@ mod tests {
                 content: "Alice prefers Rust".into(),
                 context: Some("chat memory".into()),
                 timestamp: Some("2024-03-01T00:00:00Z".into()),
-                speaker: Some(" Alice ".into()),
             }))
             .await
             .expect("retain tool should succeed");
@@ -499,9 +495,9 @@ mod tests {
         assert_eq!(captured.bank_id, bank_id);
         assert_eq!(captured.context.as_deref(), Some("chat memory"));
         assert_eq!(captured.timestamp.to_rfc3339(), "2024-03-01T00:00:00+00:00");
-        assert_eq!(captured.speaker.as_deref(), Some("Alice"));
         assert!(captured.turn_id.is_none());
         assert!(captured.custom_instructions.is_none());
+        assert!(captured.speaker.is_none());
     }
 
     #[tokio::test]
@@ -518,7 +514,6 @@ mod tests {
                 content: "bad timestamp".into(),
                 context: None,
                 timestamp: Some("not-a-timestamp".into()),
-                speaker: None,
             }))
             .await
             .expect_err("invalid timestamp should be rejected");

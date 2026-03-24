@@ -79,6 +79,7 @@ impl RecallPipeline for DefaultRecallPipeline {
             bank_id = %query.bank_id,
             query = query.query.as_str(),
             network_filter = ?query.network_filter,
+            temporal_anchor = ?query.temporal_anchor,
             "recall_start"
         );
 
@@ -137,8 +138,9 @@ mod tests {
     use crate::storage::mock::MockMemoryStore;
     use crate::types::{
         BankId, Disposition, Fact, FactId, FactType, MemoryBank, NetworkType, RecallQuery,
+        TemporalRange,
     };
-    use chrono::Utc;
+    use chrono::{TimeZone, Utc};
     use std::sync::Arc;
 
     async fn create_test_bank(store: &MockMemoryStore, dims: u16) -> BankId {
@@ -173,6 +175,10 @@ mod tests {
             updated_at: Utc::now(),
             consolidated_at: None,
         }
+    }
+
+    fn dt(year: i32, month: u32, day: u32) -> chrono::DateTime<Utc> {
+        Utc.with_ymd_and_hms(year, month, day, 0, 0, 0).unwrap()
     }
 
     #[tokio::test]
@@ -411,5 +417,74 @@ mod tests {
                 "all results should be opinions"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn explicit_temporal_anchor_biases_recall_without_global_filtering() {
+        let store = Arc::new(MockMemoryStore::new());
+        let embeddings = Arc::new(MockEmbeddings::new(8));
+        let bank = create_test_bank(&store, 8).await;
+
+        let emb = embeddings.embed(&["release notes"]).await.unwrap();
+
+        let mut january_fact =
+            make_fact_with_embedding(bank, "release notes for project alpha", emb[0].clone());
+        january_fact.temporal_range = Some(TemporalRange {
+            start: Some(dt(2024, 1, 10)),
+            end: Some(dt(2024, 1, 10)),
+        });
+
+        let mut february_fact =
+            make_fact_with_embedding(bank, "release notes for project alpha", emb[0].clone());
+        february_fact.temporal_range = Some(TemporalRange {
+            start: Some(dt(2024, 2, 10)),
+            end: Some(dt(2024, 2, 10)),
+        });
+
+        store
+            .insert_facts(&[january_fact.clone(), february_fact])
+            .await
+            .unwrap();
+
+        let pipeline = DefaultRecallPipeline::new(
+            Box::new(SemanticRetriever::new(
+                store.clone(),
+                embeddings.clone(),
+                10,
+            )),
+            Box::new(KeywordRetriever::new(store.clone(), 10)),
+            Box::new(GraphRetriever::new(
+                store.clone(),
+                embeddings.clone(),
+                GraphRetrieverConfig::default(),
+            )),
+            Box::new(TemporalRetriever::new(store.clone())),
+            Box::new(NoOpReranker),
+            Box::new(EstimateTokenizer),
+            60.0,
+            50,
+        );
+
+        let query = RecallQuery {
+            bank_id: bank,
+            query: "release notes".into(),
+            budget_tokens: 1000,
+            network_filter: None,
+            temporal_anchor: Some(TemporalRange {
+                start: Some(dt(2024, 1, 1)),
+                end: Some(dt(2024, 1, 31)),
+            }),
+        };
+
+        let result = pipeline.recall(&query).await.unwrap();
+        assert_eq!(result.facts[0].fact.id, january_fact.id);
+        assert!(
+            result.facts.iter().any(|sf| sf.fact.id == january_fact.id),
+            "in-range fact should survive recall"
+        );
+        assert!(
+            result.facts.iter().any(|sf| sf.fact.id != january_fact.id),
+            "out-of-range facts from non-temporal channels should still be eligible"
+        );
     }
 }

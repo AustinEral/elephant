@@ -2342,6 +2342,7 @@ async fn main() {
                 runtime.reflect.reflect(&ReflectQuery {
                     bank_id: bank_id_str.parse().unwrap(),
                     question: instance.question.clone(),
+                    context: None,
                     budget_tokens: REFLECT_BUDGET_TOKENS,
                     temporal_context: Some(instance.question_date.clone()),
                 }),

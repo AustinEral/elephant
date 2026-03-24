@@ -466,14 +466,21 @@ fn token_f1(prediction: &str, ground_truth: &str) -> f64 {
 // --- Session parsing ---
 
 fn parse_session_date(date_str: &str) -> DateTime<Utc> {
+    parse_session_date_opt(date_str).unwrap_or_else(Utc::now)
+}
+
+fn parse_session_date_opt(date_str: &str) -> Option<DateTime<Utc>> {
     let cleaned = date_str.trim();
+    if cleaned.is_empty() {
+        return None;
+    }
     if let Ok(dt) = NaiveDateTime::parse_from_str(cleaned, "%I:%M %p on %-d %B, %Y") {
-        return dt.and_utc();
+        return Some(dt.and_utc());
     }
     if let Ok(dt) = NaiveDateTime::parse_from_str(cleaned, "%I:%M %P on %-d %B, %Y") {
-        return dt.and_utc();
+        return Some(dt.and_utc());
     }
-    Utc::now()
+    None
 }
 
 fn session_count(conv: &Conversation) -> usize {
@@ -517,6 +524,22 @@ fn get_session_date(conv: &Conversation, idx: usize) -> String {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string()
+}
+
+fn latest_session_temporal_context(conv: &Conversation) -> Option<String> {
+    let mut latest: Option<DateTime<Utc>> = None;
+
+    for idx in 1..=session_count(conv) {
+        let date_str = get_session_date(conv, idx);
+        let Some(dt) = parse_session_date_opt(&date_str) else {
+            continue;
+        };
+        if latest.is_none_or(|current| dt > current) {
+            latest = Some(dt);
+        }
+    }
+
+    latest.map(|dt| dt.to_rfc3339())
 }
 
 fn format_turn(turn: &Turn) -> String {
@@ -3110,6 +3133,7 @@ async fn run_conversation(
     let turn_refs = Arc::new(shared.lock().await.turn_refs.clone());
     let qa_sem = Arc::new(Semaphore::new(options.question_concurrency));
     let mut qa_handles = JoinSet::new();
+    let temporal_context = latest_session_temporal_context(&entry.conversation);
 
     for qa in qa_list.iter().filter(|qa| should_score_question(qa)) {
         let sem = qa_sem.clone();
@@ -3133,6 +3157,7 @@ async fn run_conversation(
         let evidence_refs = qa.evidence.clone();
         let turn_refs = turn_refs.clone();
         let bank_id = bank_id;
+        let temporal_context = temporal_context.clone();
         let conversation_metrics = conversation_metrics.clone();
         let question_metrics = Arc::new(MetricsCollector::new());
 
@@ -3164,8 +3189,9 @@ async fn run_conversation(
                         .reflect(&ReflectQuery {
                             bank_id,
                             question: question.clone(),
+                            context: None,
                             budget_tokens: REFLECT_BUDGET_TOKENS,
-                            temporal_context: None,
+                            temporal_context: temporal_context.clone(),
                         })
                         .await;
                     let elapsed = t0.elapsed().as_secs_f64();
@@ -4414,6 +4440,31 @@ mod tests {
         };
 
         assert_eq!(session_count(&conversation), 1);
+    }
+
+    #[test]
+    fn latest_session_temporal_context_uses_latest_valid_session_date() {
+        let conversation = Conversation {
+            speaker_a: "Caroline".into(),
+            speaker_b: "Melanie".into(),
+            sessions: HashMap::from([
+                (
+                    "session_1".into(),
+                    json!([{ "speaker": "Caroline", "dia_id": "D1:1", "text": "Hi" }]),
+                ),
+                ("session_1_date_time".into(), json!("1:56 pm on 8 May, 2023")),
+                (
+                    "session_2".into(),
+                    json!([{ "speaker": "Melanie", "dia_id": "D2:1", "text": "Hello" }]),
+                ),
+                ("session_2_date_time".into(), json!("9:15 am on 10 June, 2023")),
+            ]),
+        };
+
+        assert_eq!(
+            latest_session_temporal_context(&conversation).as_deref(),
+            Some("2023-06-10T09:15:00+00:00")
+        );
     }
 
     #[test]
