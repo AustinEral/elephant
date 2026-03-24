@@ -117,7 +117,7 @@ Five tools: **retain** · **recall** · **reflect** · **list_banks** · **creat
 
 ### Building from source
 
-Requires Postgres 16 + pgvector, ONNX Runtime 1.23, and local models for embeddings and reranking. See [`tests/README.md`](tests/README.md) for setup instructions.
+Requires Postgres 16 + pgvector, ONNX Runtime 1.23, and local models for embeddings and reranking. See [docs/getting-started.md](docs/getting-started.md) for the full source setup path.
 
 ```sh
 cargo run --release
