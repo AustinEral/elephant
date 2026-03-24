@@ -346,6 +346,161 @@ button {
 	color: var(--accent-strong);
 }
 
+.section-kicker {
+	color: color-mix(in srgb, var(--ink-soft) 72%, var(--accent) 28%);
+	font-family: var(--mono);
+	font-feature-settings: 'zero' 1;
+	font-size: 0.74rem;
+	letter-spacing: 0.12em;
+	margin: 0 0 18px;
+	text-transform: uppercase;
+}
+
+.why-shell {
+	border-top: 1px solid var(--line);
+	margin-top: 54px;
+	padding: 34px 0 0;
+}
+
+.why-grid {
+	display: grid;
+	gap: 28px;
+	grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.25fr);
+}
+
+.why-copy h2 {
+	color: var(--ink-strong);
+	font-family: var(--hero);
+	font-size: clamp(2rem, 3.5vw, 3.1rem);
+	font-weight: 500;
+	letter-spacing: -0.04em;
+	line-height: 0.98;
+	margin: 0;
+	max-width: 10ch;
+}
+
+.why-copy p {
+	color: var(--ink);
+	font-size: 1rem;
+	line-height: 1.55;
+	margin: 18px 0 0;
+	max-width: 31rem;
+}
+
+.why-list {
+	display: grid;
+	gap: 0;
+}
+
+.why-item {
+	border-top: 1px solid var(--line);
+	column-gap: 22px;
+	display: grid;
+	grid-template-columns: minmax(0, 13rem) minmax(0, 1fr);
+	padding: 18px 0 20px;
+}
+
+.why-item:last-child {
+	border-bottom: 1px solid var(--line);
+}
+
+.why-label {
+	color: var(--ink-strong);
+	font-family: var(--mono);
+	font-feature-settings: 'zero' 1;
+	font-size: 0.78rem;
+	letter-spacing: 0.08em;
+	line-height: 1.45;
+	padding-top: 0.08rem;
+	text-transform: uppercase;
+}
+
+.why-item p {
+	color: var(--ink);
+	font-size: 0.99rem;
+	line-height: 1.55;
+	margin: 0;
+	max-width: 40rem;
+}
+
+.mechanics-shell {
+	border-top: 1px solid var(--line);
+	margin-top: 54px;
+	padding: 34px 0 0;
+}
+
+.mechanics-copy {
+	align-items: end;
+	column-gap: 28px;
+	display: grid;
+	grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.25fr);
+	margin-bottom: 28px;
+}
+
+.mechanics-copy h2 {
+	color: var(--ink-strong);
+	font-family: var(--hero);
+	font-size: clamp(2rem, 3.5vw, 3.1rem);
+	font-weight: 500;
+	letter-spacing: -0.04em;
+	line-height: 0.98;
+	margin: 0;
+	max-width: 11ch;
+}
+
+.mechanics-copy p {
+	color: var(--ink);
+	font-size: 1rem;
+	line-height: 1.55;
+	margin: 0;
+	max-width: 41rem;
+}
+
+.mechanics-strip {
+	border-bottom: 1px solid var(--line);
+	border-top: 1px solid var(--line);
+	display: grid;
+	grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.mechanics-stage {
+	display: grid;
+	gap: 12px;
+	min-height: 220px;
+	padding: 22px 22px 24px;
+	position: relative;
+}
+
+.mechanics-stage + .mechanics-stage {
+	border-left: 1px solid var(--line);
+}
+
+.mechanics-stage-id {
+	color: color-mix(in srgb, var(--ink-soft) 72%, var(--accent) 28%);
+	font-family: var(--mono);
+	font-feature-settings: 'zero' 1;
+	font-size: 0.74rem;
+	letter-spacing: 0.12em;
+	text-transform: uppercase;
+}
+
+.mechanics-stage-name {
+	color: var(--ink-strong);
+	font-family: var(--hero);
+	font-size: 1.55rem;
+	font-weight: 500;
+	letter-spacing: -0.035em;
+	line-height: 1;
+}
+
+.mechanics-stage p {
+	color: var(--ink);
+	font-size: 0.98rem;
+	line-height: 1.55;
+	margin: 0;
+	max-width: 18rem;
+}
+
 @media (max-width: 860px) {
 	.hero-stage {
 		min-height: clamp(320px, 50vh, 560px);
@@ -370,6 +525,46 @@ button {
 		max-height: none;
 		object-position: right bottom;
 		width: auto;
+	}
+
+	.why-grid {
+		grid-template-columns: 1fr;
+	}
+
+	.why-copy h2 {
+		max-width: 12ch;
+	}
+
+	.why-item {
+		grid-template-columns: 1fr;
+		row-gap: 8px;
+	}
+
+	.mechanics-copy {
+		grid-template-columns: 1fr;
+		row-gap: 18px;
+	}
+
+	.mechanics-copy h2 {
+		max-width: 12ch;
+	}
+
+	.mechanics-strip {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+
+	.mechanics-stage:nth-child(3),
+	.mechanics-stage:nth-child(4),
+	.mechanics-stage:nth-child(5) {
+		border-top: 1px solid var(--line);
+	}
+
+	.mechanics-stage:nth-child(3) {
+		border-left: 0;
+	}
+
+	.mechanics-stage:nth-child(5) {
+		border-left: 0;
 	}
 }
 
@@ -416,5 +611,59 @@ button {
 		max-height: none;
 		object-position: right bottom;
 		width: auto;
+	}
+
+	.why-shell {
+		margin-top: 40px;
+		padding-top: 28px;
+	}
+
+	.section-kicker {
+		margin-bottom: 14px;
+	}
+
+	.why-copy h2 {
+		font-size: clamp(1.7rem, 8vw, 2.45rem);
+		max-width: 11ch;
+	}
+
+	.why-copy p,
+	.why-item p {
+		font-size: 0.95rem;
+	}
+
+	.mechanics-shell {
+		margin-top: 40px;
+		padding-top: 28px;
+	}
+
+	.mechanics-copy h2 {
+		font-size: clamp(1.7rem, 8vw, 2.45rem);
+		max-width: 11ch;
+	}
+
+	.mechanics-copy p,
+	.mechanics-stage p {
+		font-size: 0.95rem;
+	}
+
+	.mechanics-strip {
+		grid-template-columns: 1fr;
+	}
+
+	.mechanics-stage {
+		min-height: 0;
+		padding-inline: 0;
+	}
+
+	.mechanics-stage + .mechanics-stage {
+		border-left: 0;
+		border-top: 1px solid var(--line);
+	}
+
+	.mechanics-stage:nth-child(3),
+	.mechanics-stage:nth-child(4),
+	.mechanics-stage:nth-child(5) {
+		border-top: 1px solid var(--line);
 	}
 }
