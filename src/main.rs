@@ -30,22 +30,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let listen_addr = env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:3001".into());
     let runtime = build_runtime_from_env(BuildRuntimeOptions::default()).await?;
-
-    let state = AppState {
-        info: server::ServerInfo {
-            retain_model: runtime.info.retain_model.clone(),
-            reflect_model: runtime.info.reflect_model.clone(),
-            embedding_model: runtime.info.embedding_model.clone(),
-            reranker_model: runtime.info.reranker_model.clone(),
-        },
-        retain: runtime.retain.clone(),
-        recall: runtime.recall.clone(),
-        reflect: runtime.reflect.clone(),
-        consolidator: runtime.consolidator.clone(),
-        opinion_merger: runtime.opinion_merger.clone(),
-        store: runtime.store.clone(),
-        embeddings: runtime.embeddings.clone(),
-    };
+    let state = AppState::try_from(&runtime)?;
 
     let mcp_state = state.clone();
     let mcp_service = StreamableHttpService::new(

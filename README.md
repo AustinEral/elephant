@@ -127,6 +127,8 @@ Full config reference in [`.env.example`](.env.example). `LLM_PROVIDER` supports
 
 Optional prompt caching is supported for Anthropic and OpenAI Responses. Enable it with `LLM_PROMPT_CACHE_ENABLED=1`; OpenAI also supports optional `OPENAI_PROMPT_CACHE_KEY` and `OPENAI_PROMPT_CACHE_RETENTION` (`in_memory` or `24h`), and Anthropic supports `ANTHROPIC_PROMPT_CACHE_TTL`. Gemini reports implicit cache hits automatically when the API provides them.
 
+The server can also run background consolidation after successful `retain` calls. See `SERVER_AUTO_CONSOLIDATION`, `SERVER_AUTO_CONSOLIDATION_MIN_FACTS`, `SERVER_AUTO_CONSOLIDATION_COOLDOWN_SECS`, and `SERVER_AUTO_CONSOLIDATION_MERGE_OPINIONS` in [`.env.example`](.env.example).
+
 ## How It Works
 
 ```mermaid

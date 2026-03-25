@@ -32,6 +32,13 @@ cp .env.example .env
 - `RETAIN_LLM_MODEL`
 - `REFLECT_LLM_MODEL`
 
+Optional server maintenance defaults are also available:
+
+- `SERVER_AUTO_CONSOLIDATION`
+- `SERVER_AUTO_CONSOLIDATION_MIN_FACTS`
+- `SERVER_AUTO_CONSOLIDATION_COOLDOWN_SECS`
+- `SERVER_AUTO_CONSOLIDATION_MERGE_OPINIONS`
+
 The Docker image bundles:
 
 - ONNX Runtime
@@ -135,6 +142,13 @@ Set at least:
 - `RETAIN_LLM_MODEL`
 - `REFLECT_LLM_MODEL`
 
+If you want to tune server-side background maintenance, also review:
+
+- `SERVER_AUTO_CONSOLIDATION`
+- `SERVER_AUTO_CONSOLIDATION_MIN_FACTS`
+- `SERVER_AUTO_CONSOLIDATION_COOLDOWN_SECS`
+- `SERVER_AUTO_CONSOLIDATION_MERGE_OPINIONS`
+
 ### 3. Install ONNX Runtime
 
 ```bash
@@ -170,6 +184,8 @@ The server will print:
 
 - REST API URL
 - MCP URL
+
+By default, the server also evaluates background observation consolidation after successful `retain` calls. This does not block the retain response. You can tune or disable that behavior in [`.env.example`](../.env.example).
 
 You can then use the same `BANK_ID` example flow shown in the Docker quickstart.
 

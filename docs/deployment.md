@@ -141,6 +141,10 @@ Example:
 ```env
 DATABASE_URL=postgres://elephant:elephant@localhost:5433/elephant
 LISTEN_ADDR=0.0.0.0:3001
+SERVER_AUTO_CONSOLIDATION=1
+SERVER_AUTO_CONSOLIDATION_MIN_FACTS=32
+SERVER_AUTO_CONSOLIDATION_COOLDOWN_SECS=30
+SERVER_AUTO_CONSOLIDATION_MERGE_OPINIONS=0
 ```
 
 ### Configure providers
@@ -163,6 +167,8 @@ cargo run --release
 
 The server binds to `LISTEN_ADDR` and auto-runs database migrations at startup.
 
+By default, the HTTP/MCP server also evaluates background consolidation after successful `retain` calls. That maintenance is non-blocking and per-bank rate-limited. If you want fully manual maintenance instead, set `SERVER_AUTO_CONSOLIDATION=0`.
+
 ### When source deployment is the right choice
 
 Use this when you want:
@@ -182,6 +188,11 @@ Before calling a deployment ready, verify:
 - embedding configuration matches your bank creation strategy
 - reranker configuration matches your deployment choice
 - `LISTEN_ADDR` is set correctly for the environment
+- server-side consolidation policy matches the deployment:
+  - `SERVER_AUTO_CONSOLIDATION`
+  - `SERVER_AUTO_CONSOLIDATION_MIN_FACTS`
+  - `SERVER_AUTO_CONSOLIDATION_COOLDOWN_SECS`
+  - `SERVER_AUTO_CONSOLIDATION_MERGE_OPINIONS`
 - model paths are correct if using local embeddings or local reranking
 
 ## Health Checks

@@ -259,6 +259,8 @@ Each fact includes its content, type, network, timestamps, evidence IDs, and opt
 
 Runs observation consolidation for the bank.
 
+This endpoint remains useful even when server-side auto-consolidation is enabled. Automatic consolidation is best-effort background maintenance after `retain`; this endpoint is the explicit manual trigger.
+
 Returns:
 
 ```json

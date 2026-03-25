@@ -1,9 +1,10 @@
 //! Axum HTTP server exposing the memory engine API.
 
+mod consolidation;
 pub mod error;
 pub mod handlers;
 
-    use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use axum::Router;
 use axum::routing::{get, post};
@@ -14,6 +15,7 @@ use crate::embedding::EmbeddingClient;
 use crate::recall::RecallPipeline;
 use crate::reflect::ReflectPipeline;
 use crate::retain::RetainPipeline;
+use crate::runtime::ElephantRuntime;
 use crate::storage::MemoryStore;
 
 /// Server configuration exposed via `/v1/info`.
@@ -48,6 +50,38 @@ pub struct AppState {
     pub store: Arc<dyn MemoryStore>,
     /// The embedding client (for reading model info at bank creation).
     pub embeddings: Arc<dyn EmbeddingClient>,
+}
+
+impl TryFrom<&ElephantRuntime> for AppState {
+    type Error = crate::error::Error;
+
+    /// Build application state from a fully constructed runtime.
+    ///
+    /// This is the main server entry point because it can wrap the retain
+    /// pipeline with server-only behaviors such as background consolidation
+    /// without changing the shared runtime used by benchmarks.
+    fn try_from(runtime: &ElephantRuntime) -> std::result::Result<Self, Self::Error> {
+        Ok(Self {
+            info: ServerInfo {
+                retain_model: runtime.info.retain_model.clone(),
+                reflect_model: runtime.info.reflect_model.clone(),
+                embedding_model: runtime.info.embedding_model.clone(),
+                reranker_model: runtime.info.reranker_model.clone(),
+            },
+            retain: consolidation::wrap_retain_pipeline_with_consolidation(
+                runtime.retain.clone(),
+                runtime.store.clone(),
+                runtime.consolidator.clone(),
+                runtime.opinion_merger.clone(),
+            )?,
+            recall: runtime.recall.clone(),
+            reflect: runtime.reflect.clone(),
+            consolidator: runtime.consolidator.clone(),
+            opinion_merger: runtime.opinion_merger.clone(),
+            store: runtime.store.clone(),
+            embeddings: runtime.embeddings.clone(),
+        })
+    }
 }
 
 /// Build the Axum router with all routes.
@@ -87,6 +121,7 @@ mod tests {
     use crate::retain::RetainPipeline;
     use crate::storage::mock::MockMemoryStore;
     use crate::types::*;
+    use std::sync::Mutex;
 
     use async_trait::async_trait;
     use axum::body::Body;
@@ -215,7 +250,11 @@ mod tests {
         (router(state), store)
     }
 
-    fn test_app_with_recall_capture() -> (Router, Arc<MockMemoryStore>, Arc<Mutex<Option<RecallQuery>>>) {
+    fn test_app_with_recall_capture() -> (
+        Router,
+        Arc<MockMemoryStore>,
+        Arc<Mutex<Option<RecallQuery>>>,
+    ) {
         let store = Arc::new(MockMemoryStore::new());
         let captured = Arc::new(Mutex::new(None));
         let state = AppState {
