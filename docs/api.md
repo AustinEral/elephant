@@ -166,10 +166,13 @@ Required fields:
 
 - `bank_id`
 - `query`
-- `budget_tokens`
 
 Optional fields:
 
+- `budget_tokens`
+  - if omitted, uses the server's default recall budget
+- `max_facts`
+  - if omitted, uses the server's default max facts
 - `network_filter`: array of network names: `world`, `experience`, `observation`, `opinion`
 - `temporal_anchor`
 
@@ -180,6 +183,7 @@ Example request:
   "bank_id": "01KMCM5R8X4T25KEZWYH0D3NMR",
   "query": "Alice employment start date",
   "budget_tokens": 2048,
+  "max_facts": 25,
   "network_filter": null,
   "temporal_anchor": null
 }
@@ -303,10 +307,10 @@ The MCP surface is intentionally narrower than the REST API. It is designed for 
   - always creates a new bank with a generated ID
 - `retain`
   - accepts `bank_id`, `content`, optional `context`, optional `timestamp`
-  - also accepts optional `speaker`
   - invalid `timestamp` values are rejected
 - `recall`
   - accepts `bank_id`, `query`, optional `max_tokens`, optional `temporal_anchor`
+  - omitted `max_tokens` uses the server's recall default
 - `reflect`
   - accepts `bank_id`, `query`, optional `context`, optional `temporal_context`, and `budget` (`low`, `mid`, `high`)
   - invalid `temporal_context` values are rejected

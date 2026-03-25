@@ -3,7 +3,7 @@
 pub mod error;
 pub mod handlers;
 
-use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
 use axum::Router;
 use axum::routing::{get, post};
@@ -134,11 +134,16 @@ mod tests {
         }
     }
 
-    struct MockRecallPipeline;
+    struct MockRecallPipeline {
+        captured: Option<Arc<Mutex<Option<RecallQuery>>>>,
+    }
 
     #[async_trait]
     impl RecallPipeline for MockRecallPipeline {
-        async fn recall(&self, _query: &RecallQuery) -> Result<RecallResult> {
+        async fn recall(&self, query: &RecallQuery) -> Result<RecallResult> {
+            if let Some(captured) = &self.captured {
+                *captured.lock().unwrap() = Some(query.clone());
+            }
             Ok(RecallResult {
                 facts: vec![],
                 total_tokens: 0,
@@ -200,7 +205,7 @@ mod tests {
             retain: Arc::new(MockRetainPipeline {
                 store: store.clone(),
             }),
-            recall: Arc::new(MockRecallPipeline),
+            recall: Arc::new(MockRecallPipeline { captured: None }),
             reflect: Arc::new(MockReflectPipeline),
             consolidator: Arc::new(MockConsolidator),
             opinion_merger: Arc::new(MockOpinionMerger),
@@ -208,6 +213,31 @@ mod tests {
             embeddings: Arc::new(MockEmbeddings::new(384)),
         };
         (router(state), store)
+    }
+
+    fn test_app_with_recall_capture() -> (Router, Arc<MockMemoryStore>, Arc<Mutex<Option<RecallQuery>>>) {
+        let store = Arc::new(MockMemoryStore::new());
+        let captured = Arc::new(Mutex::new(None));
+        let state = AppState {
+            info: ServerInfo {
+                retain_model: "test".into(),
+                reflect_model: "test".into(),
+                embedding_model: "test".into(),
+                reranker_model: "none".into(),
+            },
+            retain: Arc::new(MockRetainPipeline {
+                store: store.clone(),
+            }),
+            recall: Arc::new(MockRecallPipeline {
+                captured: Some(captured.clone()),
+            }),
+            reflect: Arc::new(MockReflectPipeline),
+            consolidator: Arc::new(MockConsolidator),
+            opinion_merger: Arc::new(MockOpinionMerger),
+            store: store.clone(),
+            embeddings: Arc::new(MockEmbeddings::new(384)),
+        };
+        (router(state), store, captured)
     }
 
     async fn json_body(resp: axum::response::Response) -> Value {
@@ -289,7 +319,7 @@ mod tests {
             retain: Arc::new(MockRetainPipeline {
                 store: store.clone(),
             }),
-            recall: Arc::new(MockRecallPipeline),
+            recall: Arc::new(MockRecallPipeline { captured: None }),
             reflect: Arc::new(MockReflectPipeline),
             consolidator: Arc::new(MockConsolidator),
             opinion_merger: Arc::new(MockOpinionMerger),
@@ -349,6 +379,46 @@ mod tests {
 
         let body = json_body(resp).await;
         assert_eq!(body["response"], "Mock reflection");
+    }
+
+    #[tokio::test]
+    async fn recall_allows_optional_budget_and_max_facts() {
+        let (app, store, captured) = test_app_with_recall_capture();
+
+        let bank = MemoryBank {
+            id: BankId::new(),
+            name: "test".into(),
+            mission: "test".into(),
+            directives: vec![],
+            disposition: Disposition::default(),
+            embedding_model: String::new(),
+            embedding_dimensions: 0,
+        };
+        store.create_bank(&bank).await.unwrap();
+        let bank_id = bank.id.to_string();
+
+        let req = json_request(
+            "POST",
+            &format!("/v1/banks/{bank_id}/recall"),
+            json!({
+                "bank_id": "00000000000000000000000000",
+                "query": "Rust",
+                "max_facts": 7
+            }),
+        );
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let recall_query = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("recall query should be captured");
+        assert_eq!(recall_query.bank_id.to_string(), bank_id);
+        assert_eq!(recall_query.query, "Rust");
+        assert_eq!(recall_query.budget_tokens, None);
+        assert_eq!(recall_query.max_facts, Some(7));
     }
 
     #[tokio::test]
@@ -491,7 +561,7 @@ mod tests {
                 retain: Arc::new(MockRetainPipeline {
                     store: store.clone(),
                 }),
-                recall: Arc::new(MockRecallPipeline),
+                recall: Arc::new(MockRecallPipeline { captured: None }),
                 reflect: Arc::new(MockReflectPipeline),
                 consolidator: Arc::new(MockConsolidator),
                 opinion_merger: Arc::new(MockOpinionMerger),

@@ -61,9 +61,9 @@ pub struct RecallParams {
     pub bank_id: String,
     /// Natural language search query.
     pub query: String,
-    /// Maximum tokens to return (default: 4096).
-    #[serde(default = "default_max_tokens")]
-    pub max_tokens: usize,
+    /// Optional maximum token budget override for this recall call.
+    #[serde(default)]
+    pub max_tokens: Option<usize>,
     /// Optional temporal anchor used by the temporal retrieval channel.
     #[serde(default)]
     pub temporal_anchor: Option<crate::types::TemporalRange>,
@@ -102,10 +102,6 @@ pub struct CreateBankParams {
 pub struct GetBankParams {
     /// Memory bank ID.
     pub bank_id: String,
-}
-
-fn default_max_tokens() -> usize {
-    4096
 }
 
 fn parse_bank_id(s: &str) -> Result<BankId, rmcp::ErrorData> {
@@ -168,10 +164,10 @@ impl RetainParams {
 
 impl RecallParams {
     fn into_query(self) -> Result<RecallQuery, rmcp::ErrorData> {
-        let mut query =
-            RecallQuery::new(parse_bank_id(&self.bank_id)?, self.query).with_budget_tokens(
-                self.max_tokens,
-            );
+        let mut query = RecallQuery::new(parse_bank_id(&self.bank_id)?, self.query);
+        if let Some(max_tokens) = self.max_tokens {
+            query = query.with_budget_tokens(max_tokens);
+        }
         if let Some(anchor) = self.temporal_anchor {
             query = query.with_temporal_anchor(anchor);
         }
@@ -629,7 +625,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recall_tool_preserves_temporal_anchor() {
+    async fn recall_tool_preserves_optional_budget_and_temporal_anchor() {
         let retained = Arc::new(Mutex::new(None));
         let recalled = Arc::new(Mutex::new(None));
         let reflected = Arc::new(Mutex::new(None));
@@ -641,7 +637,7 @@ mod tests {
             .recall(Parameters(RecallParams {
                 bank_id: bank_id.to_string(),
                 query: "release notes".into(),
-                max_tokens: 1234,
+                max_tokens: Some(1234),
                 temporal_anchor: Some(crate::types::TemporalRange {
                     start: Some(
                         chrono::DateTime::parse_from_rfc3339("2024-01-01T00:00:00Z")
@@ -666,6 +662,7 @@ mod tests {
         assert_eq!(captured.bank_id, bank_id);
         assert_eq!(captured.query, "release notes");
         assert_eq!(captured.budget_tokens, Some(1234));
+        assert_eq!(captured.max_facts, None);
         let anchor = captured.temporal_anchor.expect("temporal anchor should be preserved");
         assert_eq!(
             anchor.start.expect("start").to_rfc3339(),
@@ -675,5 +672,33 @@ mod tests {
             anchor.end.expect("end").to_rfc3339(),
             "2024-01-31T23:59:59+00:00"
         );
+    }
+
+    #[tokio::test]
+    async fn recall_tool_omits_budget_override_when_max_tokens_is_missing() {
+        let retained = Arc::new(Mutex::new(None));
+        let recalled = Arc::new(Mutex::new(None));
+        let reflected = Arc::new(Mutex::new(None));
+        let store = Arc::new(MockMemoryStore::new());
+        let mcp = ElephantMcp::new(test_state(retained, recalled.clone(), reflected, store));
+
+        let _ = mcp
+            .recall(Parameters(RecallParams {
+                bank_id: BankId::new().to_string(),
+                query: "release notes".into(),
+                max_tokens: None,
+                temporal_anchor: None,
+            }))
+            .await
+            .expect("recall tool should succeed");
+
+        let captured = recalled
+            .lock()
+            .expect("recall mutex poisoned")
+            .clone()
+            .expect("recall query should be captured");
+        assert_eq!(captured.budget_tokens, None);
+        assert_eq!(captured.max_facts, None);
+        assert_eq!(captured.temporal_anchor, None);
     }
 }
