@@ -345,15 +345,17 @@ impl DefaultReflectPipeline {
                             &args.query,
                             question_temporal_anchor.as_ref(),
                         );
+                        let mut recall_query = RecallQuery::new(query.bank_id, args.query.clone())
+                            .with_budget_tokens(query.budget_tokens);
+                        if let Some(filter) = network_filter {
+                            recall_query = recall_query.with_network_filter(filter);
+                        }
+                        if let Some(anchor) = temporal_anchor {
+                            recall_query = recall_query.with_temporal_anchor(anchor);
+                        }
                         let result = self
                             .recall
-                            .recall(&RecallQuery {
-                                bank_id: query.bank_id,
-                                query: args.query.clone(),
-                                budget_tokens: query.budget_tokens,
-                                network_filter,
-                                temporal_anchor,
-                            })
+                            .recall(&recall_query)
                             .await?;
                         let recall_ms = recall_start.elapsed().as_millis() as u64;
 
@@ -948,6 +950,7 @@ mod tests {
                 Box::new(EstimateTokenizer),
                 60.0,
                 50,
+                4096,
             ));
 
             DefaultReflectPipeline::new(recall, self.llm.clone(), self.store.clone(), 8)
@@ -1590,6 +1593,7 @@ mod tests {
             Box::new(EstimateTokenizer),
             60.0,
             50,
+            4096,
         ));
         let pipeline = DefaultReflectPipeline::new(recall, h.llm.clone(), h.store.clone(), 3);
 

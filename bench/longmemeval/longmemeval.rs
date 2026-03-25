@@ -41,7 +41,14 @@ const JUDGE_KNOWLEDGE_UPDATE: &str = include_str!("prompts/judge_knowledge_updat
 const JUDGE_PREFERENCE: &str = include_str!("prompts/judge_preference.txt");
 const JUDGE_ABSTENTION: &str = include_str!("prompts/judge_abstention.txt");
 
-const REFLECT_BUDGET_TOKENS: usize = 4096;
+fn reflect_budget_tokens() -> usize {
+    match env::var("LONGMEMEVAL_REFLECT_BUDGET_TOKENS") {
+        Ok(value) => value.parse::<usize>().unwrap_or_else(|_| {
+            panic!("LONGMEMEVAL_REFLECT_BUDGET_TOKENS must be a positive integer, got: {value}")
+        }),
+        Err(_) => 4096,
+    }
+}
 
 /// Select the appropriate judge prompt template for a given question instance.
 fn select_judge_prompt(instance: &dataset::LongMemEvalInstance) -> &'static str {
@@ -914,6 +921,7 @@ struct BenchmarkPromptHashes {
 struct BenchmarkRuntimeConfig {
     #[serde(flatten)]
     elephant: ElephantRuntimeTuning,
+    reflect_budget_tokens: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1154,6 +1162,7 @@ fn benchmark_prompt_hashes(runtime: &ElephantRuntime) -> BenchmarkPromptHashes {
 fn benchmark_runtime_config(runtime: &ElephantRuntime) -> BenchmarkRuntimeConfig {
     BenchmarkRuntimeConfig {
         elephant: runtime.info.tuning.clone(),
+        reflect_budget_tokens: reflect_budget_tokens(),
     }
 }
 
@@ -2343,7 +2352,7 @@ async fn main() {
                     bank_id: bank_id_str.parse().unwrap(),
                     question: instance.question.clone(),
                     context: None,
-                    budget_tokens: REFLECT_BUDGET_TOKENS,
+                    budget_tokens: reflect_budget_tokens(),
                     temporal_context: Some(instance.question_date.clone()),
                 }),
             )

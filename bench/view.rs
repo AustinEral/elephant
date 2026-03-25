@@ -95,7 +95,8 @@ struct BenchmarkRuntimeConfig {
     #[serde(default)]
     retriever_limit: usize,
     #[serde(default)]
-    rerank_top_n: usize,
+    #[serde(alias = "rerank_top_n")]
+    max_facts: usize,
     #[serde(default)]
     reflect_max_iterations: usize,
     #[serde(default)]
@@ -773,10 +774,10 @@ fn view_single(output: &BenchmarkOutput, path: &str) {
             value: output.manifest.runtime_config.retriever_limit.to_string(),
         });
     }
-    if output.manifest.runtime_config.rerank_top_n > 0 {
+    if output.manifest.runtime_config.max_facts > 0 {
         config_rows.push(SingleConfigRow {
-            key: "rerank top-n".into(),
-            value: output.manifest.runtime_config.rerank_top_n.to_string(),
+            key: "max facts".into(),
+            value: output.manifest.runtime_config.max_facts.to_string(),
         });
     }
     if output.manifest.runtime_config.reflect_max_iterations > 0 {
@@ -1437,11 +1438,11 @@ fn main() {
             val_b: b.manifest.runtime_config.retriever_limit.to_string(),
         });
     }
-    if a.manifest.runtime_config.rerank_top_n > 0 || b.manifest.runtime_config.rerank_top_n > 0 {
+    if a.manifest.runtime_config.max_facts > 0 || b.manifest.runtime_config.max_facts > 0 {
         config_rows.push(ConfigRow {
-            key: "rerank top-n".into(),
-            val_a: a.manifest.runtime_config.rerank_top_n.to_string(),
-            val_b: b.manifest.runtime_config.rerank_top_n.to_string(),
+            key: "max facts".into(),
+            val_a: a.manifest.runtime_config.max_facts.to_string(),
+            val_b: b.manifest.runtime_config.max_facts.to_string(),
         });
     }
     if a.manifest.runtime_config.reflect_max_iterations > 0

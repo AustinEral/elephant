@@ -58,7 +58,7 @@ If you want to publish a benchmark externally, export a separate public bundle w
       "chunk_overlap_tokens": 64,
       "retriever_limit": 40,
       "recall_rrf_k": 60.0,
-      "rerank_top_n": 50,
+      "max_facts": 50,
       "reflect_max_iterations": 8,
       "reflect_max_tokens": null,
       "retain_extract_reasoning_effort": null,

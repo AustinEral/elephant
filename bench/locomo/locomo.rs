@@ -637,7 +637,7 @@ fn benchmark_prompt_hashes(runtime: &ElephantRuntime) -> BenchmarkPromptHashes {
 fn benchmark_runtime_config(runtime: &ElephantRuntime) -> BenchmarkRuntimeConfig {
     BenchmarkRuntimeConfig {
         elephant: runtime.info.tuning.clone(),
-        reflect_budget_tokens: REFLECT_BUDGET_TOKENS,
+        reflect_budget_tokens: reflect_budget_tokens(),
         judge_temperature: common::judge::JUDGE_TEMPERATURE,
         judge_max_tokens: common::judge::JUDGE_MAX_TOKENS,
         judge_max_attempts: common::judge::JUDGE_MAX_ATTEMPTS,
@@ -674,7 +674,15 @@ async fn finalize_bank_stats(
 // --- LLM Judge (delegated to common::judge) ---
 
 const JUDGE_PROMPT: &str = include_str!("judge_answer.txt");
-const REFLECT_BUDGET_TOKENS: usize = 4096;
+
+fn reflect_budget_tokens() -> usize {
+    match env::var("LOCOMO_REFLECT_BUDGET_TOKENS") {
+        Ok(value) => value.parse::<usize>().unwrap_or_else(|_| {
+            panic!("LOCOMO_REFLECT_BUDGET_TOKENS must be a positive integer, got: {value}")
+        }),
+        Err(_) => 4096,
+    }
+}
 
 fn build_judge_client(
     metrics: Arc<MetricsCollector>,
@@ -3190,7 +3198,7 @@ async fn run_conversation(
                             bank_id,
                             question: question.clone(),
                             context: None,
-                            budget_tokens: REFLECT_BUDGET_TOKENS,
+                            budget_tokens: reflect_budget_tokens(),
                             temporal_context: temporal_context.clone(),
                         })
                         .await;

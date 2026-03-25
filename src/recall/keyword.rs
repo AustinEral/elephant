@@ -90,13 +90,7 @@ mod tests {
         store.insert_facts(&facts).await.unwrap();
 
         let retriever = KeywordRetriever::new(store, 10);
-        let query = RecallQuery {
-            bank_id: bank,
-            query: "Rust".into(),
-            budget_tokens: 1000,
-            network_filter: None,
-            temporal_anchor: None,
-        };
+        let query = RecallQuery::new(bank, "Rust").with_budget_tokens(1000);
 
         let results = retriever.retrieve(&query).await.unwrap();
         assert_eq!(results.len(), 1);

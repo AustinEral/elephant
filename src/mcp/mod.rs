@@ -168,13 +168,14 @@ impl RetainParams {
 
 impl RecallParams {
     fn into_query(self) -> Result<RecallQuery, rmcp::ErrorData> {
-        Ok(RecallQuery {
-            bank_id: parse_bank_id(&self.bank_id)?,
-            query: self.query,
-            budget_tokens: self.max_tokens,
-            network_filter: None,
-            temporal_anchor: self.temporal_anchor,
-        })
+        let mut query =
+            RecallQuery::new(parse_bank_id(&self.bank_id)?, self.query).with_budget_tokens(
+                self.max_tokens,
+            );
+        if let Some(anchor) = self.temporal_anchor {
+            query = query.with_temporal_anchor(anchor);
+        }
+        Ok(query)
     }
 }
 
@@ -664,7 +665,7 @@ mod tests {
             .expect("recall query should be captured");
         assert_eq!(captured.bank_id, bank_id);
         assert_eq!(captured.query, "release notes");
-        assert_eq!(captured.budget_tokens, 1234);
+        assert_eq!(captured.budget_tokens, Some(1234));
         let anchor = captured.temporal_anchor.expect("temporal anchor should be preserved");
         assert_eq!(
             anchor.start.expect("start").to_rfc3339(),

@@ -217,13 +217,7 @@ mod tests {
         };
 
         let retriever = GraphRetriever::new(store, embeddings, config);
-        let query = RecallQuery {
-            bank_id: bank,
-            query: "seed fact".into(),
-            budget_tokens: 1000,
-            network_filter: None,
-            temporal_anchor: None,
-        };
+        let query = RecallQuery::new(bank, "seed fact").with_budget_tokens(1000);
 
         let results = retriever.retrieve(&query).await.unwrap();
         assert!(results.len() >= 2);
@@ -239,13 +233,7 @@ mod tests {
         let embeddings = Arc::new(MockEmbeddings::new(8));
 
         let retriever = GraphRetriever::new(store, embeddings, GraphRetrieverConfig::default());
-        let query = RecallQuery {
-            bank_id: BankId::new(),
-            query: "anything".into(),
-            budget_tokens: 1000,
-            network_filter: None,
-            temporal_anchor: None,
-        };
+        let query = RecallQuery::new(BankId::new(), "anything").with_budget_tokens(1000);
 
         let results = retriever.retrieve(&query).await.unwrap();
         assert!(results.is_empty());

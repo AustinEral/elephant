@@ -44,13 +44,7 @@ impl HierarchyAssembler for DefaultHierarchyAssembler {
         // Single unified recall — no network filter, full budget.
         let result = self
             .recall
-            .recall(&RecallQuery {
-                bank_id,
-                query: query.to_string(),
-                budget_tokens: budget,
-                network_filter: None,
-                temporal_anchor: None,
-            })
+            .recall(&RecallQuery::new(bank_id, query).with_budget_tokens(budget))
             .await?;
 
         let total_tokens = result.total_tokens;
@@ -188,6 +182,7 @@ mod tests {
             Box::new(EstimateTokenizer),
             60.0,
             50,
+            4096,
         ))
     }
 

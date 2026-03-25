@@ -69,8 +69,9 @@ pub struct RuntimeTuning {
     pub retriever_limit: usize,
     /// RRF fusion constant.
     pub recall_rrf_k: f32,
-    /// Top-N passed through reranking.
-    pub rerank_top_n: usize,
+    /// Maximum number of facts kept per recall call before token budgeting.
+    #[serde(alias = "rerank_top_n")]
+    pub max_facts: usize,
     /// Reflect tool-loop iteration cap.
     pub reflect_max_iterations: usize,
     /// Reflect completion cap.
@@ -311,7 +312,7 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
         .and_then(|s| s.parse().ok())
         .unwrap_or(40);
     let recall_rrf_k = 60.0;
-    let rerank_top_n: usize = env::var("RERANK_TOP_N")
+    let max_facts: usize = env::var("MAX_FACTS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(50);
@@ -331,7 +332,8 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
         reranker,
         Box::new(EstimateTokenizer),
         recall_rrf_k,
-        rerank_top_n,
+        max_facts,
+        4096,
     ));
 
     let reflect_max_iter: usize = env::var("REFLECT_MAX_ITERATIONS")
@@ -416,7 +418,7 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
                 dedup_threshold,
                 retriever_limit,
                 recall_rrf_k,
-                rerank_top_n,
+                max_facts,
                 reflect_max_iterations: reflect_max_iter,
                 reflect_max_tokens,
                 retain_extract_reasoning_effort: reasoning_effort.retain_extract,

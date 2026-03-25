@@ -59,12 +59,56 @@ pub struct RecallQuery {
     pub bank_id: BankId,
     /// Natural language query.
     pub query: String,
-    /// Maximum token budget for returned facts.
-    pub budget_tokens: usize,
+    /// Optional maximum token budget override for returned facts.
+    ///
+    /// `None` uses the recall pipeline's default budget for this call.
+    pub budget_tokens: Option<usize>,
+    /// Optional maximum number of facts to keep for this recall call.
+    ///
+    /// `None` uses the recall pipeline's default max facts for this call.
+    pub max_facts: Option<usize>,
     /// Optional network type filter.
     pub network_filter: Option<Vec<NetworkType>>,
     /// Optional temporal anchor for temporal retrieval.
     pub temporal_anchor: Option<TemporalRange>,
+}
+
+impl RecallQuery {
+    /// Create a recall query using pipeline defaults for optional overrides.
+    pub fn new(bank_id: BankId, query: impl Into<String>) -> Self {
+        Self {
+            bank_id,
+            query: query.into(),
+            budget_tokens: None,
+            max_facts: None,
+            network_filter: None,
+            temporal_anchor: None,
+        }
+    }
+
+    /// Override the recall budget for this call.
+    pub fn with_budget_tokens(mut self, budget_tokens: usize) -> Self {
+        self.budget_tokens = Some(budget_tokens);
+        self
+    }
+
+    /// Override the max facts limit for this call.
+    pub fn with_max_facts(mut self, max_facts: usize) -> Self {
+        self.max_facts = Some(max_facts);
+        self
+    }
+
+    /// Restrict recall to specific memory networks for this call.
+    pub fn with_network_filter(mut self, network_filter: Vec<NetworkType>) -> Self {
+        self.network_filter = Some(network_filter);
+        self
+    }
+
+    /// Apply a temporal anchor for this call.
+    pub fn with_temporal_anchor(mut self, temporal_anchor: TemporalRange) -> Self {
+        self.temporal_anchor = Some(temporal_anchor);
+        self
+    }
 }
 
 // --- Reflect pipeline ---
@@ -469,13 +513,24 @@ mod tests {
         let query = RecallQuery {
             bank_id: BankId::new(),
             query: "what happened?".into(),
-            budget_tokens: 2048,
+            budget_tokens: Some(2048),
+            max_facts: Some(32),
             network_filter: Some(vec![NetworkType::World, NetworkType::Experience]),
             temporal_anchor: None,
         };
         let json = serde_json::to_string(&query).unwrap();
         let back: RecallQuery = serde_json::from_str(&json).unwrap();
         assert_eq!(query, back);
+    }
+
+    #[test]
+    fn recall_query_roundtrip_without_optional_overrides() {
+        let bid = BankId::new();
+        let json = format!(r#"{{"bank_id":"{}","query":"test?"}}"#, bid);
+        let back: RecallQuery = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.query, "test?");
+        assert_eq!(back.budget_tokens, None);
+        assert_eq!(back.max_facts, None);
     }
 
     #[test]

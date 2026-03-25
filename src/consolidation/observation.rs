@@ -252,13 +252,12 @@ impl DefaultConsolidator {
                 .iter()
                 .map(|fact| {
                     let recall = self.recall.clone();
-                    let query = RecallQuery {
-                        bank_id,
-                        query: fact.content.clone(),
-                        budget_tokens: budget,
-                        network_filter: Some(vec![NetworkType::Observation]),
-                        temporal_anchor: fact.temporal_range.clone(),
-                    };
+                    let mut query = RecallQuery::new(bank_id, fact.content.clone())
+                        .with_budget_tokens(budget)
+                        .with_network_filter(vec![NetworkType::Observation]);
+                    if let Some(anchor) = fact.temporal_range.clone() {
+                        query = query.with_temporal_anchor(anchor);
+                    }
                     async move { recall.recall(&query).await }
                 })
                 .collect();

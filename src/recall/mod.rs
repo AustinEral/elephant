@@ -42,7 +42,8 @@ pub struct DefaultRecallPipeline {
     reranker: Box<dyn Reranker>,
     tokenizer: Box<dyn Tokenizer>,
     rrf_k: f32,
-    rerank_top_n: usize,
+    max_facts: usize,
+    budget_tokens: usize,
 }
 
 impl DefaultRecallPipeline {
@@ -56,7 +57,8 @@ impl DefaultRecallPipeline {
         reranker: Box<dyn Reranker>,
         tokenizer: Box<dyn Tokenizer>,
         rrf_k: f32,
-        rerank_top_n: usize,
+        max_facts: usize,
+        budget_tokens: usize,
     ) -> Self {
         Self {
             semantic,
@@ -66,7 +68,8 @@ impl DefaultRecallPipeline {
             reranker,
             tokenizer,
             rrf_k,
-            rerank_top_n,
+            max_facts,
+            budget_tokens,
         }
     }
 }
@@ -75,9 +78,13 @@ impl DefaultRecallPipeline {
 impl RecallPipeline for DefaultRecallPipeline {
     async fn recall(&self, query: &RecallQuery) -> Result<RecallResult> {
         let start = Instant::now();
+        let max_facts = query.max_facts.unwrap_or(self.max_facts);
+        let budget_tokens = query.budget_tokens.unwrap_or(self.budget_tokens);
         debug!(
             bank_id = %query.bank_id,
             query = query.query.as_str(),
+            budget_tokens,
+            max_facts,
             network_filter = ?query.network_filter,
             temporal_anchor = ?query.temporal_anchor,
             "recall_start"
@@ -95,14 +102,14 @@ impl RecallPipeline for DefaultRecallPipeline {
         let rankings = [semantic_r, keyword_r, graph_r, temporal_r];
         let fused = fusion::fuse_rankings(&rankings, self.rrf_k);
 
-        // Step 3: Rerank top N
+        // Step 3: Rerank candidates and keep up to the requested max facts.
         let reranked = self
             .reranker
-            .rerank(&query.query, fused, self.rerank_top_n)
+            .rerank(&query.query, fused, max_facts)
             .await?;
 
         // Step 4: Apply token budget
-        let budgeted = budget::apply_budget(&reranked, query.budget_tokens, &*self.tokenizer);
+        let budgeted = budget::apply_budget(&reranked, budget_tokens, &*self.tokenizer);
 
         let total_tokens: usize = budgeted
             .iter()
@@ -214,15 +221,10 @@ mod tests {
             Box::new(EstimateTokenizer),
             60.0,
             50,
+            4096,
         );
 
-        let query = RecallQuery {
-            bank_id: bank,
-            query: "Rust programming".into(),
-            budget_tokens: 1000,
-            network_filter: None,
-            temporal_anchor: None,
-        };
+        let query = RecallQuery::new(bank, "Rust programming").with_budget_tokens(1000);
 
         let result = pipeline.recall(&query).await.unwrap();
         assert!(!result.facts.is_empty());
@@ -261,16 +263,11 @@ mod tests {
             Box::new(EstimateTokenizer),
             60.0,
             50,
+            4096,
         );
 
         // Very small budget
-        let query = RecallQuery {
-            bank_id: bank,
-            query: "programming".into(),
-            budget_tokens: 20,
-            network_filter: None,
-            temporal_anchor: None,
-        };
+        let query = RecallQuery::new(bank, "programming").with_budget_tokens(20);
 
         let result = pipeline.recall(&query).await.unwrap();
         assert!(result.total_tokens <= 20);
@@ -308,15 +305,10 @@ mod tests {
             Box::new(EstimateTokenizer),
             60.0,
             50,
+            4096,
         );
 
-        let query = RecallQuery {
-            bank_id: bank,
-            query: "alpha".into(),
-            budget_tokens: 1000,
-            network_filter: None,
-            temporal_anchor: None,
-        };
+        let query = RecallQuery::new(bank, "alpha").with_budget_tokens(1000);
 
         let result = pipeline.recall(&query).await.unwrap();
         // MockReranker reverses, so the originally lower-scored fact should be first
@@ -346,15 +338,10 @@ mod tests {
             Box::new(EstimateTokenizer),
             60.0,
             50,
+            4096,
         );
 
-        let query = RecallQuery {
-            bank_id: bank,
-            query: "anything".into(),
-            budget_tokens: 1000,
-            network_filter: None,
-            temporal_anchor: None,
-        };
+        let query = RecallQuery::new(bank, "anything").with_budget_tokens(1000);
 
         let result = pipeline.recall(&query).await.unwrap();
         assert!(result.facts.is_empty());
@@ -397,16 +384,13 @@ mod tests {
             Box::new(EstimateTokenizer),
             60.0,
             50,
+            4096,
         );
 
         // Filter to Opinion only
-        let query = RecallQuery {
-            bank_id: bank,
-            query: "testing".into(),
-            budget_tokens: 1000,
-            network_filter: Some(vec![NetworkType::Opinion]),
-            temporal_anchor: None,
-        };
+        let query = RecallQuery::new(bank, "testing")
+            .with_budget_tokens(1000)
+            .with_network_filter(vec![NetworkType::Opinion]);
 
         let result = pipeline.recall(&query).await.unwrap();
         assert!(!result.facts.is_empty(), "should return opinion facts");
@@ -463,18 +447,15 @@ mod tests {
             Box::new(EstimateTokenizer),
             60.0,
             50,
+            4096,
         );
 
-        let query = RecallQuery {
-            bank_id: bank,
-            query: "release notes".into(),
-            budget_tokens: 1000,
-            network_filter: None,
-            temporal_anchor: Some(TemporalRange {
+        let query = RecallQuery::new(bank, "release notes")
+            .with_budget_tokens(1000)
+            .with_temporal_anchor(TemporalRange {
                 start: Some(dt(2024, 1, 1)),
                 end: Some(dt(2024, 1, 31)),
-            }),
-        };
+            });
 
         let result = pipeline.recall(&query).await.unwrap();
         assert_eq!(result.facts[0].fact.id, january_fact.id);
@@ -486,5 +467,84 @@ mod tests {
             result.facts.iter().any(|sf| sf.fact.id != january_fact.id),
             "out-of-range facts from non-temporal channels should still be eligible"
         );
+    }
+
+    #[tokio::test]
+    async fn per_call_max_facts_limits_results_without_changing_defaults() {
+        let store = Arc::new(MockMemoryStore::new());
+        let embeddings = Arc::new(MockEmbeddings::new(8));
+        let bank = create_test_bank(&store, 8).await;
+
+        let emb = embeddings.embed(&["release notes"]).await.unwrap();
+        let fact_a = make_fact_with_embedding(bank, "release notes for alpha", emb[0].clone());
+        let fact_b = make_fact_with_embedding(bank, "release notes for beta", emb[0].clone());
+        store.insert_facts(&[fact_a, fact_b]).await.unwrap();
+
+        let pipeline = DefaultRecallPipeline::new(
+            Box::new(SemanticRetriever::new(
+                store.clone(),
+                embeddings.clone(),
+                10,
+            )),
+            Box::new(KeywordRetriever::new(store.clone(), 10)),
+            Box::new(GraphRetriever::new(
+                store.clone(),
+                embeddings.clone(),
+                GraphRetrieverConfig::default(),
+            )),
+            Box::new(TemporalRetriever::new(store.clone())),
+            Box::new(NoOpReranker),
+            Box::new(EstimateTokenizer),
+            60.0,
+            50,
+            4096,
+        );
+
+        let query = RecallQuery::new(bank, "release notes")
+            .with_budget_tokens(1000)
+            .with_max_facts(1);
+
+        let result = pipeline.recall(&query).await.unwrap();
+        assert_eq!(result.facts.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn pipeline_uses_default_budget_when_query_omits_it() {
+        let store = Arc::new(MockMemoryStore::new());
+        let embeddings = Arc::new(MockEmbeddings::new(8));
+        let bank = create_test_bank(&store, 8).await;
+
+        let mut facts = Vec::new();
+        for i in 0..20 {
+            let content = format!("Fact number {i} about programming");
+            let emb = embeddings.embed(&[content.as_str()]).await.unwrap();
+            facts.push(make_fact_with_embedding(bank, &content, emb[0].clone()));
+        }
+        store.insert_facts(&facts).await.unwrap();
+
+        let pipeline = DefaultRecallPipeline::new(
+            Box::new(SemanticRetriever::new(
+                store.clone(),
+                embeddings.clone(),
+                20,
+            )),
+            Box::new(KeywordRetriever::new(store.clone(), 20)),
+            Box::new(GraphRetriever::new(
+                store.clone(),
+                embeddings.clone(),
+                GraphRetrieverConfig::default(),
+            )),
+            Box::new(TemporalRetriever::new(store.clone())),
+            Box::new(NoOpReranker),
+            Box::new(EstimateTokenizer),
+            60.0,
+            50,
+            20,
+        );
+
+        let query = RecallQuery::new(bank, "programming");
+
+        let result = pipeline.recall(&query).await.unwrap();
+        assert!(result.total_tokens <= 20);
     }
 }

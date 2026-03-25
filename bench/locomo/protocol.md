@@ -41,7 +41,7 @@ Per the [LoCoMo evaluation protocol](https://arxiv.org/abs/2402.17753), images a
 | Retrieval channels | 4 (semantic, keyword, graph, temporal) | — |
 | Fusion | Reciprocal Rank Fusion (RRF) | — |
 | Retriever limit | 20 per channel | `RETRIEVER_LIMIT` |
-| Rerank top-N | 50 | `RERANK_TOP_N` |
+| Max facts | 50 | `MAX_FACTS` |
 | Reranker max seq length | 512 tokens | `RERANKER_MAX_SEQ_LEN` |
 
 ## Memory Config
