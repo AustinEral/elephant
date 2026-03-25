@@ -223,13 +223,13 @@ impl DefaultReflectPipeline {
         sections.join("\n\n")
     }
 
-    fn reference_now(temporal_context: Option<&str>) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+    fn reference_now(
+        temporal_context: Option<&str>,
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
         match temporal_context {
-            Some(raw) => parse_reference_datetime(raw)
-                .map(Some)
-                .ok_or_else(|| crate::error::Error::Configuration(format!(
-                    "invalid temporal_context: {raw}"
-                ))),
+            Some(raw) => parse_reference_datetime(raw).map(Some).ok_or_else(|| {
+                crate::error::Error::Configuration(format!("invalid temporal_context: {raw}"))
+            }),
             None => Ok(None),
         }
     }
@@ -353,10 +353,7 @@ impl DefaultReflectPipeline {
                         if let Some(anchor) = temporal_anchor {
                             recall_query = recall_query.with_temporal_anchor(anchor);
                         }
-                        let result = self
-                            .recall
-                            .recall(&recall_query)
-                            .await?;
+                        let result = self.recall.recall(&recall_query).await?;
                         let recall_ms = recall_start.elapsed().as_millis() as u64;
 
                         // Deduplicate facts across iterations
@@ -2034,13 +2031,12 @@ mod tests {
     fn temporal_context_drives_relative_temporal_anchor() {
         let reference_now =
             DefaultReflectPipeline::reference_now(Some("2023/05/25 (Thu) 14:30")).unwrap();
-        let anchor =
-            DefaultReflectPipeline::temporal_anchor_for_search(
-                reference_now,
-                "what happened last week?",
-                None,
-            )
-                .unwrap();
+        let anchor = DefaultReflectPipeline::temporal_anchor_for_search(
+            reference_now,
+            "what happened last week?",
+            None,
+        )
+        .unwrap();
 
         assert_eq!(anchor.start.unwrap().date_naive().to_string(), "2023-05-18");
         assert_eq!(anchor.end.unwrap().date_naive().to_string(), "2023-05-25");
@@ -2049,16 +2045,21 @@ mod tests {
     #[test]
     fn date_only_temporal_context_keeps_today_queries_inclusive() {
         let reference_now = DefaultReflectPipeline::reference_now(Some("2023-05-25")).unwrap();
-        let anchor =
-            DefaultReflectPipeline::temporal_anchor_for_search(
-                reference_now,
-                "what happened today?",
-                None,
-            )
-                .unwrap();
+        let anchor = DefaultReflectPipeline::temporal_anchor_for_search(
+            reference_now,
+            "what happened today?",
+            None,
+        )
+        .unwrap();
 
-        assert_eq!(anchor.start.unwrap().to_rfc3339(), "2023-05-25T00:00:00+00:00");
-        assert_eq!(anchor.end.unwrap().to_rfc3339(), "2023-05-25T23:59:59+00:00");
+        assert_eq!(
+            anchor.start.unwrap().to_rfc3339(),
+            "2023-05-25T00:00:00+00:00"
+        );
+        assert_eq!(
+            anchor.end.unwrap().to_rfc3339(),
+            "2023-05-25T23:59:59+00:00"
+        );
     }
 
     #[test]

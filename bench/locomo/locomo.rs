@@ -4460,12 +4460,18 @@ mod tests {
                     "session_1".into(),
                     json!([{ "speaker": "Caroline", "dia_id": "D1:1", "text": "Hi" }]),
                 ),
-                ("session_1_date_time".into(), json!("1:56 pm on 8 May, 2023")),
+                (
+                    "session_1_date_time".into(),
+                    json!("1:56 pm on 8 May, 2023"),
+                ),
                 (
                     "session_2".into(),
                     json!([{ "speaker": "Melanie", "dia_id": "D2:1", "text": "Hello" }]),
                 ),
-                ("session_2_date_time".into(), json!("9:15 am on 10 June, 2023")),
+                (
+                    "session_2_date_time".into(),
+                    json!("9:15 am on 10 June, 2023"),
+                ),
             ]),
         };
 
