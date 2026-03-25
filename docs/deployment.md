@@ -53,7 +53,7 @@ Elephant needs:
 Default ports:
 
 - Elephant API + MCP: `3001`
-- local Postgres in the provided Compose stack: `5433`
+- local Postgres in the provided Compose stack: `5434`
 
 The server auto-runs database migrations on startup.
 
@@ -85,7 +85,7 @@ This is the fastest path to a working self-hosted Elephant instance.
 
 The Compose setup:
 
-- exposes Postgres on host port `5433`
+- exposes Postgres on host port `5434`
 - exposes Elephant on host port `3001`
 - mounts a named Docker volume for Postgres persistence
 - sets container-safe model paths for ONNX runtime and local models
@@ -139,7 +139,7 @@ Point `DATABASE_URL` at a Postgres instance with `pgvector` enabled.
 Example:
 
 ```env
-DATABASE_URL=postgres://elephant:elephant@localhost:5433/elephant
+DATABASE_URL=postgres://elephant:elephant@localhost:5434/elephant
 LISTEN_ADDR=0.0.0.0:3001
 SERVER_AUTO_CONSOLIDATION=1
 SERVER_AUTO_CONSOLIDATION_MIN_FACTS=32

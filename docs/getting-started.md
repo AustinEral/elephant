@@ -125,7 +125,7 @@ docker compose up -d postgres
 The default local database URL is already set in `.env.example`:
 
 ```text
-postgres://elephant:elephant@localhost:5433/elephant
+postgres://elephant:elephant@localhost:5434/elephant
 ```
 
 ### 2. Copy and edit `.env`
