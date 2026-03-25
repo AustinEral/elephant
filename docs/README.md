@@ -16,6 +16,7 @@
 
 - **[architecture.md](architecture.md)** — system design overview
 - **[getting-started.md](getting-started.md)** — one path from zero to a running Elephant server
+- **[codex.md](codex.md)** — Codex setup for repo users and Docker/global installs
 - **[api.md](api.md)** — REST and MCP surface reference
 - **[deployment.md](deployment.md)** — supported deployment modes and operational guidance
 

@@ -97,6 +97,7 @@ curl localhost:3001/v1/banks/$BANK_ID/reflect \
 ```
 
 For a cleaner source-install path, see [docs/getting-started.md](docs/getting-started.md).
+For Codex-specific setup, including Docker-only MCP installation, see [docs/codex.md](docs/codex.md).
 
 ### MCP
 
@@ -114,6 +115,12 @@ The same server speaks [MCP](https://modelcontextprotocol.io/) natively. Point a
 ```
 
 Five tools: **retain** · **recall** · **reflect** · **list_banks** · **create_bank**
+
+For Codex, this repository also includes:
+
+- [`.codex/config.toml`](.codex/config.toml) for trusted project setup
+- [`AGENTS.md`](AGENTS.md) to help Codex use Elephant automatically
+- [`scripts/install-codex-mcp.sh`](scripts/install-codex-mcp.sh) for global Codex MCP installation
 
 ### Building from source
 
