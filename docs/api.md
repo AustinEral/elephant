@@ -324,12 +324,16 @@ The MCP surface is intentionally narrower than the REST API. It is designed for 
 
 ### MCP tool notes
 
+- `list_banks`
+  - returns an array of bank objects
+  - each bank object includes an `active_runtime` snapshot with the running server's model labels and tuning
 - `get_bank`
   - accepts `bank_id`
-  - returns the matching bank
+  - returns the matching bank plus an `active_runtime` snapshot of the running server config
 - `create_bank`
   - accepts required `name` and optional `mission`
   - always creates a new bank with a generated ID
+  - returns the new bank plus an `active_runtime` snapshot of the running server config
 - `retain`
   - accepts `bank_id`, `content`, optional `context`, optional `timestamp`
   - invalid `timestamp` values are rejected
@@ -339,6 +343,54 @@ The MCP surface is intentionally narrower than the REST API. It is designed for 
 - `reflect`
   - accepts `bank_id`, `query`, optional `context`, optional `temporal_context`, and `budget` (`low`, `mid`, `high`)
   - invalid `temporal_context` values are rejected
+
+Example bank-tool response shape:
+
+```json
+{
+  "id": "01KMCM5R8X4T25KEZWYH0D3NMR",
+  "name": "demo",
+  "mission": "Remember user facts, events, and preferences",
+  "directives": ["Never fabricate facts"],
+  "disposition": {
+    "skepticism": 3,
+    "literalism": 3,
+    "empathy": 3,
+    "bias_strength": 0.5
+  },
+  "embedding_model": "bge-small-en-v1.5",
+  "embedding_dimensions": 384,
+  "active_runtime": {
+    "version": "0.1.0",
+    "models": {
+      "retain": "openai/gpt-5.4-mini",
+      "reflect": "openai/gpt-5.4-mini",
+      "embedding": "local/bge-small-en-v1.5",
+      "reranker": "local/ms-marco-MiniLM-L-6-v2"
+    },
+    "retrieval": {
+      "retriever_limit": 40,
+      "max_facts": 50
+    },
+    "reflect": {
+      "max_iterations": 8,
+      "max_tokens": null,
+      "source_lookup_enabled": true
+    },
+    "consolidation": {
+      "batch_size": 8,
+      "max_tokens": 4096,
+      "recall_budget": 512
+    },
+    "server_consolidation": {
+      "enabled": true,
+      "min_facts": 32,
+      "cooldown_secs": 30,
+      "merge_opinions_after": false
+    }
+  }
+}
+```
 
 ## Related Docs
 

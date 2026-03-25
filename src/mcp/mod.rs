@@ -8,9 +8,10 @@ use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
+use serde::Serialize;
 
 use crate::server::AppState;
-use crate::types::{BankId, RecallQuery, ReflectQuery, RetainInput};
+use crate::types::{BankId, MemoryBank, RecallQuery, ReflectQuery, RetainInput};
 
 // ---------------------------------------------------------------------------
 // Parameter types
@@ -148,6 +149,13 @@ fn json_text<T: serde::Serialize>(val: &T) -> Result<String, rmcp::ErrorData> {
         .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))
 }
 
+#[derive(Serialize)]
+struct McpBankView {
+    #[serde(flatten)]
+    bank: MemoryBank,
+    active_runtime: crate::server::ServerInfo,
+}
+
 impl RetainParams {
     fn into_input(self) -> Result<RetainInput, rmcp::ErrorData> {
         Ok(RetainInput {
@@ -207,6 +215,13 @@ impl ElephantMcp {
             tool_router: Self::tool_router(),
         }
     }
+
+    fn bank_view(&self, bank: MemoryBank) -> McpBankView {
+        McpBankView {
+            bank,
+            active_runtime: self.state.info.clone(),
+        }
+    }
 }
 
 #[tool_router(router = tool_router)]
@@ -263,7 +278,9 @@ impl ElephantMcp {
     // --- Bank management ---
 
     /// List all available memory banks.
-    #[tool(description = "List all available memory banks.")]
+    #[tool(
+        description = "List all available memory banks, including active runtime configuration."
+    )]
     async fn list_banks(&self) -> Result<String, String> {
         let banks = self
             .state
@@ -271,11 +288,12 @@ impl ElephantMcp {
             .list_banks()
             .await
             .map_err(|e| e.to_string())?;
-        json_text(&banks).map_err(|e| e.message.to_string())
+        let views: Vec<McpBankView> = banks.into_iter().map(|bank| self.bank_view(bank)).collect();
+        json_text(&views).map_err(|e| e.message.to_string())
     }
 
     /// Get one memory bank by ID.
-    #[tool(description = "Get one memory bank by ID.")]
+    #[tool(description = "Get one memory bank by ID, including active runtime configuration.")]
     async fn get_bank(
         &self,
         Parameters(params): Parameters<GetBankParams>,
@@ -286,16 +304,18 @@ impl ElephantMcp {
             .get_bank(parse_bank_id(&params.bank_id).map_err(|e| e.message.to_string())?)
             .await
             .map_err(|e| e.to_string())?;
-        json_text(&bank).map_err(|e| e.message.to_string())
+        json_text(&self.bank_view(bank)).map_err(|e| e.message.to_string())
     }
 
     /// Create a new memory bank.
-    #[tool(description = "Create a new memory bank.")]
+    #[tool(
+        description = "Create a new memory bank and return it with active runtime configuration."
+    )]
     async fn create_bank(
         &self,
         Parameters(params): Parameters<CreateBankParams>,
     ) -> Result<String, String> {
-        use crate::types::{Disposition, MemoryBank};
+        use crate::types::Disposition;
 
         let id = BankId::new();
         let name = require_text(params.name, "name").map_err(|e| e.message.to_string())?;
@@ -315,7 +335,7 @@ impl ElephantMcp {
             .create_bank(&bank)
             .await
             .map_err(|e| e.to_string())?;
-        json_text(&bank).map_err(|e| e.message.to_string())
+        json_text(&self.bank_view(bank)).map_err(|e| e.message.to_string())
     }
 }
 
@@ -603,11 +623,19 @@ mod tests {
             .await
             .expect("get_bank should succeed");
 
-        let bank: MemoryBank = serde_json::from_str(&raw).expect("get_bank returns bank json");
+        let value: serde_json::Value =
+            serde_json::from_str(&raw).expect("get_bank returns json object");
+        let bank: MemoryBank =
+            serde_json::from_value(value.clone()).expect("get_bank returns bank fields");
         assert_eq!(bank.id, existing_bank.id);
         assert_eq!(bank.name, "engineering");
         assert_eq!(bank.mission, "remember project decisions");
         assert_eq!(bank.disposition, Disposition::default());
+        assert_eq!(value["active_runtime"]["models"]["retain"], "test");
+        assert_eq!(value["active_runtime"]["models"]["reflect"], "test");
+        assert_eq!(value["active_runtime"]["models"]["embedding"], "mock");
+        assert_eq!(value["active_runtime"]["models"]["reranker"], "none");
+        assert_eq!(value["active_runtime"]["retrieval"]["retriever_limit"], 20);
     }
 
     #[tokio::test]
@@ -626,10 +654,54 @@ mod tests {
             .await
             .expect("create_bank should succeed");
 
-        let bank: MemoryBank = serde_json::from_str(&raw).expect("create_bank returns bank json");
+        let value: serde_json::Value =
+            serde_json::from_str(&raw).expect("create_bank returns json object");
+        let bank: MemoryBank =
+            serde_json::from_value(value.clone()).expect("create_bank returns bank fields");
         assert_eq!(bank.name, "engineering");
         assert_eq!(bank.mission, "remember project decisions");
         assert_eq!(bank.disposition, Disposition::default());
+        assert_eq!(value["active_runtime"]["models"]["retain"], "test");
+        assert_eq!(value["active_runtime"]["models"]["reflect"], "test");
+        assert_eq!(value["active_runtime"]["models"]["embedding"], "mock");
+        assert_eq!(value["active_runtime"]["reflect"]["max_iterations"], 8);
+    }
+
+    #[tokio::test]
+    async fn list_banks_tool_includes_active_runtime_configuration() {
+        let retained = Arc::new(Mutex::new(None));
+        let recalled = Arc::new(Mutex::new(None));
+        let reflected = Arc::new(Mutex::new(None));
+        let store = Arc::new(MockMemoryStore::new());
+        let bank = MemoryBank {
+            id: BankId::new(),
+            name: "engineering".into(),
+            mission: "remember project decisions".into(),
+            directives: vec![],
+            disposition: Disposition::default(),
+            embedding_model: "mock".into(),
+            embedding_dimensions: 384,
+        };
+        store
+            .create_bank(&bank)
+            .await
+            .expect("seed bank should succeed");
+        let mcp = ElephantMcp::new(test_state(retained, recalled, reflected, store));
+
+        let raw = mcp.list_banks().await.expect("list_banks should succeed");
+
+        let value: serde_json::Value =
+            serde_json::from_str(&raw).expect("list_banks returns json array");
+        let banks = value.as_array().expect("list_banks returns an array");
+        assert_eq!(banks.len(), 1);
+        assert_eq!(banks[0]["id"], bank.id.to_string());
+        assert_eq!(banks[0]["name"], "engineering");
+        assert_eq!(banks[0]["active_runtime"]["models"]["retain"], "test");
+        assert_eq!(banks[0]["active_runtime"]["models"]["embedding"], "mock");
+        assert_eq!(
+            banks[0]["active_runtime"]["server_consolidation"]["enabled"],
+            true
+        );
     }
 
     #[tokio::test]
