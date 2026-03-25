@@ -58,12 +58,7 @@ impl LocalReranker {
 
 #[async_trait]
 impl Reranker for LocalReranker {
-    async fn rerank(
-        &self,
-        query: &str,
-        mut facts: Vec<ScoredFact>,
-        top_k: usize,
-    ) -> Result<Vec<ScoredFact>> {
+    async fn rerank(&self, query: &str, mut facts: Vec<ScoredFact>) -> Result<Vec<ScoredFact>> {
         if facts.is_empty() {
             return Ok(facts);
         }
@@ -88,7 +83,6 @@ impl Reranker for LocalReranker {
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        facts.truncate(top_k);
         Ok(facts)
     }
 }
@@ -188,7 +182,7 @@ mod tests {
         ];
 
         let result = reranker
-            .rerank("programming language", facts, 3)
+            .rerank("programming language", facts)
             .await
             .unwrap();
 
@@ -202,7 +196,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires cross-encoder model files"]
-    async fn rerank_truncates() {
+    async fn rerank_preserves_all_facts() {
         let reranker = LocalReranker::new(&model_dir(), 512).unwrap();
 
         let facts = vec![
@@ -211,15 +205,15 @@ mod tests {
             make_scored("fact three"),
         ];
 
-        let result = reranker.rerank("query", facts, 2).await.unwrap();
-        assert_eq!(result.len(), 2);
+        let result = reranker.rerank("query", facts).await.unwrap();
+        assert_eq!(result.len(), 3);
     }
 
     #[tokio::test]
     #[ignore = "requires cross-encoder model files"]
     async fn rerank_empty_input() {
         let reranker = LocalReranker::new(&model_dir(), 512).unwrap();
-        let result = reranker.rerank("query", vec![], 10).await.unwrap();
+        let result = reranker.rerank("query", vec![]).await.unwrap();
         assert!(result.is_empty());
     }
 

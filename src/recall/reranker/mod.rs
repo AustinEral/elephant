@@ -15,7 +15,7 @@ pub enum RerankerProvider {
     Local,
     /// Remote rerank API (Cohere-compatible).
     Api,
-    /// No reranking — truncation only.
+    /// No reranking — preserve fused order.
     None,
 }
 
@@ -113,27 +113,16 @@ pub fn format_reranker_input(fact: &crate::types::ScoredFact) -> String {
 /// Reranks a set of scored facts, typically using a cross-encoder or similar model.
 #[async_trait]
 pub trait Reranker: Send + Sync {
-    /// Rerank the given facts for the query, returning at most `top_k` results.
-    async fn rerank(
-        &self,
-        query: &str,
-        facts: Vec<ScoredFact>,
-        top_k: usize,
-    ) -> Result<Vec<ScoredFact>>;
+    /// Rerank the given facts for the query, returning all facts in relevance order.
+    async fn rerank(&self, query: &str, facts: Vec<ScoredFact>) -> Result<Vec<ScoredFact>>;
 }
 
-/// No-op reranker that simply truncates to top_k.
+/// No-op reranker that preserves the incoming order.
 pub struct NoOpReranker;
 
 #[async_trait]
 impl Reranker for NoOpReranker {
-    async fn rerank(
-        &self,
-        _query: &str,
-        mut facts: Vec<ScoredFact>,
-        top_k: usize,
-    ) -> Result<Vec<ScoredFact>> {
-        facts.truncate(top_k);
+    async fn rerank(&self, _query: &str, facts: Vec<ScoredFact>) -> Result<Vec<ScoredFact>> {
         Ok(facts)
     }
 }
@@ -143,14 +132,8 @@ pub struct MockReranker;
 
 #[async_trait]
 impl Reranker for MockReranker {
-    async fn rerank(
-        &self,
-        _query: &str,
-        mut facts: Vec<ScoredFact>,
-        top_k: usize,
-    ) -> Result<Vec<ScoredFact>> {
+    async fn rerank(&self, _query: &str, mut facts: Vec<ScoredFact>) -> Result<Vec<ScoredFact>> {
         facts.reverse();
-        facts.truncate(top_k);
         Ok(facts)
     }
 }
@@ -186,21 +169,22 @@ mod tests {
 
     #[tokio::test]
     async fn noop_empty_input() {
-        let result = NoOpReranker.rerank("query", vec![], 10).await.unwrap();
+        let result = NoOpReranker.rerank("query", vec![]).await.unwrap();
         assert!(result.is_empty());
     }
 
     #[tokio::test]
-    async fn noop_truncates() {
+    async fn noop_preserves_all_facts() {
         let facts = vec![
             make_scored("a", 1.0),
             make_scored("b", 0.9),
             make_scored("c", 0.8),
         ];
-        let result = NoOpReranker.rerank("query", facts, 2).await.unwrap();
-        assert_eq!(result.len(), 2);
+        let result = NoOpReranker.rerank("query", facts).await.unwrap();
+        assert_eq!(result.len(), 3);
         assert_eq!(result[0].fact.content, "a");
         assert_eq!(result[1].fact.content, "b");
+        assert_eq!(result[2].fact.content, "c");
     }
 
     #[tokio::test]
@@ -210,7 +194,7 @@ mod tests {
             make_scored("b", 0.9),
             make_scored("c", 0.8),
         ];
-        let result = NoOpReranker.rerank("query", facts, 10).await.unwrap();
+        let result = NoOpReranker.rerank("query", facts).await.unwrap();
         assert_eq!(result.len(), 3);
         assert_eq!(result[0].fact.content, "a");
         assert_eq!(result[1].fact.content, "b");
@@ -219,7 +203,7 @@ mod tests {
 
     #[tokio::test]
     async fn mock_empty_input() {
-        let result = MockReranker.rerank("query", vec![], 10).await.unwrap();
+        let result = MockReranker.rerank("query", vec![]).await.unwrap();
         assert!(result.is_empty());
     }
 
@@ -230,7 +214,7 @@ mod tests {
             make_scored("b", 0.9),
             make_scored("c", 0.8),
         ];
-        let result = MockReranker.rerank("query", facts, 3).await.unwrap();
+        let result = MockReranker.rerank("query", facts).await.unwrap();
         assert_eq!(result[0].fact.content, "c");
         assert_eq!(result[1].fact.content, "b");
         assert_eq!(result[2].fact.content, "a");

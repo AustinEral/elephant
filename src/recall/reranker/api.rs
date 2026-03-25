@@ -51,12 +51,7 @@ struct RerankResult {
 
 #[async_trait]
 impl Reranker for ApiReranker {
-    async fn rerank(
-        &self,
-        query: &str,
-        facts: Vec<ScoredFact>,
-        top_k: usize,
-    ) -> Result<Vec<ScoredFact>> {
+    async fn rerank(&self, query: &str, facts: Vec<ScoredFact>) -> Result<Vec<ScoredFact>> {
         if facts.is_empty() {
             return Ok(facts);
         }
@@ -67,8 +62,8 @@ impl Reranker for ApiReranker {
         let request = RerankRequest {
             model: &self.model,
             query,
+            top_n: documents.len(),
             documents,
-            top_n: top_k,
         };
 
         let response = self
@@ -101,7 +96,6 @@ impl Reranker for ApiReranker {
             .map(|r| (r.index, r.relevance_score))
             .collect();
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(top_k);
 
         let mut reranked = Vec::with_capacity(scored.len());
         for (idx, score) in scored {
@@ -147,7 +141,7 @@ mod tests {
     #[tokio::test]
     async fn empty_input_returns_empty() {
         let reranker = ApiReranker::new("key".into(), "http://localhost:1".into(), "model".into());
-        let result = reranker.rerank("query", vec![], 10).await.unwrap();
+        let result = reranker.rerank("query", vec![]).await.unwrap();
         assert!(result.is_empty());
     }
 
@@ -185,7 +179,7 @@ mod tests {
             make_scored("gamma", 0.5),
         ];
 
-        let result = reranker.rerank("query", facts, 3).await.unwrap();
+        let result = reranker.rerank("query", facts).await.unwrap();
         assert_eq!(result.len(), 3);
         // Sorted by relevance_score descending
         assert_eq!(result[0].fact.content, "gamma");
@@ -197,7 +191,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn top_k_limits_results() {
+    async fn returns_all_api_results_in_relevance_order() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
@@ -220,8 +214,7 @@ mod tests {
 
         let facts = vec![make_scored("first", 0.5), make_scored("second", 0.5)];
 
-        // API already returns top_n=2 from server, but we asked for it
-        let result = reranker.rerank("query", facts, 2).await.unwrap();
+        let result = reranker.rerank("query", facts).await.unwrap();
         assert_eq!(result.len(), 2);
     }
 
@@ -243,7 +236,7 @@ mod tests {
         let reranker = ApiReranker::new("key".into(), format!("http://{addr}"), "model".into());
 
         let facts = vec![make_scored("test", 0.5)];
-        let err = reranker.rerank("query", facts, 1).await.unwrap_err();
+        let err = reranker.rerank("query", facts).await.unwrap_err();
         assert!(matches!(err, Error::Reranker(_)));
         assert!(err.to_string().contains("500"));
     }

@@ -102,14 +102,15 @@ impl RecallPipeline for DefaultRecallPipeline {
         let rankings = [semantic_r, keyword_r, graph_r, temporal_r];
         let fused = fusion::fuse_rankings(&rankings, self.rrf_k);
 
-        // Step 3: Rerank candidates and keep up to the requested max facts.
-        let reranked = self
-            .reranker
-            .rerank(&query.query, fused, max_facts)
-            .await?;
+        // Step 3: Rerank candidates.
+        let reranked = self.reranker.rerank(&query.query, fused).await?;
 
-        // Step 4: Apply token budget
-        let budgeted = budget::apply_budget(&reranked, budget_tokens, &*self.tokenizer);
+        // Step 4: Limit to the requested max facts.
+        let mut limited = reranked;
+        limited.truncate(max_facts);
+
+        // Step 5: Apply token budget.
+        let budgeted = budget::apply_budget(&limited, budget_tokens, &*self.tokenizer);
 
         let total_tokens: usize = budgeted
             .iter()
