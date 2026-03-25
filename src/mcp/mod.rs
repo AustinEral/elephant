@@ -11,7 +11,10 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::server::AppState;
-use crate::types::{BankId, MemoryBank, RecallQuery, ReflectQuery, RetainInput};
+use crate::types::{
+    BankId, Fact, FactId, MemoryBank, RecallQuery, ReflectQuery, RetainInput, RetrievalSource,
+    TemporalRange, TurnId,
+};
 
 // ---------------------------------------------------------------------------
 // Parameter types
@@ -156,6 +159,44 @@ struct McpBankView {
     active_runtime: crate::server::ServerInfo,
 }
 
+#[derive(Serialize)]
+struct McpRecallFactView {
+    id: FactId,
+    content: String,
+    score: f32,
+    network: crate::types::NetworkType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temporal_range: Option<TemporalRange>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_turn_id: Option<TurnId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    retrieval_sources: Vec<RetrievalSource>,
+}
+
+#[derive(Serialize)]
+struct McpRecallView {
+    facts: Vec<McpRecallFactView>,
+    total_tokens: usize,
+}
+
+#[derive(Serialize)]
+struct McpOpinionView {
+    id: FactId,
+    content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    confidence: Option<f32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    evidence_ids: Vec<FactId>,
+}
+
+#[derive(Serialize)]
+struct McpReflectView {
+    response: String,
+    sources: Vec<FactId>,
+    new_opinions: Vec<McpOpinionView>,
+    confidence: f32,
+}
+
 impl RetainParams {
     fn into_input(self) -> Result<RetainInput, rmcp::ErrorData> {
         Ok(RetainInput {
@@ -222,6 +263,47 @@ impl ElephantMcp {
             active_runtime: self.state.info.clone(),
         }
     }
+
+    fn recall_view(&self, result: crate::types::RecallResult) -> McpRecallView {
+        McpRecallView {
+            facts: result
+                .facts
+                .into_iter()
+                .map(|scored| McpRecallFactView {
+                    id: scored.fact.id,
+                    content: scored.fact.content,
+                    score: scored.score,
+                    network: scored.fact.network,
+                    temporal_range: scored.fact.temporal_range,
+                    source_turn_id: scored.fact.source_turn_id,
+                    retrieval_sources: scored.sources,
+                })
+                .collect(),
+            total_tokens: result.total_tokens,
+        }
+    }
+
+    fn opinion_view(&self, opinion: Fact) -> McpOpinionView {
+        McpOpinionView {
+            id: opinion.id,
+            content: opinion.content,
+            confidence: opinion.confidence,
+            evidence_ids: opinion.evidence_ids,
+        }
+    }
+
+    fn reflect_view(&self, result: crate::types::ReflectResult) -> McpReflectView {
+        McpReflectView {
+            response: result.response,
+            sources: result.sources,
+            new_opinions: result
+                .new_opinions
+                .into_iter()
+                .map(|opinion| self.opinion_view(opinion))
+                .collect(),
+            confidence: result.confidence,
+        }
+    }
 }
 
 #[tool_router(router = tool_router)]
@@ -253,7 +335,7 @@ impl ElephantMcp {
             .recall(&query)
             .await
             .map_err(|e| e.to_string())?;
-        json_text(&result).map_err(|e| e.message.to_string())
+        json_text(&self.recall_view(result)).map_err(|e| e.message.to_string())
     }
 
     /// Generate thoughtful analysis by synthesizing stored memories.
@@ -272,7 +354,7 @@ impl ElephantMcp {
             .reflect(&query)
             .await
             .map_err(|e| e.to_string())?;
-        json_text(&result).map_err(|e| e.message.to_string())
+        json_text(&self.reflect_view(result)).map_err(|e| e.message.to_string())
     }
 
     // --- Bank management ---
@@ -378,9 +460,11 @@ mod tests {
     };
     use crate::storage::{MemoryStore, mock::MockMemoryStore};
     use crate::types::{
-        ConsolidationReport, Disposition, MemoryBank, OpinionMergeReport, RecallResult,
-        ReflectResult, RetainOutput,
+        ConsolidationReport, Disposition, Fact, FactId, FactType, MemoryBank, NetworkType,
+        OpinionMergeReport, RecallResult, ReflectResult, RetainOutput, RetrievalSource,
+        ScoredFact,
     };
+    use chrono::Utc;
 
     struct CapturingRetainPipeline {
         last_input: Arc<Mutex<Option<RetainInput>>>,
@@ -411,8 +495,27 @@ mod tests {
         async fn recall(&self, query: &RecallQuery) -> Result<RecallResult> {
             *self.last_query.lock().expect("recall mutex poisoned") = Some(query.clone());
             Ok(RecallResult {
-                facts: vec![],
-                total_tokens: 0,
+                facts: vec![ScoredFact {
+                    fact: Fact {
+                        id: FactId::new(),
+                        bank_id: query.bank_id,
+                        content: "Austin's name is Austin.".into(),
+                        fact_type: FactType::World,
+                        network: NetworkType::World,
+                        entity_ids: vec![],
+                        temporal_range: None,
+                        embedding: Some(vec![0.1, 0.2, 0.3]),
+                        confidence: None,
+                        evidence_ids: vec![],
+                        source_turn_id: None,
+                        created_at: Utc::now(),
+                        updated_at: Utc::now(),
+                        consolidated_at: None,
+                    },
+                    score: 0.95,
+                    sources: vec![RetrievalSource::Semantic, RetrievalSource::Graph],
+                }],
+                total_tokens: 12,
             })
         }
     }
@@ -427,13 +530,57 @@ mod tests {
             *self.last_query.lock().expect("reflect mutex poisoned") = Some(query.clone());
             Ok(ReflectResult {
                 response: "ok".into(),
-                sources: vec![],
-                new_opinions: vec![],
+                sources: vec![FactId::new()],
+                new_opinions: vec![Fact {
+                    id: FactId::new(),
+                    bank_id: query.bank_id,
+                    content: "Austin likes concise tool output.".into(),
+                    fact_type: FactType::Experience,
+                    network: NetworkType::Opinion,
+                    entity_ids: vec![],
+                    temporal_range: None,
+                    embedding: Some(vec![0.1, 0.2, 0.3]),
+                    confidence: Some(0.9),
+                    evidence_ids: vec![FactId::new()],
+                    source_turn_id: None,
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                    consolidated_at: None,
+                }],
                 confidence: 0.5,
-                retrieved_context: vec![],
+                retrieved_context: vec![crate::types::RetrievedFact {
+                    id: FactId::new(),
+                    content: "Austin's name is Austin.".into(),
+                    score: 0.95,
+                    network: NetworkType::World,
+                    source_turn_id: None,
+                    evidence_ids: vec![],
+                    retrieval_sources: vec![RetrievalSource::Semantic],
+                    support_turn_ids: vec![],
+                }],
                 retrieved_sources: vec![],
-                trace: vec![],
-                final_done: None,
+                trace: vec![crate::types::ReflectTraceStep {
+                    iteration: 0,
+                    tool_name: "recall".into(),
+                    query: "name".into(),
+                    returned_fact_ids: vec![],
+                    requested_fact_ids: vec![],
+                    new_fact_ids: vec![],
+                    returned_source_ids: vec![],
+                    facts_returned: 1,
+                    total_tokens: 12,
+                    latency_ms: 10,
+                }],
+                final_done: Some(crate::types::ReflectDoneTrace {
+                    iteration: 1,
+                    assistant_content: "done".into(),
+                    raw_arguments: serde_json::json!({"response":"ok","source_ids":[]}),
+                    used_fallback: false,
+                    parse_error: None,
+                    stop_reason: Some(crate::types::ReflectStopReason::Completed),
+                    response: "ok".into(),
+                    source_ids: vec![],
+                }),
             })
         }
     }
@@ -573,7 +720,7 @@ mod tests {
         let store = Arc::new(MockMemoryStore::new());
         let mcp = ElephantMcp::new(test_state(retained, recalled, reflected.clone(), store));
 
-        let _ = mcp
+        let raw = mcp
             .reflect(Parameters(ReflectParams {
                 bank_id: BankId::new().to_string(),
                 query: "What changed?".into(),
@@ -593,6 +740,19 @@ mod tests {
         assert_eq!(captured.context.as_deref(), Some("release review"));
         assert_eq!(captured.temporal_context.as_deref(), Some("2026-03-23"));
         assert_eq!(captured.budget_tokens, 8192);
+
+        let value: serde_json::Value =
+            serde_json::from_str(&raw).expect("reflect returns json object");
+        assert_eq!(value["response"], "ok");
+        assert_eq!(value["confidence"], 0.5);
+        assert_eq!(
+            value["new_opinions"][0]["content"],
+            "Austin likes concise tool output."
+        );
+        assert_eq!(value["new_opinions"][0]["confidence"], 0.9);
+        assert!(value.get("retrieved_context").is_none());
+        assert!(value.get("trace").is_none());
+        assert!(value.get("final_done").is_none());
     }
 
     #[tokio::test]
@@ -732,7 +892,7 @@ mod tests {
         let mcp = ElephantMcp::new(test_state(retained, recalled.clone(), reflected, store));
         let bank_id = BankId::new();
 
-        let _ = mcp
+        let raw = mcp
             .recall(Parameters(RecallParams {
                 bank_id: bank_id.to_string(),
                 query: "release notes".into(),
@@ -773,6 +933,15 @@ mod tests {
             anchor.end.expect("end").to_rfc3339(),
             "2024-01-31T23:59:59+00:00"
         );
+
+        let value: serde_json::Value =
+            serde_json::from_str(&raw).expect("recall returns json object");
+        assert_eq!(value["facts"][0]["content"], "Austin's name is Austin.");
+        assert_eq!(value["facts"][0]["network"], "world");
+        assert_eq!(value["facts"][0]["retrieval_sources"][0], "semantic");
+        assert!(value["facts"][0].get("bank_id").is_none());
+        assert!(value["facts"][0].get("embedding").is_none());
+        assert_eq!(value["total_tokens"], 12);
     }
 
     #[tokio::test]

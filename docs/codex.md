@@ -18,6 +18,7 @@ This repository provides both:
 
 - [`.codex/config.toml`](../.codex/config.toml): project-scoped MCP configuration for trusted projects
 - [`AGENTS.md`](../AGENTS.md): instructions that tell Codex when to use Elephant memory
+- `.elephant/bank_id`: an optional untracked local file for pinning a default bank per repo
 
 ## Option 1: Repo Setup
 
@@ -34,6 +35,15 @@ docker compose up -d --build
 3. Launch Codex from the repository root.
 
 When the project is trusted, Codex can read [`.codex/config.toml`](../.codex/config.toml) and discover the local Elephant MCP server automatically. [`AGENTS.md`](../AGENTS.md) then helps Codex choose Elephant for memory tasks without repeated prompting.
+
+If you want Codex to keep using the same bank for this repository without repeating the bank ID, create a local untracked file:
+
+```bash
+mkdir -p .elephant
+echo "YOUR_BANK_ID_HERE" > .elephant/bank_id
+```
+
+That file is ignored by git and can safely stay local to your machine.
 
 ## Option 2: Global Setup
 
@@ -66,6 +76,8 @@ For a non-default URL:
 
 After global setup, add an `AGENTS.md` file to the repository where you want Codex to use Elephant, or explicitly tell Codex to use the `elephant` MCP server.
 
+For a stable default bank in a working repository, you can use the same local `.elephant/bank_id` convention there too.
+
 ## Docker-Only Users
 
 If you only distribute the Docker image or container stack, Codex will not auto-discover Elephant by itself. You still need one Codex-side setup step:
@@ -80,6 +92,18 @@ That is the main difference between:
 - teaching Codex where Elephant is
 
 The Docker image solves the first problem. The Codex MCP config solves the second.
+
+## Default Bank Recommendation
+
+Do not use a server-global default bank right now.
+
+Elephant does not currently include built-in auth or tenant isolation, so a server-wide “current bank” would be shared by all clients and agents using that server.
+
+The safer pattern is:
+
+- keep the server stateless about “current bank”
+- pin a default bank locally per repository with `.elephant/bank_id`
+- override it explicitly when you want a different bank
 
 ## Recommended AGENTS.md Snippet
 

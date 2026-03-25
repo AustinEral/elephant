@@ -340,9 +340,23 @@ The MCP surface is intentionally narrower than the REST API. It is designed for 
 - `recall`
   - accepts `bank_id`, `query`, optional `max_tokens`, optional `temporal_anchor`
   - omitted `max_tokens` uses the server's recall default
+  - returns a compact fact list for MCP use:
+    - `id`
+    - `content`
+    - `score`
+    - `network`
+    - optional `temporal_range`
+    - optional `source_turn_id`
+    - `retrieval_sources`
 - `reflect`
   - accepts `bank_id`, `query`, optional `context`, optional `temporal_context`, and `budget` (`low`, `mid`, `high`)
   - invalid `temporal_context` values are rejected
+  - returns only the concise MCP view:
+    - `response`
+    - `sources`
+    - `new_opinions`
+    - `confidence`
+  - debug fields like `retrieved_context`, `retrieved_sources`, `trace`, and `final_done` remain on the REST API, not MCP
 
 Example bank-tool response shape:
 

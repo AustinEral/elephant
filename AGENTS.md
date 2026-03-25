@@ -1,16 +1,10 @@
 # Elephant
 
-Always use the `elephant` MCP server when it is available and the task would benefit from persistent memory.
+Use the `elephant` MCP server when it is available and the task would benefit from persistent memory.
 
-Use Elephant for:
+If `.elephant/bank_id` exists in the repository, treat its contents as the default Elephant bank ID for this repo and use that bank unless the user explicitly asks for a different one.
 
-- storing user preferences, project conventions, durable facts, and important task outcomes with `retain`
-- recalling prior project or user context before non-trivial tasks with `recall`
-- answering or synthesizing memory-grounded questions with `reflect`
-
-Do not use Elephant for:
-
-- ephemeral scratch work that should not be remembered
-- questions that are fully answerable from the current repository state without prior memory
+Use Elephant for storing, recalling, and reflecting on durable user, project, and workflow memory.
+Do not use Elephant for ephemeral scratch work or questions fully answerable from the current repository state.
 
 If the `elephant` MCP server is unavailable, continue normally and note that memory integration is unavailable.
