@@ -63,7 +63,7 @@ pub struct RetainParams {
 pub struct RecallParams {
     /// Memory bank ID.
     pub bank_id: String,
-    /// Natural language search query.
+    /// Natural language query for lower-level memory retrieval.
     pub query: String,
     /// Optional maximum token budget override for this recall call.
     #[serde(default)]
@@ -78,7 +78,7 @@ pub struct RecallParams {
 pub struct ReflectParams {
     /// Memory bank ID.
     pub bank_id: String,
-    /// The question or topic to reflect on.
+    /// The question or topic to answer by reasoning over stored memory.
     pub query: String,
     /// Optional context about why this reflection is needed.
     #[serde(default)]
@@ -324,8 +324,10 @@ impl ElephantMcp {
         json_text(&output).map_err(|e| e.message.to_string())
     }
 
-    /// Search memories to provide personalized, context-aware responses.
-    #[tool(description = "Search memories to provide personalized, context-aware responses.")]
+    /// Access raw memories from the bank.
+    #[tool(
+        description = "Access raw memories from the bank. Use this when you need evidence, fact inspection, or downstream reasoning over retrieved facts. For most memory questions, prefer reflect."
+    )]
     async fn recall(&self, Parameters(params): Parameters<RecallParams>) -> Result<String, String> {
         let query = params.into_query().map_err(|e| e.message.to_string())?;
 
@@ -338,9 +340,9 @@ impl ElephantMcp {
         json_text(&self.recall_view(result)).map_err(|e| e.message.to_string())
     }
 
-    /// Generate thoughtful analysis by synthesizing stored memories.
+    /// Reason over the memory bank to produce an answer.
     #[tool(
-        description = "Generate thoughtful analysis by synthesizing stored memories with the bank's personality."
+        description = "Primary memory reasoning tool. Ask Elephant to answer by retrieving and reasoning over memories in the bank, shaped by the bank's configured personality."
     )]
     async fn reflect(
         &self,

@@ -340,6 +340,9 @@ The MCP surface is intentionally narrower than the REST API. It is designed for 
 - `recall`
   - accepts `bank_id`, `query`, optional `max_tokens`, optional `temporal_anchor`
   - omitted `max_tokens` uses the server's recall default
+  - lower-level memory access
+  - use this when an agent needs evidence, fact inspection, prompting context, or downstream reasoning over retrieved facts
+  - for most memory questions, prefer `reflect`
   - returns a compact fact list for MCP use:
     - `id`
     - `content`
@@ -351,6 +354,8 @@ The MCP surface is intentionally narrower than the REST API. It is designed for 
 - `reflect`
   - accepts `bank_id`, `query`, optional `context`, optional `temporal_context`, and `budget` (`low`, `mid`, `high`)
   - invalid `temporal_context` values are rejected
+  - primary memory reasoning tool
+  - use this for most memory-grounded questions when the agent wants Elephant to retrieve, reason, and answer from the bank
   - returns only the concise MCP view:
     - `response`
     - `sources`
