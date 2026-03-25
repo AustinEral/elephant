@@ -41,16 +41,39 @@ Common status classes:
 
 ### `GET /v1/info`
 
-Returns the active model configuration for the running server.
+Returns the active runtime configuration for the running server.
 
 Example response:
 
 ```json
 {
-  "retain_model": "openai/gpt-5.4-mini",
-  "reflect_model": "openai/gpt-5.4-mini",
-  "embedding_model": "local/bge-small-en-v1.5",
-  "reranker_model": "local/ms-marco-MiniLM-L-6-v2"
+  "version": "0.1.0",
+  "models": {
+    "retain": "openai/gpt-5.4-mini",
+    "reflect": "openai/gpt-5.4-mini",
+    "embedding": "local/bge-small-en-v1.5",
+    "reranker": "local/ms-marco-MiniLM-L-6-v2"
+  },
+  "retrieval": {
+    "retriever_limit": 40,
+    "max_facts": 50
+  },
+  "reflect": {
+    "max_iterations": 8,
+    "max_tokens": null,
+    "source_lookup_enabled": true
+  },
+  "consolidation": {
+    "batch_size": 8,
+    "max_tokens": 4096,
+    "recall_budget": 512
+  },
+  "server_consolidation": {
+    "enabled": true,
+    "min_facts": 32,
+    "cooldown_secs": 30,
+    "merge_opinions_after": false
+  }
 }
 ```
 

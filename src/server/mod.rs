@@ -21,14 +21,75 @@ use crate::storage::MemoryStore;
 /// Server configuration exposed via `/v1/info`.
 #[derive(Clone, serde::Serialize)]
 pub struct ServerInfo {
+    /// Server binary version.
+    pub version: String,
+    /// Active model configuration.
+    pub models: ServerModelsInfo,
+    /// Active retrieval tuning.
+    pub retrieval: ServerRetrievalInfo,
+    /// Active reflect tuning.
+    pub reflect: ServerReflectInfo,
+    /// Active consolidation tuning.
+    pub consolidation: ServerConsolidationRuntimeInfo,
+    /// Active server-side background consolidation policy.
+    pub server_consolidation: ServerBackgroundConsolidationInfo,
+}
+
+/// Model labels exposed by `/v1/info`.
+#[derive(Clone, serde::Serialize)]
+pub struct ServerModelsInfo {
     /// The LLM model used for retain (fact extraction).
-    pub retain_model: String,
+    pub retain: String,
     /// The LLM model used for reflect (synthesis).
-    pub reflect_model: String,
+    pub reflect: String,
     /// The embedding model name.
-    pub embedding_model: String,
+    pub embedding: String,
     /// The reranker model (e.g. "local/ms-marco-MiniLM-L-6-v2", "api/rerank-english-v3.0", or "none").
-    pub reranker_model: String,
+    pub reranker: String,
+}
+
+/// Retrieval tuning exposed by `/v1/info`.
+#[derive(Clone, serde::Serialize)]
+pub struct ServerRetrievalInfo {
+    /// Retriever candidate limit per retrieval strategy.
+    pub retriever_limit: usize,
+    /// Maximum number of facts kept before token budgeting.
+    pub max_facts: usize,
+}
+
+/// Reflect tuning exposed by `/v1/info`.
+#[derive(Clone, serde::Serialize)]
+pub struct ServerReflectInfo {
+    /// Reflect iteration cap.
+    pub max_iterations: usize,
+    /// Optional reflect completion cap.
+    pub max_tokens: Option<usize>,
+    /// Whether source lookup is enabled.
+    pub source_lookup_enabled: bool,
+}
+
+/// Consolidation runtime tuning exposed by `/v1/info`.
+#[derive(Clone, serde::Serialize)]
+pub struct ServerConsolidationRuntimeInfo {
+    /// Consolidation batch size.
+    pub batch_size: usize,
+    /// Consolidation completion cap.
+    pub max_tokens: usize,
+    /// Consolidation recall budget.
+    pub recall_budget: usize,
+}
+
+/// Server-side background consolidation policy exposed by `/v1/info`.
+#[derive(Clone, serde::Serialize)]
+pub struct ServerBackgroundConsolidationInfo {
+    /// Whether automatic background consolidation is enabled.
+    pub enabled: bool,
+    /// Minimum unconsolidated world/experience facts before scheduling.
+    pub min_facts: usize,
+    /// Minimum delay between attempts per bank.
+    pub cooldown_secs: u64,
+    /// Whether opinion merge runs after consolidation.
+    pub merge_opinions_after: bool,
 }
 
 /// Shared application state holding all pipeline instances.
@@ -61,18 +122,38 @@ impl TryFrom<&ElephantRuntime> for AppState {
     /// pipeline with server-only behaviors such as background consolidation
     /// without changing the shared runtime used by benchmarks.
     fn try_from(runtime: &ElephantRuntime) -> std::result::Result<Self, Self::Error> {
+        let server_consolidation_policy = consolidation::ConsolidationPolicy::from_env()?;
         Ok(Self {
             info: ServerInfo {
-                retain_model: runtime.info.retain_model.clone(),
-                reflect_model: runtime.info.reflect_model.clone(),
-                embedding_model: runtime.info.embedding_model.clone(),
-                reranker_model: runtime.info.reranker_model.clone(),
+                version: env!("CARGO_PKG_VERSION").into(),
+                models: ServerModelsInfo {
+                    retain: runtime.info.retain_model.clone(),
+                    reflect: runtime.info.reflect_model.clone(),
+                    embedding: runtime.info.embedding_model.clone(),
+                    reranker: runtime.info.reranker_model.clone(),
+                },
+                retrieval: ServerRetrievalInfo {
+                    retriever_limit: runtime.info.tuning.retriever_limit,
+                    max_facts: runtime.info.tuning.max_facts,
+                },
+                reflect: ServerReflectInfo {
+                    max_iterations: runtime.info.tuning.reflect_max_iterations,
+                    max_tokens: runtime.info.tuning.reflect_max_tokens,
+                    source_lookup_enabled: runtime.info.tuning.reflect_enable_source_lookup,
+                },
+                consolidation: ServerConsolidationRuntimeInfo {
+                    batch_size: runtime.info.tuning.consolidation_batch_size,
+                    max_tokens: runtime.info.tuning.consolidation_max_tokens,
+                    recall_budget: runtime.info.tuning.consolidation_recall_budget,
+                },
+                server_consolidation: server_consolidation_policy.to_info(),
             },
             retain: consolidation::wrap_retain_pipeline_with_consolidation(
                 runtime.retain.clone(),
                 runtime.store.clone(),
                 runtime.consolidator.clone(),
                 runtime.opinion_merger.clone(),
+                server_consolidation_policy,
             )?,
             recall: runtime.recall.clone(),
             reflect: runtime.reflect.clone(),
@@ -129,6 +210,38 @@ mod tests {
     use chrono::Utc;
     use serde_json::{Value, json};
     use tower::util::ServiceExt;
+
+    fn test_server_info() -> ServerInfo {
+        ServerInfo {
+            version: env!("CARGO_PKG_VERSION").into(),
+            models: ServerModelsInfo {
+                retain: "test".into(),
+                reflect: "test".into(),
+                embedding: "test".into(),
+                reranker: "none".into(),
+            },
+            retrieval: ServerRetrievalInfo {
+                retriever_limit: 20,
+                max_facts: 50,
+            },
+            reflect: ServerReflectInfo {
+                max_iterations: 8,
+                max_tokens: None,
+                source_lookup_enabled: true,
+            },
+            consolidation: ServerConsolidationRuntimeInfo {
+                batch_size: 16,
+                max_tokens: 2048,
+                recall_budget: 1024,
+            },
+            server_consolidation: ServerBackgroundConsolidationInfo {
+                enabled: true,
+                min_facts: 32,
+                cooldown_secs: 30,
+                merge_opinions_after: false,
+            },
+        }
+    }
 
     // --- Mock pipelines ---
 
@@ -231,12 +344,7 @@ mod tests {
     fn test_app() -> (Router, Arc<MockMemoryStore>) {
         let store = Arc::new(MockMemoryStore::new());
         let state = AppState {
-            info: ServerInfo {
-                retain_model: "test".into(),
-                reflect_model: "test".into(),
-                embedding_model: "test".into(),
-                reranker_model: "none".into(),
-            },
+            info: test_server_info(),
             retain: Arc::new(MockRetainPipeline {
                 store: store.clone(),
             }),
@@ -258,12 +366,7 @@ mod tests {
         let store = Arc::new(MockMemoryStore::new());
         let captured = Arc::new(Mutex::new(None));
         let state = AppState {
-            info: ServerInfo {
-                retain_model: "test".into(),
-                reflect_model: "test".into(),
-                embedding_model: "test".into(),
-                reranker_model: "none".into(),
-            },
+            info: test_server_info(),
             retain: Arc::new(MockRetainPipeline {
                 store: store.clone(),
             }),
@@ -321,6 +424,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn server_info_returns_nested_runtime_configuration() {
+        let (app, _store) = test_app();
+
+        let resp = app.oneshot(get_request("/v1/info")).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = json_body(resp).await;
+        assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(body["models"]["retain"], "test");
+        assert_eq!(body["models"]["reranker"], "none");
+        assert_eq!(body["retrieval"]["retriever_limit"], 20);
+        assert_eq!(body["retrieval"]["max_facts"], 50);
+        assert_eq!(body["reflect"]["max_iterations"], 8);
+        assert_eq!(body["reflect"]["source_lookup_enabled"], true);
+        assert_eq!(body["consolidation"]["batch_size"], 16);
+        assert_eq!(body["server_consolidation"]["enabled"], true);
+        assert_eq!(body["server_consolidation"]["min_facts"], 32);
+        assert_eq!(body["server_consolidation"]["cooldown_secs"], 30);
+    }
+
+    #[tokio::test]
     async fn retain_and_recall_roundtrip() {
         let (app, store) = test_app();
 
@@ -349,12 +473,7 @@ mod tests {
         );
 
         let app2 = router(AppState {
-            info: ServerInfo {
-                retain_model: "test".into(),
-                reflect_model: "test".into(),
-                embedding_model: "test".into(),
-                reranker_model: "none".into(),
-            },
+            info: test_server_info(),
             retain: Arc::new(MockRetainPipeline {
                 store: store.clone(),
             }),
@@ -591,12 +710,7 @@ mod tests {
         // Build a fresh app since oneshot consumes the router
         let make_app = || {
             router(AppState {
-                info: ServerInfo {
-                    retain_model: "test".into(),
-                    reflect_model: "test".into(),
-                    embedding_model: "test".into(),
-                    reranker_model: "none".into(),
-                },
+                info: test_server_info(),
                 retain: Arc::new(MockRetainPipeline {
                     store: store.clone(),
                 }),

@@ -352,6 +352,10 @@ mod tests {
     use crate::reflect::ReflectPipeline;
     use crate::retain::RetainPipeline;
     use crate::server::{AppState, ServerInfo};
+    use crate::server::{
+        ServerBackgroundConsolidationInfo, ServerConsolidationRuntimeInfo, ServerModelsInfo,
+        ServerReflectInfo, ServerRetrievalInfo,
+    };
     use crate::storage::{MemoryStore, mock::MockMemoryStore};
     use crate::types::{
         ConsolidationReport, Disposition, MemoryBank, OpinionMergeReport, RecallResult,
@@ -444,10 +448,33 @@ mod tests {
     ) -> AppState {
         AppState {
             info: ServerInfo {
-                retain_model: "test".into(),
-                reflect_model: "test".into(),
-                embedding_model: "mock".into(),
-                reranker_model: "none".into(),
+                version: env!("CARGO_PKG_VERSION").into(),
+                models: ServerModelsInfo {
+                    retain: "test".into(),
+                    reflect: "test".into(),
+                    embedding: "mock".into(),
+                    reranker: "none".into(),
+                },
+                retrieval: ServerRetrievalInfo {
+                    retriever_limit: 20,
+                    max_facts: 50,
+                },
+                reflect: ServerReflectInfo {
+                    max_iterations: 8,
+                    max_tokens: None,
+                    source_lookup_enabled: true,
+                },
+                consolidation: ServerConsolidationRuntimeInfo {
+                    batch_size: 16,
+                    max_tokens: 2048,
+                    recall_budget: 1024,
+                },
+                server_consolidation: ServerBackgroundConsolidationInfo {
+                    enabled: true,
+                    min_facts: 32,
+                    cooldown_secs: 30,
+                    merge_opinions_after: false,
+                },
             },
             retain: Arc::new(CapturingRetainPipeline {
                 last_input: retain_input,
@@ -663,7 +690,9 @@ mod tests {
         assert_eq!(captured.query, "release notes");
         assert_eq!(captured.budget_tokens, Some(1234));
         assert_eq!(captured.max_facts, None);
-        let anchor = captured.temporal_anchor.expect("temporal anchor should be preserved");
+        let anchor = captured
+            .temporal_anchor
+            .expect("temporal anchor should be preserved");
         assert_eq!(
             anchor.start.expect("start").to_rfc3339(),
             "2024-01-01T00:00:00+00:00"

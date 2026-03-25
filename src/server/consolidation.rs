@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use tracing::{debug, info, warn};
 
+use super::ServerBackgroundConsolidationInfo;
 use crate::consolidation::{Consolidator, OpinionMerger};
 use crate::error::{Error, Result};
 use crate::retain::RetainPipeline;
@@ -61,6 +62,15 @@ impl ConsolidationPolicy {
 
     fn enabled(&self) -> bool {
         self.enabled
+    }
+
+    pub(super) fn to_info(&self) -> ServerBackgroundConsolidationInfo {
+        ServerBackgroundConsolidationInfo {
+            enabled: self.enabled,
+            min_facts: self.min_unconsolidated_facts,
+            cooldown_secs: self.cooldown.as_secs(),
+            merge_opinions_after: self.merge_opinions_after,
+        }
     }
 }
 
@@ -243,8 +253,8 @@ pub(super) fn wrap_retain_pipeline_with_consolidation(
     store: Arc<dyn MemoryStore>,
     consolidator: Arc<dyn Consolidator>,
     opinion_merger: Arc<dyn OpinionMerger>,
+    policy: ConsolidationPolicy,
 ) -> Result<Arc<dyn RetainPipeline>> {
-    let policy = ConsolidationPolicy::from_env()?;
     if !policy.enabled() {
         return Ok(retain);
     }
