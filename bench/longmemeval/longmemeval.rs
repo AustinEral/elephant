@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio::task::JoinSet;
 
 use chrono::Utc;
@@ -26,12 +26,13 @@ use common::io::{append_jsonl, atomic_write_json, sidecar_path};
 use dataset::load_dataset;
 use ingest::{ConsolidationMode, IngestConfig, IngestFormat};
 
+use elephant::consolidation::ConsolidationProgress;
 use elephant::metrics::{LlmStage, MetricsCollector, StageUsage, with_scoped_collector};
 use elephant::runtime::{
     BuildRuntimeOptions, ElephantRuntime, RuntimePromptHashes as ElephantPromptHashes,
     RuntimeTuning as ElephantRuntimeTuning, build_runtime_from_env,
 };
-use elephant::types::ReflectQuery;
+use elephant::types::{NetworkType, ReflectQuery};
 
 // --- Judge prompts ---
 
@@ -856,6 +857,8 @@ struct BenchmarkOutput {
     #[serde(default)]
     instance_status: HashMap<String, InstanceStatus>,
     #[serde(default)]
+    instance_timings: HashMap<String, InstancePhaseTimings>,
+    #[serde(default)]
     stage_metrics: BTreeMap<LlmStage, StageUsage>,
     #[serde(default)]
     total_stage_usage: StageUsage,
@@ -867,6 +870,18 @@ struct BenchmarkOutput {
 struct CategoryResult {
     accuracy: f64,
     count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct InstancePhaseTimings {
+    #[serde(default)]
+    ingest_time_s: f64,
+    #[serde(default)]
+    consolidation_time_s: f64,
+    #[serde(default)]
+    qa_time_s: f64,
+    #[serde(default)]
+    total_time_s: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1170,6 +1185,79 @@ fn should_resume_run(config: &RunConfig) -> bool {
     config.resume
 }
 
+async fn count_unconsolidated_facts(
+    runtime: &ElephantRuntime,
+    bank_id: elephant::types::BankId,
+) -> Result<usize, String> {
+    runtime
+        .store
+        .get_facts_by_bank(
+            bank_id,
+            elephant::types::FactFilter {
+                network: Some(vec![NetworkType::World, NetworkType::Experience]),
+                unconsolidated_only: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .map(|facts| facts.len())
+        .map_err(|e| format!("failed to count unconsolidated facts: {e}"))
+}
+
+fn should_log_consolidation_progress(progress: &ConsolidationProgress) -> bool {
+    progress.batch_index == 1
+        || progress.batch_index == progress.total_batches
+        || progress.batch_index % 10 == 0
+}
+
+async fn consolidate_with_bench_progress(
+    qid: &str,
+    runtime: Arc<ElephantRuntime>,
+    bank_id: elephant::types::BankId,
+    metrics: Arc<MetricsCollector>,
+) -> Result<elephant::types::ConsolidationReport, String> {
+    let total_facts = count_unconsolidated_facts(runtime.as_ref(), bank_id).await?;
+    let total_batches = if total_facts == 0 {
+        0
+    } else {
+        total_facts.div_ceil(runtime.info.tuning.consolidation_batch_size)
+    };
+    eprintln!(
+        "  {qid} consolidating {total_facts} fact{} in {total_batches} batch{}...",
+        if total_facts == 1 { "" } else { "s" },
+        if total_batches == 1 { "" } else { "es" },
+    );
+
+    let started = Instant::now();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let consolidator = runtime.consolidator.clone();
+    let task = tokio::spawn(async move {
+        with_scoped_collector(
+            metrics,
+            consolidator.consolidate_with_progress(bank_id, Some(tx)),
+        )
+        .await
+    });
+
+    while let Some(progress) = rx.recv().await {
+        if should_log_consolidation_progress(&progress) {
+            eprintln!(
+                "  {qid} consolidate [{}/{}] | {} facts | {} created | {} updated | elapsed: {:.1}s",
+                progress.batch_index,
+                progress.total_batches,
+                progress.batch_facts,
+                progress.observations_created,
+                progress.observations_updated,
+                started.elapsed().as_secs_f64(),
+            );
+        }
+    }
+
+    task.await
+        .map_err(|e| format!("consolidate task failed: {e}"))?
+        .map_err(|e| format!("consolidate failed: {e}"))
+}
+
 fn compute_per_category(results: &[QuestionResult]) -> HashMap<String, CategoryResult> {
     let mut counts: HashMap<String, (usize, usize)> = HashMap::new();
     for r in results {
@@ -1206,6 +1294,7 @@ struct SharedState {
     results: Vec<QuestionResult>,
     banks: HashMap<String, String>,
     instance_status: HashMap<String, InstanceStatus>,
+    instance_timings: HashMap<String, InstancePhaseTimings>,
     output_path: PathBuf,
     questions_path: PathBuf,
     debug_path: PathBuf,
@@ -1225,9 +1314,16 @@ struct SharedState {
 }
 
 impl SharedState {
-    fn push_and_flush(&mut self, result: QuestionResult, debug: QuestionDebugRecord) {
+    fn push_and_flush(
+        &mut self,
+        result: QuestionResult,
+        debug: QuestionDebugRecord,
+        timings: InstancePhaseTimings,
+    ) {
         append_jsonl(&self.questions_path, &result);
         append_jsonl(&self.debug_path, &debug);
+        self.instance_timings
+            .insert(result.question_id.clone(), timings);
         self.results.push(result);
         self.flush();
     }
@@ -1261,6 +1357,7 @@ impl SharedState {
             per_category: compute_per_category(&self.results),
             banks: self.banks.clone(),
             instance_status: self.instance_status.clone(),
+            instance_timings: self.instance_timings.clone(),
             manifest: self.manifest.clone(),
             artifacts: BenchmarkArtifacts {
                 questions_path: self.questions_path.display().to_string(),
@@ -1632,11 +1729,17 @@ fn merge_artifacts(
 
     // Merge instance_status from all bundles
     let mut merged_instance_status: HashMap<String, InstanceStatus> = HashMap::new();
+    let mut merged_instance_timings: HashMap<String, InstancePhaseTimings> = HashMap::new();
     for bundle in &bundles {
         for (qid, status) in &bundle.output.instance_status {
             merged_instance_status
                 .entry(qid.clone())
                 .or_insert_with(|| status.clone());
+        }
+        for (qid, timings) in &bundle.output.instance_timings {
+            merged_instance_timings
+                .entry(qid.clone())
+                .or_insert_with(|| timings.clone());
         }
     }
 
@@ -1656,6 +1759,7 @@ fn merge_artifacts(
         per_category,
         banks,
         instance_status: merged_instance_status,
+        instance_timings: merged_instance_timings,
         manifest,
         artifacts: BenchmarkArtifacts {
             questions_path: questions_path.display().to_string(),
@@ -1878,6 +1982,7 @@ async fn main() {
     let mut completed_results: Vec<QuestionResult> = Vec::new();
     let mut completed_debug: Vec<QuestionDebugRecord> = Vec::new();
     let mut resume_instance_status: HashMap<String, InstanceStatus> = HashMap::new();
+    let mut resume_instance_timings: HashMap<String, InstancePhaseTimings> = HashMap::new();
     let is_resume = should_resume_run(&config);
 
     if is_resume && output_path.exists() {
@@ -1890,6 +1995,7 @@ async fn main() {
                         .or_insert_with(|| bid.clone());
                 }
                 resume_instance_status = existing.instance_status;
+                resume_instance_timings = existing.instance_timings;
             }
         }
         // Load completed question results from sidecar (needed for skip classification)
@@ -1969,6 +2075,7 @@ async fn main() {
             .into_iter()
             .filter(|r| skip_ids.contains(&r.question_id))
             .collect();
+        resume_instance_timings.retain(|qid, _| skip_ids.contains(qid));
 
         // Rewrite sidecars with only kept records
         let _ = fs::write(&questions_path, "");
@@ -2063,6 +2170,7 @@ async fn main() {
         results: completed_results,
         banks: existing_banks,
         instance_status: resume_instance_status.clone(),
+        instance_timings: resume_instance_timings.clone(),
         output_path: output_path.clone(),
         questions_path: questions_path.clone(),
         debug_path: debug_path.clone(),
@@ -2108,6 +2216,8 @@ async fn main() {
             let instance_start = Instant::now();
             let qid = instance.question_id.clone();
             let prior_status = resume_statuses.get(&qid).cloned();
+            let mut ingest_elapsed = 0.0;
+            let mut consolidation_elapsed = 0.0;
 
             // --- Step 1: Determine bank_id ---
             let bank_id_str: String;
@@ -2128,6 +2238,7 @@ async fn main() {
                 bank_id_str = status.bank_id.clone();
             } else {
                 // Need to ingest (fresh or re-ingest after partial)
+                let ingest_start = Instant::now();
 
                 // If prior status exists but ingest not complete, delete partial bank
                 if let Some(ref status) = prior_status
@@ -2176,7 +2287,14 @@ async fn main() {
                         final_done: None,
                         retrieved_context: vec![],
                     };
-                    shared.lock().await.push_and_flush(qr, dr);
+                    shared.lock().await.push_and_flush(
+                        qr,
+                        dr,
+                        InstancePhaseTimings {
+                            total_time_s: instance_start.elapsed().as_secs_f64(),
+                            ..Default::default()
+                        },
+                    );
                     let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
                     eprintln!(
                         "[{done}/{total_instances}] {qid} err bank {:.1}s",
@@ -2233,7 +2351,15 @@ async fn main() {
                             final_done: None,
                             retrieved_context: vec![],
                         };
-                        shared.lock().await.push_and_flush(qr, dr);
+                        shared.lock().await.push_and_flush(
+                            qr,
+                            dr,
+                            InstancePhaseTimings {
+                                ingest_time_s: ingest_start.elapsed().as_secs_f64(),
+                                total_time_s: instance_start.elapsed().as_secs_f64(),
+                                ..Default::default()
+                            },
+                        );
                         let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
                         eprintln!(
                             "[{done}/{total_instances}] {qid} err ingest {:.1}s",
@@ -2253,6 +2379,7 @@ async fn main() {
                         qa_complete: false,
                     },
                 );
+                ingest_elapsed = ingest_start.elapsed().as_secs_f64();
             }
 
             // --- Step 2: Consolidation ---
@@ -2266,18 +2393,23 @@ async fn main() {
                 let bid: elephant::types::id::BankId = bank_id_str
                     .parse()
                     .map_err(|e| format!("bad bank_id: {e}"))?;
-                eprintln!("  {qid} consolidating...");
-                match runtime.consolidator.consolidate(bid).await {
+                let consolidation_start = Instant::now();
+                match consolidate_with_bench_progress(&qid, runtime.clone(), bid, metrics.clone())
+                    .await
+                {
                     Ok(cr) => {
                         eprintln!(
-                            "  {qid} consolidation done | {} created, {} updated",
-                            cr.observations_created, cr.observations_updated,
+                            "  {qid} consolidation done in {:.1}s | {} created, {} updated",
+                            consolidation_start.elapsed().as_secs_f64(),
+                            cr.observations_created,
+                            cr.observations_updated,
                         );
                     }
                     Err(e) => {
                         eprintln!("  {qid} consolidation FAILED: {e}");
                     }
                 }
+                consolidation_elapsed = consolidation_start.elapsed().as_secs_f64();
                 // Mark consolidation complete
                 shared.lock().await.update_instance_status(
                     &qid,
@@ -2300,8 +2432,6 @@ async fn main() {
                     },
                 );
             }
-
-            let ingest_elapsed = instance_start.elapsed().as_secs_f64();
 
             // --- Step 3: QA ---
             if matches!(command, BenchCommand::Ingest) {
@@ -2336,12 +2466,21 @@ async fn main() {
                             qa_complete: true,
                         },
                     );
-                    s.push_and_flush(qr, dr);
+                    s.push_and_flush(
+                        qr,
+                        dr,
+                        InstancePhaseTimings {
+                            ingest_time_s: ingest_elapsed,
+                            consolidation_time_s: consolidation_elapsed,
+                            qa_time_s: 0.0,
+                            total_time_s: ingest_elapsed + consolidation_elapsed,
+                        },
+                    );
                 }
                 let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
                 eprintln!(
-                    "[{done}/{total_instances}] {qid} ok ingest {:.1}s",
-                    ingest_elapsed,
+                    "[{done}/{total_instances}] {qid} ok ingest {:.1}s consolidate {:.1}s",
+                    ingest_elapsed, consolidation_elapsed,
                 );
                 return Ok(());
             }
@@ -2471,7 +2610,16 @@ async fn main() {
                         qa_complete: true,
                     },
                 );
-                s.push_and_flush(qr, dr);
+                s.push_and_flush(
+                    qr,
+                    dr,
+                    InstancePhaseTimings {
+                        ingest_time_s: ingest_elapsed,
+                        consolidation_time_s: consolidation_elapsed,
+                        qa_time_s: qa_elapsed,
+                        total_time_s: ingest_elapsed + consolidation_elapsed + qa_elapsed,
+                    },
+                );
             }
 
             if let Some(fatal_error) = fatal_error {
@@ -2480,9 +2628,10 @@ async fn main() {
 
             let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
             eprintln!(
-                "[{done}/{total_instances}] {qid} {} ingest {:.1}s qa {:.1}s",
+                "[{done}/{total_instances}] {qid} {} ingest {:.1}s consolidate {:.1}s qa {:.1}s",
                 if judge_correct { "ok" } else { "err" },
                 ingest_elapsed,
+                consolidation_elapsed,
                 qa_elapsed,
             );
 
@@ -2513,6 +2662,25 @@ async fn main() {
     eprintln!("Questions: {}", questions_path.display());
     eprintln!("Debug:     {}", debug_path.display());
     eprintln!("Time:      {:.1}s", bench_start.elapsed().as_secs_f64());
+    let total_ingest_time_s = shared_snapshot
+        .instance_timings
+        .values()
+        .map(|timings| timings.ingest_time_s)
+        .sum::<f64>();
+    let total_consolidation_time_s = shared_snapshot
+        .instance_timings
+        .values()
+        .map(|timings| timings.consolidation_time_s)
+        .sum::<f64>();
+    let total_qa_time_s = shared_snapshot
+        .instance_timings
+        .values()
+        .map(|timings| timings.qa_time_s)
+        .sum::<f64>();
+    eprintln!(
+        "Phase:     ingest {:.1}s | consolidate {:.1}s | qa {:.1}s",
+        total_ingest_time_s, total_consolidation_time_s, total_qa_time_s,
+    );
 
     if !matches!(command, BenchCommand::Ingest) {
         let acc = compute_accuracy(&shared_snapshot.results);
@@ -2627,6 +2795,7 @@ mod tests {
             per_category: HashMap::new(),
             banks: HashMap::new(),
             instance_status: HashMap::new(),
+            instance_timings: HashMap::new(),
             manifest: BenchmarkManifest {
                 profile: "smoke".into(),
                 dataset_path: "data/test.json".into(),
@@ -3301,6 +3470,7 @@ mod tests {
             per_category,
             banks,
             instance_status: HashMap::new(),
+            instance_timings: HashMap::new(),
             manifest: BenchmarkManifest::default(),
             artifacts: BenchmarkArtifacts::default(),
             stage_metrics: BTreeMap::new(),
@@ -3493,6 +3663,7 @@ mod tests {
             per_category: HashMap::new(),
             banks: HashMap::new(),
             instance_status,
+            instance_timings: HashMap::new(),
             manifest: BenchmarkManifest::default(),
             artifacts: BenchmarkArtifacts::default(),
             stage_metrics: BTreeMap::new(),
@@ -3620,6 +3791,7 @@ mod tests {
             per_category: HashMap::new(),
             banks: HashMap::new(),
             instance_status: HashMap::new(),
+            instance_timings: HashMap::new(),
             manifest: BenchmarkManifest {
                 profile: "smoke".into(),
                 mode: "ingest".into(),
@@ -3664,6 +3836,7 @@ mod tests {
             per_category: HashMap::new(),
             banks: HashMap::new(),
             instance_status: HashMap::new(),
+            instance_timings: HashMap::new(),
             manifest: BenchmarkManifest {
                 profile: "smoke".into(),
                 mode: "ingest".into(),
@@ -4089,6 +4262,7 @@ mod tests {
             per_category: compute_per_category(questions),
             banks,
             instance_status: HashMap::new(),
+            instance_timings: HashMap::new(),
             manifest: BenchmarkManifest {
                 protocol_version: "2026-03-15-longmemeval-v1".into(),
                 profile: "smoke".into(),
