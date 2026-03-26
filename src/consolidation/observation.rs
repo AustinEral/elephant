@@ -17,7 +17,8 @@ use tracing::{Instrument, debug, info, info_span, warn};
 use crate::embedding::EmbeddingClient;
 use crate::error::Result;
 use crate::llm::{
-    CompletionRequest, LlmClient, Message, ReasoningEffortConfig, complete_structured,
+    CompletionRequest, LlmClient, Message, ReasoningEffortConfig, StructuredOutputRetryOptions,
+    StructuredResponseErrorKind, complete_structured_with_retries,
 };
 use crate::recall::RecallPipeline;
 use crate::storage::MemoryStore;
@@ -35,6 +36,8 @@ pub struct ConsolidationConfig {
     pub max_tokens: usize,
     /// Recall token budget while consolidating observations.
     pub recall_budget: usize,
+    /// Total number of attempts for malformed structured output from the consolidator LLM.
+    pub structured_output_max_attempts: usize,
 }
 
 impl Default for ConsolidationConfig {
@@ -43,6 +46,7 @@ impl Default for ConsolidationConfig {
             batch_size: 8,
             max_tokens: 4096,
             recall_budget: 512,
+            structured_output_max_attempts: 3,
         }
     }
 }
@@ -62,6 +66,13 @@ pub fn config_from_env() -> ConsolidationConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(ConsolidationConfig::default().recall_budget),
+        structured_output_max_attempts: std::env::var(
+            "CONSOLIDATION_STRUCTURED_OUTPUT_MAX_ATTEMPTS",
+        )
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(ConsolidationConfig::default().structured_output_max_attempts),
     }
 }
 
@@ -310,7 +321,35 @@ impl DefaultConsolidator {
                 .reasoning_effort_opt(ReasoningEffortConfig::current()?.consolidate)
                 .build();
 
-            let resp: ConsolidateResponse = complete_structured(self.llm.as_ref(), request).await?;
+            let resp: ConsolidateResponse = complete_structured_with_retries(
+                self.llm.as_ref(),
+                request,
+                StructuredOutputRetryOptions {
+                    max_attempts: self.config.structured_output_max_attempts,
+                    context: "consolidation structured output invalid",
+                },
+                |kind| {
+                    matches!(
+                        kind,
+                        StructuredResponseErrorKind::Refusal
+                            | StructuredResponseErrorKind::Empty
+                            | StructuredResponseErrorKind::NoJson
+                            | StructuredResponseErrorKind::JsonParse
+                            | StructuredResponseErrorKind::JsonStructure
+                    )
+                },
+            )
+            .await
+            .map_err(|error| {
+                warn!(
+                    batch = batch_idx + 1,
+                    total_batches,
+                    batch_facts = batch.len(),
+                    error = %error,
+                    "consolidation batch failed"
+                );
+                error
+            })?;
 
             // 3c. Execute actions inside a transaction
             let txn = self.store.begin().await?;
@@ -660,6 +699,51 @@ mod tests {
         let report = consolidator.consolidate(bank_id).await.unwrap();
 
         assert_eq!(report.observations_created, 2);
+        assert_eq!(llm.remaining(), 0);
+    }
+
+    #[tokio::test]
+    async fn retries_malformed_structured_output_then_succeeds() {
+        let (store, llm, embeddings) = setup();
+        let bank_id = BankId::new();
+
+        let fact = make_fact(bank_id, "Caroline works at Google");
+        store.insert_facts(&[fact]).await.unwrap();
+
+        llm.push_response(
+            r#"{"actions": [{"content": "Missing action field.", "fact_indices": [0]}]}"#,
+        );
+        llm.push_response(
+            r#"{"actions": [
+            {"action": "create", "content": "Caroline works at Google.", "fact_indices": [0]}
+        ]}"#,
+        );
+
+        let consolidator = make_consolidator(&store, &llm, &embeddings);
+        let report = consolidator.consolidate(bank_id).await.unwrap();
+
+        assert_eq!(report.observations_created, 1);
+        assert_eq!(llm.remaining(), 0);
+    }
+
+    #[tokio::test]
+    async fn malformed_structured_output_exhausts_retries() {
+        let (store, llm, embeddings) = setup();
+        let bank_id = BankId::new();
+
+        let fact = make_fact(bank_id, "Caroline works at Google");
+        store.insert_facts(&[fact]).await.unwrap();
+
+        for _ in 0..ConsolidationConfig::default().structured_output_max_attempts {
+            llm.push_response(
+                r#"{"actions": [{"content": "Missing action field.", "fact_indices": [0]}]}"#,
+            );
+        }
+
+        let consolidator = make_consolidator(&store, &llm, &embeddings);
+        let error = consolidator.consolidate(bank_id).await.unwrap_err();
+
+        assert!(error.to_string().contains("missing field `action`"));
         assert_eq!(llm.remaining(), 0);
     }
 

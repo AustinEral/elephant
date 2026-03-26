@@ -19,7 +19,8 @@ pub struct TemporalRange {
 }
 
 /// Deserialize a DateTime<Utc> accepting both full ISO8601 ("2015-01-01T00:00:00Z")
-/// and date-only ("2015-01-01") formats. LLMs commonly produce date-only strings.
+/// and date-only ("2015-01-01") formats. LLMs commonly produce date-only strings
+/// and sometimes emit the literal string `"null"` for missing bounds.
 fn deserialize_flexible_datetime<'de, D>(
     deserializer: D,
 ) -> std::result::Result<Option<DateTime<Utc>>, D::Error>
@@ -30,6 +31,10 @@ where
     match opt {
         None => Ok(None),
         Some(s) => {
+            let s = s.trim();
+            if s.eq_ignore_ascii_case("null") {
+                return Ok(None);
+            }
             // Try full datetime first
             if let Ok(dt) = s.parse::<DateTime<Utc>>() {
                 return Ok(Some(dt));
@@ -181,5 +186,18 @@ mod tests {
         let json = serde_json::to_string(&range).unwrap();
         let back: TemporalRange = serde_json::from_str(&json).unwrap();
         assert_eq!(range, back);
+    }
+
+    #[test]
+    fn serde_accepts_string_null_bounds() {
+        let json = r#"{"start":"null","end":"null"}"#;
+        let back: TemporalRange = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            back,
+            TemporalRange {
+                start: None,
+                end: None,
+            }
+        );
     }
 }

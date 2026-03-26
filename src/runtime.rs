@@ -78,6 +78,8 @@ pub struct RuntimeTuning {
     pub reflect_max_tokens: Option<usize>,
     /// Retain extraction reasoning effort override.
     pub retain_extract_reasoning_effort: Option<ReasoningEffort>,
+    /// Total attempts for malformed extractor structured output.
+    pub retain_extract_structured_output_max_attempts: usize,
     /// Retain entity-resolution reasoning effort override.
     pub retain_resolve_reasoning_effort: Option<ReasoningEffort>,
     /// Retain graph-builder reasoning effort override.
@@ -101,6 +103,8 @@ pub struct RuntimeTuning {
     pub consolidation_max_tokens: usize,
     /// Consolidation retrieval budget.
     pub consolidation_recall_budget: usize,
+    /// Total attempts for malformed consolidator structured output.
+    pub consolidation_structured_output_max_attempts: usize,
     /// Consolidation reasoning effort override.
     pub consolidate_reasoning_effort: Option<ReasoningEffort>,
     /// Opinion merge reasoning effort override.
@@ -268,14 +272,18 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
     };
     let graph_config = GraphConfig::default();
     let reasoning_effort = *ReasoningEffortConfig::current()?;
+    let extraction_config = extractor::config_from_env();
 
     let retain = Arc::new(DefaultRetainPipeline::new(
         Box::new(SimpleChunker),
-        Box::new(LlmFactExtractor::new(stage_llm(
-            llm_configs.retain(),
-            LlmStage::RetainExtract,
-            options.metrics.as_ref(),
-        )?)),
+        Box::new(LlmFactExtractor::new(
+            stage_llm(
+                llm_configs.retain(),
+                LlmStage::RetainExtract,
+                options.metrics.as_ref(),
+            )?,
+            extraction_config,
+        )),
         Box::new(LayeredEntityResolver::new(
             embedding::build_client(&emb_config)?,
             stage_llm(
@@ -422,6 +430,8 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
                 reflect_max_iterations: reflect_max_iter,
                 reflect_max_tokens,
                 retain_extract_reasoning_effort: reasoning_effort.retain_extract,
+                retain_extract_structured_output_max_attempts: extraction_config
+                    .structured_output_max_attempts,
                 retain_resolve_reasoning_effort: reasoning_effort.retain_resolve,
                 retain_graph_reasoning_effort: reasoning_effort.retain_graph,
                 reflect_enable_source_lookup,
@@ -433,6 +443,8 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
                 consolidation_batch_size: consolidation_config.batch_size,
                 consolidation_max_tokens: consolidation_config.max_tokens,
                 consolidation_recall_budget: consolidation_config.recall_budget,
+                consolidation_structured_output_max_attempts: consolidation_config
+                    .structured_output_max_attempts,
                 consolidate_reasoning_effort: reasoning_effort.consolidate,
                 opinion_merge_reasoning_effort: reasoning_effort.opinion_merge,
             },

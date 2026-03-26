@@ -5,8 +5,40 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::error::Result;
-use crate::llm::{CompletionRequest, LlmClient, Message, ReasoningEffortConfig};
+use crate::llm::CompletionResponse;
+use crate::llm::{
+    CompletionRequest, LlmClient, Message, ReasoningEffortConfig, StructuredOutputRetryOptions,
+    StructuredResponseErrorKind, complete_structured_with_retries,
+};
 use crate::types::{ExtractedFact, ExtractionInput};
+
+/// Static configuration for LLM-based extraction.
+#[derive(Debug, Clone, Copy)]
+pub struct ExtractionConfig {
+    /// Total number of attempts for malformed structured output from the extractor LLM.
+    pub structured_output_max_attempts: usize,
+}
+
+impl Default for ExtractionConfig {
+    fn default() -> Self {
+        Self {
+            structured_output_max_attempts: 3,
+        }
+    }
+}
+
+/// Read extraction configuration from environment.
+pub fn config_from_env() -> ExtractionConfig {
+    ExtractionConfig {
+        structured_output_max_attempts: std::env::var(
+            "RETAIN_EXTRACT_STRUCTURED_OUTPUT_MAX_ATTEMPTS",
+        )
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(ExtractionConfig::default().structured_output_max_attempts),
+    }
+}
 
 /// Trait for extracting structured facts from raw text.
 #[async_trait]
@@ -23,6 +55,7 @@ pub trait FactExtractor: Send + Sync {
 /// Fact extractor powered by an LLM.
 pub struct LlmFactExtractor {
     llm: Arc<dyn LlmClient>,
+    config: ExtractionConfig,
 }
 
 /// Base extraction prompt template.
@@ -34,8 +67,8 @@ pub const EXTRACT_MAX_TOKENS: usize = 4096;
 
 impl LlmFactExtractor {
     /// Create a new extractor with the given LLM client.
-    pub fn new(llm: Arc<dyn LlmClient>) -> Self {
-        Self { llm }
+    pub fn new(llm: Arc<dyn LlmClient>, config: ExtractionConfig) -> Self {
+        Self { llm, config }
     }
 
     /// Render the exact system prompt and user message sent to the extractor LLM.
@@ -85,25 +118,29 @@ impl FactExtractor for LlmFactExtractor {
     async fn extract(&self, input: &ExtractionInput) -> Result<Vec<ExtractedFact>> {
         let (system, user_msg) = Self::render_prompt(input);
 
-        let mut last_err = None;
-        for attempt in 0..3 {
-            let req = CompletionRequest::builder()
-                .system(system.clone())
-                .message(Message::user(user_msg.clone()))
-                .temperature(EXTRACT_TEMPERATURE)
-                .reasoning_effort_opt(ReasoningEffortConfig::current()?.retain_extract)
-                .max_tokens(EXTRACT_MAX_TOKENS)
-                .build();
-            match crate::llm::complete_structured::<Vec<ExtractedFact>>(&*self.llm, req).await {
-                Ok(facts) => return Ok(facts),
-                Err(e @ (crate::error::Error::LlmNoJson | crate::error::Error::LlmRefusal)) => {
-                    tracing::warn!(attempt = attempt + 1, error = %e, "extraction failed, retrying");
-                    last_err = Some(e);
-                }
-                Err(e) => return Err(e),
-            }
-        }
-        Err(last_err.unwrap())
+        let req = CompletionRequest::builder()
+            .system(system)
+            .message(Message::user(user_msg))
+            .temperature(EXTRACT_TEMPERATURE)
+            .reasoning_effort_opt(ReasoningEffortConfig::current()?.retain_extract)
+            .max_tokens(EXTRACT_MAX_TOKENS)
+            .build();
+
+        complete_structured_with_retries(
+            self.llm.as_ref(),
+            req,
+            StructuredOutputRetryOptions {
+                max_attempts: self.config.structured_output_max_attempts,
+                context: "extraction structured output invalid",
+            },
+            |kind| {
+                matches!(
+                    kind,
+                    StructuredResponseErrorKind::NoJson | StructuredResponseErrorKind::Refusal
+                )
+            },
+        )
+        .await
     }
 }
 
@@ -140,7 +177,7 @@ mod tests {
         let mock = MockLlmClient::new();
         mock.push_response(response_json);
 
-        let extractor = LlmFactExtractor::new(Arc::new(mock));
+        let extractor = LlmFactExtractor::new(Arc::new(mock), ExtractionConfig::default());
         let input = ExtractionInput {
             content: "We decided to use Rust with Postgres instead of MongoDB.".into(),
             bank_id: BankId::new(),
@@ -172,7 +209,7 @@ mod tests {
         let mock = MockLlmClient::new();
         mock.push_response(format!("Here are the facts:\n```json\n{json}\n```"));
 
-        let extractor = LlmFactExtractor::new(Arc::new(mock));
+        let extractor = LlmFactExtractor::new(Arc::new(mock), ExtractionConfig::default());
         let input = ExtractionInput {
             content: "Python is a popular language.".into(),
             bank_id: BankId::new(),
@@ -194,7 +231,7 @@ mod tests {
         let mock = MockLlmClient::new();
         mock.push_response(json);
 
-        let extractor = LlmFactExtractor::new(Arc::new(mock));
+        let extractor = LlmFactExtractor::new(Arc::new(mock), ExtractionConfig::default());
         let input = ExtractionInput {
             content: "Nothing notable.".into(),
             bank_id: BankId::new(),
@@ -207,5 +244,76 @@ mod tests {
 
         let facts = extractor.extract(&input).await.unwrap();
         assert!(facts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn extract_retries_no_json_then_succeeds() {
+        let response_json = serde_json::to_string(&vec![ExtractedFact {
+            content: "Rust uses ownership for memory safety".into(),
+            fact_type: FactType::World,
+            network: ExtractedNetworkType::World,
+            entity_mentions: vec!["Rust".into()],
+            temporal_range: None,
+            confidence: None,
+        }])
+        .unwrap();
+
+        let mock = MockLlmClient::new();
+        mock.push_response("not json");
+        mock.push_response(response_json);
+
+        let extractor = LlmFactExtractor::new(Arc::new(mock), ExtractionConfig::default());
+        let input = ExtractionInput {
+            content: "Rust uses ownership for memory safety.".into(),
+            bank_id: BankId::new(),
+            context: None,
+            timestamp: chrono::Utc::now(),
+            turn_id: None,
+            custom_instructions: None,
+            speaker: None,
+        };
+
+        let facts = extractor.extract(&input).await.unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].entity_mentions, vec!["Rust"]);
+    }
+
+    #[tokio::test]
+    async fn extract_retries_refusal_then_succeeds() {
+        let response_json = serde_json::to_string(&vec![ExtractedFact {
+            content: "Rust uses ownership for memory safety".into(),
+            fact_type: FactType::World,
+            network: ExtractedNetworkType::World,
+            entity_mentions: vec!["Rust".into()],
+            temporal_range: None,
+            confidence: None,
+        }])
+        .unwrap();
+
+        let mock = MockLlmClient::new();
+        mock.push_response_full(CompletionResponse {
+            content: String::new(),
+            input_tokens: 10,
+            output_tokens: 20,
+            stop_reason: Some("refusal".into()),
+            tool_calls: vec![],
+            prompt_cache: None,
+        });
+        mock.push_response(response_json);
+
+        let extractor = LlmFactExtractor::new(Arc::new(mock), ExtractionConfig::default());
+        let input = ExtractionInput {
+            content: "Rust uses ownership for memory safety.".into(),
+            bank_id: BankId::new(),
+            context: None,
+            timestamp: chrono::Utc::now(),
+            turn_id: None,
+            custom_instructions: None,
+            speaker: None,
+        };
+
+        let facts = extractor.extract(&input).await.unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].entity_mentions, vec!["Rust"]);
     }
 }

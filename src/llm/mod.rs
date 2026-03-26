@@ -36,6 +36,104 @@ pub trait LlmClient: Send + Sync {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StructuredResponseErrorKind {
+    Refusal,
+    Empty,
+    NoJson,
+    JsonParse,
+    JsonStructure,
+}
+
+#[derive(Debug)]
+pub(crate) struct StructuredResponseError {
+    pub error: Error,
+    pub kind: StructuredResponseErrorKind,
+    pub raw_response: String,
+    pub extracted_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct StructuredOutputRetryOptions {
+    pub max_attempts: usize,
+    pub context: &'static str,
+}
+
+const STRUCTURED_OUTPUT_LOG_PREVIEW_CHARS: usize = 1_000;
+
+fn preview_for_log(text: &str, max_chars: usize) -> String {
+    let total_chars = text.chars().count();
+    if total_chars <= max_chars {
+        return text.to_string();
+    }
+
+    let head_chars = max_chars / 2;
+    let tail_chars = max_chars - head_chars;
+    let head = text.chars().take(head_chars).collect::<String>();
+    let tail = text
+        .chars()
+        .skip(total_chars.saturating_sub(tail_chars))
+        .collect::<String>();
+    let omitted = total_chars.saturating_sub(head_chars + tail_chars);
+
+    format!("{head}...<{omitted} chars omitted>...{tail}")
+}
+
+fn parse_structured_response<T: DeserializeOwned>(
+    response: &CompletionResponse,
+) -> std::result::Result<T, StructuredResponseError> {
+    if response.stop_reason.as_deref() == Some("refusal") {
+        return Err(StructuredResponseError {
+            error: Error::LlmRefusal,
+            kind: StructuredResponseErrorKind::Refusal,
+            raw_response: response.content.clone(),
+            extracted_json: None,
+        });
+    }
+    if response.content.is_empty() {
+        return Err(StructuredResponseError {
+            error: Error::Llm("model returned empty response".into()),
+            kind: StructuredResponseErrorKind::Empty,
+            raw_response: response.content.clone(),
+            extracted_json: None,
+        });
+    }
+
+    let (value, extracted_json) = match serde_json::from_str::<serde_json::Value>(&response.content)
+    {
+        Ok(value) => (value, None),
+        Err(_) => {
+            let json_str =
+                extract_json(&response.content).map_err(|error| StructuredResponseError {
+                    kind: match error {
+                        Error::LlmNoJson => StructuredResponseErrorKind::NoJson,
+                        Error::Llm(_) => StructuredResponseErrorKind::JsonParse,
+                        _ => StructuredResponseErrorKind::JsonParse,
+                    },
+                    error,
+                    raw_response: response.content.clone(),
+                    extracted_json: None,
+                })?;
+            let value = serde_json::from_str::<serde_json::Value>(&json_str).map_err(|error| {
+                StructuredResponseError {
+                    error: Error::Llm(format!("JSON parse error: {error}")),
+                    kind: StructuredResponseErrorKind::JsonParse,
+                    raw_response: response.content.clone(),
+                    extracted_json: Some(json_str.clone()),
+                }
+            })?;
+            (value, Some(json_str))
+        }
+    };
+
+    serde_json::from_value::<T>(value).map_err(|error| StructuredResponseError {
+        error: Error::Llm(format!("JSON structure error: {error}")),
+        kind: StructuredResponseErrorKind::JsonStructure,
+        raw_response: response.content.clone(),
+        extracted_json,
+    })
+}
+
 /// Send a completion request and parse the response as structured JSON.
 ///
 /// Calls [`LlmClient::complete`], extracts JSON from the response text
@@ -49,32 +147,57 @@ pub async fn complete_structured<T: DeserializeOwned>(
     request: CompletionRequest,
 ) -> Result<T> {
     let response = client.complete(request).await?;
-    if response.stop_reason.as_deref() == Some("refusal") {
-        return Err(Error::LlmRefusal);
-    }
-    if response.content.is_empty() {
-        return Err(Error::Llm("model returned empty response".into()));
-    }
+    parse_structured_response(&response).map_err(|error| error.error)
+}
 
-    let value: serde_json::Value = match serde_json::from_str(&response.content) {
-        Ok(v) => v,
-        Err(_) => {
-            let json_str = extract_json(&response.content).map_err(|e| {
+pub(crate) async fn complete_structured_with_retries<T, F>(
+    client: &dyn LlmClient,
+    request: CompletionRequest,
+    options: StructuredOutputRetryOptions,
+    should_retry: F,
+) -> Result<T>
+where
+    T: DeserializeOwned,
+    F: Fn(StructuredResponseErrorKind) -> bool,
+{
+    assert!(
+        options.max_attempts > 0,
+        "max_attempts must be greater than zero"
+    );
+
+    for attempt in 0..options.max_attempts {
+        let response = client.complete(request.clone()).await?;
+        match parse_structured_response(&response) {
+            Ok(parsed) => return Ok(parsed),
+            Err(error) => {
+                let will_retry = attempt + 1 < options.max_attempts && should_retry(error.kind);
+                let extracted_json = error
+                    .extracted_json
+                    .as_deref()
+                    .map(|json| preview_for_log(json, STRUCTURED_OUTPUT_LOG_PREVIEW_CHARS))
+                    .unwrap_or_else(|| "<none>".into());
                 tracing::warn!(
-                    content_len = response.content.len(),
-                    output_tokens = response.output_tokens,
-                    stop_reason = ?response.stop_reason,
-                    content_preview = &response.content[..response.content.len().min(200)],
-                    "failed to extract JSON from LLM response"
+                    context = options.context,
+                    attempt = attempt + 1,
+                    max_attempts = options.max_attempts,
+                    will_retry,
+                    error = %error.error,
+                    raw_response = %preview_for_log(
+                        &error.raw_response,
+                        STRUCTURED_OUTPUT_LOG_PREVIEW_CHARS
+                    ),
+                    extracted_json = %extracted_json,
+                    "structured output invalid"
                 );
-                e
-            })?;
-            serde_json::from_str(&json_str)
-                .map_err(|e| Error::Llm(format!("JSON parse error: {e}")))?
+                if will_retry {
+                    continue;
+                }
+                return Err(error.error);
+            }
         }
-    };
+    }
 
-    serde_json::from_value::<T>(value).map_err(|e| Error::Llm(format!("JSON structure error: {e}")))
+    unreachable!("structured output retry loop must return")
 }
 
 /// Extract a JSON value from text that may contain markdown fences or surrounding prose.
@@ -237,7 +360,7 @@ pub fn build_client(config: &ClientConfig) -> Result<Box<dyn LlmClient>> {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_json;
+    use super::{extract_json, preview_for_log};
 
     #[test]
     fn extract_json_clean() {
@@ -286,5 +409,19 @@ mod tests {
         let input = r#"{"msg": "hello {world}"}"#;
         let result = extract_json(input).unwrap();
         assert_eq!(result, input);
+    }
+
+    #[test]
+    fn preview_for_log_returns_full_text_when_short() {
+        let input = "short text";
+        let result = preview_for_log(input, 20);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn preview_for_log_keeps_head_and_tail_when_long() {
+        let input = "abcdefghij";
+        let result = preview_for_log(input, 6);
+        assert_eq!(result, "abc...<4 chars omitted>...hij");
     }
 }
