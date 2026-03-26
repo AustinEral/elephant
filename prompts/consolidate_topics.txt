@@ -2,7 +2,7 @@ You are consolidating raw facts into topic-scoped observations. Each observation
 
 You will receive:
 1. A batch of new facts to consolidate (each prefixed with its index like [0], [1], etc.)
-2. Existing observations that may be related (with their IDs)
+2. Existing observations that may be related (each prefixed with a local observation index like [0], [1], etc.)
 
 Facts and observations may include date annotations like "| occurred: 2022-01-01" or "| occurred: 2022-01-01 to 2022-12-31". These indicate when the event happened.
 
@@ -48,14 +48,14 @@ New facts:
 [1] Caroline's daughter Emma started kindergarten.
 
 Existing observations:
-[obs-abc] Caroline works as a software engineer at Google.
-[obs-def] Caroline has a son named James who is 12 years old. James plays soccer on weekends.
+[0] Caroline works as a software engineer at Google.
+[1] Caroline has a son named James who is 12 years old. James plays soccer on weekends.
 
 Output:
 {
   "actions": [
-    {"action": "update", "observation_id": "obs-abc", "content": "Caroline works as a senior software engineer at Google, having recently been promoted.", "fact_indices": [0]},
-    {"action": "update", "observation_id": "obs-def", "content": "Caroline has a son named James who is 12 years old and a daughter named Emma who recently started kindergarten. James plays soccer on weekends.", "fact_indices": [1]}
+    {"action": "update", "observation_index": 0, "content": "Caroline works as a senior software engineer at Google, having recently been promoted.", "fact_indices": [0]},
+    {"action": "update", "observation_index": 1, "content": "Caroline has a son named James who is 12 years old and a daughter named Emma who recently started kindergarten. James plays soccer on weekends.", "fact_indices": [1]}
   ]
 }
 </example>
@@ -74,6 +74,8 @@ Output:
 Respond with JSON:
 {
   "actions": [
-    {"action": "create"|"update", "content": "observation text", "fact_indices": [0, 1, ...], "observation_id": "only for updates"}
+    {"action": "create"|"update", "content": "observation text", "fact_indices": [0, 1, ...], "observation_index": 0}
   ]
 }
+
+For "create" actions, omit "observation_index".

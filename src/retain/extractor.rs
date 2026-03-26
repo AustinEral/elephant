@@ -5,7 +5,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::error::Result;
-use crate::llm::CompletionResponse;
 use crate::llm::{
     CompletionRequest, LlmClient, Message, ReasoningEffortConfig, StructuredOutputRetryOptions,
     StructuredResponseErrorKind, complete_structured_with_retries,
@@ -149,6 +148,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::llm::CompletionResponse;
     use crate::llm::mock::MockLlmClient;
     use crate::types::{BankId, ExtractedNetworkType, FactType};
 

@@ -1166,6 +1166,10 @@ fn benchmark_runtime_config(runtime: &ElephantRuntime) -> BenchmarkRuntimeConfig
     }
 }
 
+fn should_resume_run(config: &RunConfig) -> bool {
+    config.resume
+}
+
 fn compute_per_category(results: &[QuestionResult]) -> HashMap<String, CategoryResult> {
     let mut counts: HashMap<String, (usize, usize)> = HashMap::new();
     for r in results {
@@ -1874,7 +1878,7 @@ async fn main() {
     let mut completed_results: Vec<QuestionResult> = Vec::new();
     let mut completed_debug: Vec<QuestionDebugRecord> = Vec::new();
     let mut resume_instance_status: HashMap<String, InstanceStatus> = HashMap::new();
-    let is_resume = config.resume || (config.allow_overwrite && output_path.exists());
+    let is_resume = should_resume_run(&config);
 
     if is_resume && output_path.exists() {
         // Load existing summary to get bank IDs and instance_status
@@ -2732,6 +2736,7 @@ mod tests {
         let raw = vec![s("bin"), s("run"), s("--force")];
         let inv = parse_args_from(&raw).unwrap().unwrap();
         assert!(inv.config.allow_overwrite);
+        assert!(!inv.config.resume);
     }
 
     #[test]
@@ -2748,6 +2753,26 @@ mod tests {
         let result = parse_args_from(&raw);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn force_does_not_imply_resume() {
+        let config = RunConfig {
+            allow_overwrite: true,
+            resume: false,
+            ..Default::default()
+        };
+        assert!(!should_resume_run(&config));
+    }
+
+    #[test]
+    fn explicit_resume_enables_resume() {
+        let config = RunConfig {
+            allow_overwrite: false,
+            resume: true,
+            ..Default::default()
+        };
+        assert!(should_resume_run(&config));
     }
 
     #[test]

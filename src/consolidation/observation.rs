@@ -147,6 +147,8 @@ struct ConsolidateAction {
     action: String,
     content: String,
     fact_indices: Vec<usize>,
+    observation_index: Option<usize>,
+    #[serde(default)]
     observation_id: Option<String>,
 }
 
@@ -302,9 +304,10 @@ impl DefaultConsolidator {
             } else {
                 related_observations
                     .iter()
-                    .map(|o| {
+                    .enumerate()
+                    .map(|(i, o)| {
                         let temporal = format_temporal_suffix(o.temporal_range.as_ref());
-                        format!("[{}] {}{temporal}", o.id, o.content)
+                        format!("[{i}] {}{temporal}", o.content)
                     })
                     .collect::<Vec<_>>()
                     .join("\n")
@@ -378,35 +381,44 @@ impl DefaultConsolidator {
 
                 // Does the LLM want to update an existing observation?
                 let updated_existing = if action.action == "update" {
-                    if let Some(ref obs_id_str) = action.observation_id {
-                        if let Some(existing) = related_observations
-                            .iter()
-                            .find(|o| o.id.to_string() == *obs_id_str)
-                        {
-                            let mut updated = existing.clone();
-                            updated.content = action.content.clone();
-                            updated.embedding = embedding.clone();
-                            for eid in &evidence_ids {
-                                if !updated.evidence_ids.contains(eid) {
-                                    updated.evidence_ids.push(*eid);
-                                }
+                    let existing = action
+                        .observation_index
+                        .and_then(|index| related_observations.get(index))
+                        .or_else(|| {
+                            action.observation_id.as_deref().and_then(|obs_id_str| {
+                                let normalized = obs_id_str.trim().trim_matches(&['[', ']'][..]);
+                                related_observations
+                                    .iter()
+                                    .find(|o| o.id.to_string() == normalized)
+                            })
+                        });
+                    if let Some(existing) = existing {
+                        let mut updated = existing.clone();
+                        updated.content = action.content.clone();
+                        updated.embedding = embedding.clone();
+                        for eid in &evidence_ids {
+                            if !updated.evidence_ids.contains(eid) {
+                                updated.evidence_ids.push(*eid);
                             }
-                            for eid in &entity_ids {
-                                if !updated.entity_ids.contains(eid) {
-                                    updated.entity_ids.push(*eid);
-                                }
-                            }
-                            updated.temporal_range =
-                                merge_temporal(updated.temporal_range.as_ref(), &source_facts);
-                            updated.updated_at = Utc::now();
-                            txn.update_fact(&updated).await?;
-                            report.observations_updated += 1;
-                            true
-                        } else {
-                            warn!(obs_id = %obs_id_str, "LLM referenced unknown observation ID, creating new instead");
-                            false
                         }
+                        for eid in &entity_ids {
+                            if !updated.entity_ids.contains(eid) {
+                                updated.entity_ids.push(*eid);
+                            }
+                        }
+                        updated.temporal_range =
+                            merge_temporal(updated.temporal_range.as_ref(), &source_facts);
+                        updated.updated_at = Utc::now();
+                        txn.update_fact(&updated).await?;
+                        report.observations_updated += 1;
+                        true
                     } else {
+                        warn!(
+                            observation_index = ?action.observation_index,
+                            observation_id = ?action.observation_id,
+                            candidate_observations = related_observations.len(),
+                            "LLM referenced unknown observation target, creating new instead"
+                        );
                         false
                     }
                 } else {
@@ -616,7 +628,7 @@ mod tests {
         let report = consolidator.consolidate(bank_id).await.unwrap();
         assert_eq!(report.observations_created, 1);
 
-        // Get the created observation ID
+        // Verify the created observation exists before the update pass.
         let observations = store
             .get_facts_by_bank(
                 bank_id,
@@ -627,15 +639,17 @@ mod tests {
             )
             .await
             .unwrap();
-        let obs_id = observations[0].id.to_string();
+        assert_eq!(observations.len(), 1);
 
         // Second batch: update the existing observation
         let f2 = make_fact(bank_id, "Caroline got promoted to senior engineer");
         store.insert_facts(&[f2]).await.unwrap();
 
-        llm.push_response(format!(r#"{{"actions": [
-            {{"action": "update", "observation_id": "{obs_id}", "content": "Caroline works as a senior engineer at Google, having recently been promoted.", "fact_indices": [0]}}
-        ]}}"#));
+        llm.push_response(
+            r#"{"actions": [
+            {"action": "update", "observation_index": 0, "content": "Caroline works as a senior engineer at Google, having recently been promoted.", "fact_indices": [0]}
+        ]}"#,
+        );
 
         let report = consolidator.consolidate(bank_id).await.unwrap();
         assert_eq!(report.observations_updated, 1);
@@ -724,6 +738,61 @@ mod tests {
 
         assert_eq!(report.observations_created, 1);
         assert_eq!(llm.remaining(), 0);
+    }
+
+    #[tokio::test]
+    async fn bracketed_legacy_observation_id_still_updates() {
+        let (store, llm, embeddings) = setup();
+        let bank_id = BankId::new();
+
+        let f1 = make_fact(bank_id, "Caroline works at Google");
+        store.insert_facts(&[f1]).await.unwrap();
+
+        llm.push_response(
+            r#"{"actions": [
+            {"action": "create", "content": "Caroline works at Google.", "fact_indices": [0]}
+        ]}"#,
+        );
+
+        let consolidator = make_consolidator(&store, &llm, &embeddings);
+        consolidator.consolidate(bank_id).await.unwrap();
+
+        let observations = store
+            .get_facts_by_bank(
+                bank_id,
+                FactFilter {
+                    network: Some(vec![NetworkType::Observation]),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let obs_id = observations[0].id.to_string();
+
+        let f2 = make_fact(bank_id, "Caroline got promoted to senior engineer");
+        store.insert_facts(&[f2]).await.unwrap();
+
+        llm.push_response(format!(
+            r#"{{"actions": [
+            {{"action": "update", "observation_id": "[{obs_id}]", "content": "Caroline works as a senior engineer at Google, having recently been promoted.", "fact_indices": [0]}}
+        ]}}"#
+        ));
+
+        let report = consolidator.consolidate(bank_id).await.unwrap();
+        assert_eq!(report.observations_updated, 1);
+
+        let observations = store
+            .get_facts_by_bank(
+                bank_id,
+                FactFilter {
+                    network: Some(vec![NetworkType::Observation]),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(observations.len(), 1);
+        assert!(observations[0].content.contains("senior engineer"));
     }
 
     #[tokio::test]
