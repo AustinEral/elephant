@@ -1,10 +1,7 @@
 # Elephant
 
-Use the `elephant` MCP server when it is available and the task would benefit from persistent memory.
+Elephant is your memory. It is your continuity across sessions, context compaction, and other agents. Read it, build on it, and update it. An agent that ignores Elephant is just a stateless agent with extra steps.
 
-If `.elephant/bank_id` exists in the repository, treat its contents as the default Elephant bank ID for this repo and use that bank unless the user explicitly asks for a different one.
-
-Use Elephant for storing, recalling, and reflecting on durable user, project, and workflow memory.
-Do not use Elephant for ephemeral scratch work or questions fully answerable from the current repository state.
+If `.elephant/bank_id` exists, use the memory it selects unless the user explicitly asks for a different one.
 
 If the `elephant` MCP server is unavailable, continue normally and note that memory integration is unavailable.

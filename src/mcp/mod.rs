@@ -46,14 +46,14 @@ impl SearchBudget {
 /// Parameters for the retain tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RetainParams {
-    /// Memory bank ID.
+    /// ID of the memory to use.
     pub bank_id: String,
-    /// The content to store in memory.
+    /// New information to remember.
     pub content: String,
-    /// Optional surrounding context for what is being stored.
+    /// Optional surrounding context for what should be remembered.
     #[serde(default)]
     pub context: Option<String>,
-    /// Optional ISO 8601 timestamp for when the event occurred.
+    /// Optional ISO 8601 timestamp for when the remembered event occurred.
     #[serde(default)]
     pub timestamp: Option<String>,
 }
@@ -61,14 +61,14 @@ pub struct RetainParams {
 /// Parameters for the recall tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RecallParams {
-    /// Memory bank ID.
+    /// ID of the memory to inspect.
     pub bank_id: String,
-    /// Natural language query for lower-level memory retrieval.
+    /// What remembered details to inspect directly.
     pub query: String,
-    /// Optional maximum token budget override for this recall call.
+    /// Optional maximum token budget override for this inspection call.
     #[serde(default)]
     pub max_tokens: Option<usize>,
-    /// Optional temporal anchor used by the temporal retrieval channel.
+    /// Optional temporal anchor used when inspecting time-sensitive memory.
     #[serde(default)]
     pub temporal_anchor: Option<crate::types::TemporalRange>,
 }
@@ -76,14 +76,14 @@ pub struct RecallParams {
 /// Parameters for the reflect tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReflectParams {
-    /// Memory bank ID.
+    /// ID of the memory to use.
     pub bank_id: String,
-    /// The question or topic to answer by reasoning over stored memory.
+    /// What you want to remember and answer.
     pub query: String,
-    /// Optional context about why this reflection is needed.
+    /// Optional context for this memory task.
     #[serde(default)]
     pub context: Option<String>,
-    /// Optional current-time anchor for time-sensitive questions.
+    /// Optional current-time anchor for time-sensitive remembering.
     #[serde(default)]
     pub temporal_context: Option<String>,
     /// Search budget: "low", "mid", or "high" (default: "low").
@@ -94,9 +94,9 @@ pub struct ReflectParams {
 /// Parameters for the create_bank tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CreateBankParams {
-    /// Human-friendly name for the bank.
+    /// Human-friendly name for the memory.
     pub name: String,
-    /// Optional mission describing the bank's purpose.
+    /// Optional mission describing what this memory is for.
     #[serde(default)]
     pub mission: Option<String>,
 }
@@ -104,7 +104,7 @@ pub struct CreateBankParams {
 /// Parameters for the get_bank tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetBankParams {
-    /// Memory bank ID.
+    /// Memory ID.
     pub bank_id: String,
 }
 
@@ -310,8 +310,8 @@ impl ElephantMcp {
 impl ElephantMcp {
     // --- Core operations ---
 
-    /// Store information to long-term memory.
-    #[tool(description = "Store information to long-term memory.")]
+    /// Remember new information.
+    #[tool(description = "Remember new information so it becomes part of durable memory.")]
     async fn retain(&self, Parameters(params): Parameters<RetainParams>) -> Result<String, String> {
         let input = params.into_input().map_err(|e| e.message.to_string())?;
 
@@ -324,9 +324,9 @@ impl ElephantMcp {
         json_text(&output).map_err(|e| e.message.to_string())
     }
 
-    /// Access raw memories from the bank.
+    /// Inspect remembered facts directly.
     #[tool(
-        description = "Access raw memories from the bank. Use this when you need evidence, fact inspection, or downstream reasoning over retrieved facts. For most memory questions, prefer reflect."
+        description = "Inspect specific stored memories directly. Use this only when you need to inspect or verify raw remembered details."
     )]
     async fn recall(&self, Parameters(params): Parameters<RecallParams>) -> Result<String, String> {
         let query = params.into_query().map_err(|e| e.message.to_string())?;
@@ -340,9 +340,9 @@ impl ElephantMcp {
         json_text(&self.recall_view(result)).map_err(|e| e.message.to_string())
     }
 
-    /// Reason over the memory bank to produce an answer.
+    /// Remember and answer from what you know.
     #[tool(
-        description = "Primary memory reasoning tool. Ask Elephant to answer by retrieving and reasoning over memories in the bank, shaped by the bank's configured personality."
+        description = "Use your memory to answer. This is the primary memory interface."
     )]
     async fn reflect(
         &self,
@@ -361,9 +361,9 @@ impl ElephantMcp {
 
     // --- Bank management ---
 
-    /// List all available memory banks.
+    /// List all available memories.
     #[tool(
-        description = "List all available memory banks, including active runtime configuration."
+        description = "List the available memories you can use, including active runtime configuration."
     )]
     async fn list_banks(&self) -> Result<String, String> {
         let banks = self
@@ -376,8 +376,8 @@ impl ElephantMcp {
         json_text(&views).map_err(|e| e.message.to_string())
     }
 
-    /// Get one memory bank by ID.
-    #[tool(description = "Get one memory bank by ID, including active runtime configuration.")]
+    /// Get one memory by ID.
+    #[tool(description = "Get one memory by ID, including active runtime configuration.")]
     async fn get_bank(
         &self,
         Parameters(params): Parameters<GetBankParams>,
@@ -391,9 +391,9 @@ impl ElephantMcp {
         json_text(&self.bank_view(bank)).map_err(|e| e.message.to_string())
     }
 
-    /// Create a new memory bank.
+    /// Create a new memory.
     #[tool(
-        description = "Create a new memory bank and return it with active runtime configuration."
+        description = "Create a new memory and return it with active runtime configuration."
     )]
     async fn create_bank(
         &self,

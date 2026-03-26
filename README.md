@@ -98,6 +98,7 @@ curl localhost:3001/v1/banks/$BANK_ID/reflect \
 
 For a cleaner source-install path, see [docs/getting-started.md](docs/getting-started.md).
 For Codex-specific setup, including Docker-only MCP installation, see [docs/codex.md](docs/codex.md).
+For Claude Code setup, including project and global MCP installation, see [docs/claude.md](docs/claude.md).
 
 ### MCP
 
@@ -120,7 +121,11 @@ For Codex, this repository also includes:
 
 - [`.codex/config.toml`](.codex/config.toml) for trusted project setup
 - [`AGENTS.md`](AGENTS.md) to help Codex use Elephant automatically
-- [`scripts/install-codex-mcp.sh`](scripts/install-codex-mcp.sh) for global Codex MCP installation
+
+For Claude Code, this repository also includes:
+
+- [`.mcp.json`](.mcp.json) for project-scoped MCP setup
+- [`CLAUDE.md`](CLAUDE.md) for Claude-specific Elephant usage guidance
 
 ### Building from source
 

@@ -325,24 +325,24 @@ The MCP surface is intentionally narrower than the REST API. It is designed for 
 ### MCP tool notes
 
 - `list_banks`
-  - returns an array of bank objects
-  - each bank object includes an `active_runtime` snapshot with the running server's model labels and tuning
+  - returns an array of memory objects
+  - each memory object includes an `active_runtime` snapshot with the running server's model labels and tuning
 - `get_bank`
   - accepts `bank_id`
-  - returns the matching bank plus an `active_runtime` snapshot of the running server config
+  - returns the matching memory plus an `active_runtime` snapshot of the running server config
 - `create_bank`
   - accepts required `name` and optional `mission`
-  - always creates a new bank with a generated ID
-  - returns the new bank plus an `active_runtime` snapshot of the running server config
+  - always creates a new memory with a generated ID
+  - returns the new memory plus an `active_runtime` snapshot of the running server config
 - `retain`
   - accepts `bank_id`, `content`, optional `context`, optional `timestamp`
+  - use this to remember new information so it becomes part of durable memory
   - invalid `timestamp` values are rejected
 - `recall`
   - accepts `bank_id`, `query`, optional `max_tokens`, optional `temporal_anchor`
   - omitted `max_tokens` uses the server's recall default
-  - lower-level memory access
-  - use this when an agent needs evidence, fact inspection, prompting context, or downstream reasoning over retrieved facts
-  - for most memory questions, prefer `reflect`
+  - inspect specific stored memories directly
+  - use this only when you need to inspect or verify raw remembered details
   - returns a compact fact list for MCP use:
     - `id`
     - `content`
@@ -354,8 +354,8 @@ The MCP surface is intentionally narrower than the REST API. It is designed for 
 - `reflect`
   - accepts `bank_id`, `query`, optional `context`, optional `temporal_context`, and `budget` (`low`, `mid`, `high`)
   - invalid `temporal_context` values are rejected
-  - primary memory reasoning tool
-  - use this for most memory-grounded questions when the agent wants Elephant to retrieve, reason, and answer from the bank
+  - primary memory interface
+  - use this to answer from memory
   - returns only the concise MCP view:
     - `response`
     - `sources`
