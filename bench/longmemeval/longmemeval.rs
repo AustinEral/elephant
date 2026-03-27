@@ -1922,10 +1922,16 @@ async fn main() {
 
     // Build runtime with MetricsCollector
     let metrics = Arc::new(MetricsCollector::new());
+    let determinism_requirement = common::benchmark_determinism_requirement_from_env()
+        .unwrap_or_else(|message| {
+            eprintln!("{message}");
+            std::process::exit(1);
+        });
     let runtime = Arc::new(
         build_runtime_from_env(BuildRuntimeOptions {
             metrics: Some(metrics.clone()),
             max_pool_connections: Some(std::cmp::min(config.instance_jobs as u32 * 8, 80)),
+            determinism_requirement,
         })
         .await
         .unwrap_or_else(|e| {
@@ -1965,6 +1971,12 @@ async fn main() {
         "  reasoning_effort: {}",
         common::format_reasoning_effort_summary(&runtime.info.tuning)
     );
+    if let Some(requirement) = determinism_requirement {
+        eprintln!(
+            "  determinism:    {}",
+            common::format_determinism_requirement(requirement)
+        );
+    }
     if let Some(ref judge) = config.judge_model {
         eprintln!("  judge_model:    {judge}");
     }

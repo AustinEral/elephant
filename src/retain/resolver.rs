@@ -7,7 +7,9 @@ use async_trait::async_trait;
 
 use crate::embedding::EmbeddingClient;
 use crate::error::Result;
-use crate::llm::{CompletionRequest, LlmClient, Message, ReasoningEffortConfig};
+use crate::llm::{
+    CompletionRequest, LlmClient, Message, ReasoningEffortConfig, temperature_from_env,
+};
 use crate::storage::MemoryStore;
 use crate::types::{BankId, Entity, EntityId, EntityType, ResolvedEntity};
 use crate::util::cosine_similarity;
@@ -40,6 +42,7 @@ pub struct LayeredEntityResolver {
     embeddings: Box<dyn EmbeddingClient>,
     llm: Arc<dyn LlmClient>,
     similarity_threshold: f32,
+    temperature: f32,
 }
 
 /// Entity resolver system instruction.
@@ -52,13 +55,31 @@ pub const ENTITY_RESOLUTION_TEMPERATURE: f32 = 0.0;
 /// Entity resolver output cap.
 pub const ENTITY_RESOLUTION_MAX_TOKENS: usize = 32;
 
+/// Read the entity-resolution temperature from environment.
+pub fn resolve_temperature_from_env() -> Result<f32> {
+    Ok(
+        temperature_from_env("RETAIN_RESOLVE_TEMPERATURE")?
+            .unwrap_or(ENTITY_RESOLUTION_TEMPERATURE),
+    )
+}
+
 impl LayeredEntityResolver {
     /// Create a new resolver.
     pub fn new(embeddings: Box<dyn EmbeddingClient>, llm: Arc<dyn LlmClient>) -> Self {
+        Self::new_with_temperature(embeddings, llm, ENTITY_RESOLUTION_TEMPERATURE)
+    }
+
+    /// Create a new resolver with an explicit temperature override.
+    pub fn new_with_temperature(
+        embeddings: Box<dyn EmbeddingClient>,
+        llm: Arc<dyn LlmClient>,
+        temperature: f32,
+    ) -> Self {
         Self {
             embeddings,
             llm,
             similarity_threshold: 0.75,
+            temperature,
         }
     }
 
@@ -133,7 +154,7 @@ impl LayeredEntityResolver {
         let request = CompletionRequest::builder()
             .system(ENTITY_RESOLUTION_SYSTEM_PROMPT)
             .message(Message::user(prompt))
-            .temperature(ENTITY_RESOLUTION_TEMPERATURE)
+            .temperature(self.temperature)
             .reasoning_effort_opt(ReasoningEffortConfig::current()?.retain_resolve)
             .max_tokens(ENTITY_RESOLUTION_MAX_TOKENS)
             .build();

@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 use crate::llm::{
     CompletionRequest, CompletionResponse, LlmClient, Message, OpenAiConfig,
     OpenAiPromptCacheConfig, OpenAiPromptCacheRetention, PromptCacheUsage, ReasoningEffort,
-    ToolCall, ToolChoice, ToolDefinition, ToolResult,
+    ToolCall, ToolChoice, ToolDefinition, ToolResult, resolve_temperature_for_target,
 };
 
 const API_URL: &str = "https://api.openai.com/v1";
@@ -74,24 +74,6 @@ impl OpenAiResponsesRequest {
             || model.starts_with("o4")
     }
 
-    fn temperature_for_model(
-        model: &str,
-        temperature: Option<f32>,
-        reasoning_effort: Option<ReasoningEffort>,
-    ) -> Option<f32> {
-        if model.starts_with("gpt-5.1") || model.starts_with("gpt-5.2") {
-            return matches!(reasoning_effort, Some(ReasoningEffort::None))
-                .then_some(temperature)
-                .flatten();
-        }
-
-        if model.starts_with("gpt-5") {
-            return None;
-        }
-
-        temperature
-    }
-
     fn from_completion_request(
         request: &CompletionRequest,
         model: String,
@@ -110,8 +92,13 @@ impl OpenAiResponsesRequest {
         });
         let parallel_tool_calls = tools.as_ref().map(|_| true);
         let supports_reasoning = Self::supports_reasoning(&model);
-        let temperature =
-            Self::temperature_for_model(&model, request.temperature(), request.reasoning_effort());
+        let temperature = resolve_temperature_for_target(
+            super::Provider::OpenAi,
+            &model,
+            request.temperature(),
+            request.reasoning_effort(),
+        )
+        .effective();
         let reasoning = request
             .reasoning_effort()
             .filter(|_| supports_reasoning)
@@ -547,6 +534,13 @@ impl LlmClient for OpenAiClient {
         let requested_max_tokens = request.max_tokens();
         let requested_temperature = request.temperature();
         let requested_reasoning_effort = request.reasoning_effort();
+        let temperature_resolution = resolve_temperature_for_target(
+            super::Provider::OpenAi,
+            &model,
+            requested_temperature,
+            requested_reasoning_effort,
+        );
+        let effective_temperature = temperature_resolution.effective();
 
         let body = OpenAiResponsesRequest::from_completion_request(
             &request,
@@ -554,6 +548,17 @@ impl LlmClient for OpenAiClient {
             self.prompt_cache.as_ref(),
         );
         let url = format!("{}/responses", self.base_url);
+
+        if !temperature_resolution.is_supported() {
+            tracing::warn!(
+                model = %model,
+                requested_temperature = ?requested_temperature,
+                effective_temperature = ?effective_temperature,
+                requested_reasoning_effort = ?requested_reasoning_effort,
+                unsupported_reason = temperature_resolution.unsupported_reason(),
+                "openai model does not support requested temperature; omitting from request"
+            );
+        }
 
         let resp_text = super::send_and_check(
             "OpenAI",
@@ -671,6 +676,20 @@ mod tests {
         let value = serde_json::to_value(&body).unwrap();
         assert!(value.get("temperature").is_none());
         assert_eq!(value["reasoning"]["effort"], "low");
+    }
+
+    #[test]
+    fn omits_temperature_for_gpt54_even_without_reasoning() {
+        let request = CompletionRequest::builder()
+            .message(Message::user("hello"))
+            .max_tokens(64)
+            .temperature(0.0)
+            .build();
+
+        let body =
+            OpenAiResponsesRequest::from_completion_request(&request, "gpt-5.4-mini".into(), None);
+        let value = serde_json::to_value(&body).unwrap();
+        assert!(value.get("temperature").is_none());
     }
 
     #[test]

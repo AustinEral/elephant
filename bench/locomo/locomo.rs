@@ -3824,10 +3824,16 @@ async fn main() {
 
     let metrics = Arc::new(MetricsCollector::new());
     metrics.extend_snapshot(&existing_stage_metrics);
+    let determinism_requirement = common::benchmark_determinism_requirement_from_env()
+        .unwrap_or_else(|message| {
+            eprintln!("{message}");
+            std::process::exit(1);
+        });
     let runtime = Arc::new(
         build_runtime_from_env(BuildRuntimeOptions {
             metrics: Some(metrics.clone()),
             max_pool_connections: None,
+            determinism_requirement,
         })
         .await
         .expect("failed to build Elephant runtime"),
@@ -3844,6 +3850,12 @@ async fn main() {
         "Reasoning effort: {}",
         common::format_reasoning_effort_summary(&runtime.info.tuning)
     );
+    if let Some(requirement) = determinism_requirement {
+        println!(
+            "Determinism requirement: {}",
+            common::format_determinism_requirement(requirement)
+        );
+    }
     println!("LLM judge: {judge_label}");
     println!("Profile: {}", config.profile.as_str());
     println!("Mode: {}", command.as_str());

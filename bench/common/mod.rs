@@ -3,6 +3,9 @@ pub mod fingerprint;
 pub mod io;
 pub mod judge;
 
+use std::env;
+
+use elephant::llm::DeterminismRequirement;
 use elephant::llm::ReasoningEffort;
 use elephant::runtime::RuntimeTuning as ElephantRuntimeTuning;
 
@@ -35,4 +38,65 @@ pub fn format_reasoning_effort_summary(tuning: &ElephantRuntimeTuning) -> String
         format_reasoning_effort(tuning.consolidate_reasoning_effort),
         format_reasoning_effort(tuning.opinion_merge_reasoning_effort),
     )
+}
+
+#[allow(dead_code)]
+pub fn benchmark_determinism_requirement_from_env() -> Result<Option<DeterminismRequirement>, String>
+{
+    let Some(raw) = env::var("BENCH_DETERMINISM_REQUIREMENT").ok() else {
+        return Ok(None);
+    };
+
+    let value = raw.trim().to_ascii_lowercase();
+    match value.as_str() {
+        "best_effort" | "best-effort" | "1" | "true" | "yes" | "on" => {
+            Ok(Some(DeterminismRequirement::BestEffort))
+        }
+        "strong" => Ok(Some(DeterminismRequirement::Strong)),
+        _ => Err(format!(
+            "BENCH_DETERMINISM_REQUIREMENT must be one of: best_effort, strong; got: {raw}"
+        )),
+    }
+}
+
+#[allow(dead_code)]
+pub fn format_determinism_requirement(requirement: DeterminismRequirement) -> &'static str {
+    requirement.as_str()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn parses_best_effort_requirement_from_env() {
+        let _guard = env_lock().lock().unwrap();
+        unsafe {
+            env::set_var("BENCH_DETERMINISM_REQUIREMENT", "best_effort");
+        }
+        let parsed = benchmark_determinism_requirement_from_env().unwrap();
+        assert_eq!(parsed, Some(DeterminismRequirement::BestEffort));
+        unsafe {
+            env::remove_var("BENCH_DETERMINISM_REQUIREMENT");
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_requirement_from_env() {
+        let _guard = env_lock().lock().unwrap();
+        unsafe {
+            env::set_var("BENCH_DETERMINISM_REQUIREMENT", "maybe");
+        }
+        let err = benchmark_determinism_requirement_from_env().unwrap_err();
+        assert!(err.contains("BENCH_DETERMINISM_REQUIREMENT"));
+        unsafe {
+            env::remove_var("BENCH_DETERMINISM_REQUIREMENT");
+        }
+    }
 }

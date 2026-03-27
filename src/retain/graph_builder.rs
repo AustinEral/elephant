@@ -6,7 +6,9 @@ use async_trait::async_trait;
 use chrono::Duration;
 
 use crate::error::Result;
-use crate::llm::{CompletionRequest, LlmClient, Message, ReasoningEffortConfig};
+use crate::llm::{
+    CompletionRequest, LlmClient, Message, ReasoningEffortConfig, temperature_from_env,
+};
 use crate::storage::MemoryStore;
 use crate::types::{BankId, Fact, FactFilter, GraphLink, LinkType, NetworkType};
 use crate::util::cosine_similarity;
@@ -35,6 +37,8 @@ pub struct GraphConfig {
     pub temporal_max_days: i64,
     /// Whether to check for causal links via LLM.
     pub enable_causal: bool,
+    /// Sampling temperature for causal link checks.
+    pub causal_temperature: f32,
 }
 
 impl Default for GraphConfig {
@@ -43,8 +47,14 @@ impl Default for GraphConfig {
             semantic_threshold: 0.7,
             temporal_max_days: 30,
             enable_causal: true,
+            causal_temperature: CAUSAL_LINK_TEMPERATURE,
         }
     }
+}
+
+/// Read graph-builder temperature overrides from environment.
+pub fn causal_temperature_from_env() -> Result<f32> {
+    Ok(temperature_from_env("RETAIN_GRAPH_TEMPERATURE")?.unwrap_or(CAUSAL_LINK_TEMPERATURE))
 }
 
 /// Graph builder that constructs temporal, semantic, entity, and causal links.
@@ -248,7 +258,7 @@ impl DefaultGraphBuilder {
             let request = CompletionRequest::builder()
                 .system(CAUSAL_LINK_SYSTEM_PROMPT)
                 .message(Message::user(prompt))
-                .temperature(CAUSAL_LINK_TEMPERATURE)
+                .temperature(self.config.causal_temperature)
                 .reasoning_effort_opt(ReasoningEffortConfig::current()?.retain_graph)
                 .max_tokens(CAUSAL_LINK_MAX_TOKENS)
                 .build();

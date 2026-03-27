@@ -283,6 +283,28 @@ impl ReasoningEffort {
     }
 }
 
+/// Read an optional sampling temperature override from an environment variable.
+///
+/// Temperatures must be finite, non-negative floats. Provider/model-specific
+/// upper bounds are validated by the downstream adapter or API.
+pub fn temperature_from_env(name: &str) -> Result<Option<f32>> {
+    let Some(raw) = env::var(name).ok() else {
+        return Ok(None);
+    };
+
+    let value = raw
+        .trim()
+        .parse::<f32>()
+        .map_err(|_| Error::Configuration(format!("{name} must be a float, got: {raw}")))?;
+    if !value.is_finite() || value < 0.0 {
+        return Err(Error::Configuration(format!(
+            "{name} must be a finite, non-negative float, got: {raw}"
+        )));
+    }
+
+    Ok(Some(value))
+}
+
 /// Per-stage reasoning-effort overrides loaded from environment.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ReasoningEffortConfig {
@@ -546,5 +568,34 @@ mod tests {
         assert_eq!(message.content(), "");
         assert_eq!(message.tool_calls().len(), 1);
         assert!(message.tool_results().is_empty());
+    }
+
+    #[test]
+    fn temperature_from_env_parses_non_negative_values() {
+        const VAR: &str = "TEST_TEMPERATURE_PARSE";
+        unsafe {
+            env::set_var(VAR, "0");
+        }
+        assert_eq!(temperature_from_env(VAR).unwrap(), Some(0.0));
+        unsafe {
+            env::set_var(VAR, "0.3");
+        }
+        assert_eq!(temperature_from_env(VAR).unwrap(), Some(0.3));
+        unsafe {
+            env::remove_var(VAR);
+        }
+    }
+
+    #[test]
+    fn temperature_from_env_rejects_negative_values() {
+        const VAR: &str = "TEST_TEMPERATURE_NEGATIVE";
+        unsafe {
+            env::set_var(VAR, "-0.1");
+        }
+        let err = temperature_from_env(VAR).unwrap_err();
+        assert!(err.to_string().contains("non-negative"));
+        unsafe {
+            env::remove_var(VAR);
+        }
     }
 }

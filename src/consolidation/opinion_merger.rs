@@ -10,6 +10,7 @@ use crate::embedding::EmbeddingClient;
 use crate::error::Result;
 use crate::llm::{
     CompletionRequest, LlmClient, Message, ReasoningEffortConfig, complete_structured,
+    temperature_from_env,
 };
 use crate::storage::MemoryStore;
 use crate::types::id::BankId;
@@ -29,6 +30,30 @@ pub struct DefaultOpinionMerger {
     store: Arc<dyn MemoryStore>,
     llm: Arc<dyn LlmClient>,
     embeddings: Arc<dyn EmbeddingClient>,
+    config: OpinionMergeConfig,
+}
+
+/// Static configuration for opinion merging.
+#[derive(Debug, Clone, Copy)]
+pub struct OpinionMergeConfig {
+    /// Sampling temperature for opinion merge classification.
+    pub temperature: f32,
+}
+
+impl Default for OpinionMergeConfig {
+    fn default() -> Self {
+        Self {
+            temperature: MERGE_TEMPERATURE,
+        }
+    }
+}
+
+/// Read opinion merge configuration from environment.
+pub fn config_from_env() -> Result<OpinionMergeConfig> {
+    Ok(OpinionMergeConfig {
+        temperature: temperature_from_env("OPINION_MERGE_TEMPERATURE")?
+            .unwrap_or(OpinionMergeConfig::default().temperature),
+    })
 }
 
 impl DefaultOpinionMerger {
@@ -38,10 +63,21 @@ impl DefaultOpinionMerger {
         llm: Arc<dyn LlmClient>,
         embeddings: Arc<dyn EmbeddingClient>,
     ) -> Self {
+        Self::new_with_config(store, llm, embeddings, OpinionMergeConfig::default())
+    }
+
+    /// Create a new opinion merger with explicit configuration.
+    pub fn new_with_config(
+        store: Arc<dyn MemoryStore>,
+        llm: Arc<dyn LlmClient>,
+        embeddings: Arc<dyn EmbeddingClient>,
+        config: OpinionMergeConfig,
+    ) -> Self {
         Self {
             store,
             llm,
             embeddings,
+            config,
         }
     }
 }
@@ -131,7 +167,7 @@ impl OpinionMerger for DefaultOpinionMerger {
             let request = CompletionRequest::builder()
                 .message(Message::user(prompt))
                 .max_tokens(MERGE_MAX_TOKENS)
-                .temperature(MERGE_TEMPERATURE)
+                .temperature(self.config.temperature)
                 .reasoning_effort_opt(ReasoningEffortConfig::current()?.opinion_merge)
                 .build();
 

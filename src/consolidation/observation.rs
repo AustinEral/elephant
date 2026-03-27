@@ -18,7 +18,7 @@ use crate::embedding::EmbeddingClient;
 use crate::error::Result;
 use crate::llm::{
     CompletionRequest, LlmClient, Message, ReasoningEffortConfig, StructuredOutputRetryOptions,
-    StructuredResponseErrorKind, complete_structured_with_retries,
+    StructuredResponseErrorKind, complete_structured_with_retries, temperature_from_env,
 };
 use crate::recall::RecallPipeline;
 use crate::storage::MemoryStore;
@@ -38,6 +38,8 @@ pub struct ConsolidationConfig {
     pub recall_budget: usize,
     /// Total number of attempts for malformed structured output from the consolidator LLM.
     pub structured_output_max_attempts: usize,
+    /// Sampling temperature for observation consolidation.
+    pub temperature: f32,
 }
 
 impl Default for ConsolidationConfig {
@@ -47,13 +49,14 @@ impl Default for ConsolidationConfig {
             max_tokens: 4096,
             recall_budget: 512,
             structured_output_max_attempts: 3,
+            temperature: CONSOLIDATE_TEMPERATURE,
         }
     }
 }
 
 /// Read consolidation configuration from environment.
-pub fn config_from_env() -> ConsolidationConfig {
-    ConsolidationConfig {
+pub fn config_from_env() -> Result<ConsolidationConfig> {
+    Ok(ConsolidationConfig {
         batch_size: std::env::var("CONSOLIDATION_BATCH_SIZE")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -73,7 +76,9 @@ pub fn config_from_env() -> ConsolidationConfig {
         .and_then(|v| v.parse().ok())
         .filter(|&v| v > 0)
         .unwrap_or(ConsolidationConfig::default().structured_output_max_attempts),
-    }
+        temperature: temperature_from_env("CONSOLIDATE_TEMPERATURE")?
+            .unwrap_or(ConsolidationConfig::default().temperature),
+    })
 }
 
 /// Consolidates raw facts into topic-scoped observations.
@@ -320,7 +325,7 @@ impl DefaultConsolidator {
             let request = CompletionRequest::builder()
                 .message(Message::user(prompt))
                 .max_tokens(self.config.max_tokens)
-                .temperature(CONSOLIDATE_TEMPERATURE)
+                .temperature(self.config.temperature)
                 .reasoning_effort_opt(ReasoningEffortConfig::current()?.consolidate)
                 .build();
 

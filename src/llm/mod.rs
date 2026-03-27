@@ -1,6 +1,7 @@
 //! LLM client abstraction and provider implementations.
 
 pub mod anthropic;
+mod capabilities;
 mod config;
 pub mod gemini;
 pub mod mock;
@@ -12,6 +13,11 @@ pub mod vertex;
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 
+pub use capabilities::{
+    DeterminismAssessment, DeterminismRequirement, DeterminismSupport, TemperatureResolution,
+    assess_determinism, assess_determinism_for_target, resolve_temperature,
+    resolve_temperature_for_target,
+};
 pub use config::{
     AnthropicConfig, AnthropicPromptCacheConfig, AnthropicPromptCacheTtl, ClientConfig,
     DEFAULT_TIMEOUT_SECS, GeminiConfig, LlmConfig, OpenAiConfig, OpenAiPromptCacheConfig,
@@ -21,7 +27,7 @@ pub use config::{
 pub use types::{
     CompletionRequest, CompletionRequestBuilder, CompletionResponse, Message, MessageRole,
     PromptCacheUsage, ReasoningEffort, ReasoningEffortConfig, ToolCall, ToolChoice, ToolDefinition,
-    ToolResult,
+    ToolResult, temperature_from_env,
 };
 
 use crate::error::{Error, Result};

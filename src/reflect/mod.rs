@@ -17,7 +17,7 @@ use tracing::{Instrument, debug, error, info, info_span, trace};
 use crate::error::Result;
 use crate::llm::{
     CompletionRequest, LlmClient, Message, ReasoningEffortConfig, ToolChoice, ToolDefinition,
-    ToolResult,
+    ToolResult, temperature_from_env,
 };
 use crate::recall::RecallPipeline;
 use crate::recall::temporal::{parse_reference_datetime, parse_temporal_reference};
@@ -46,6 +46,7 @@ pub struct DefaultReflectPipeline {
     source_lookup_limit: usize,
     source_content_max_chars: Option<usize>,
     enable_source_lookup: bool,
+    temperature: f32,
 }
 
 /// Reflect agent prompt template.
@@ -56,6 +57,11 @@ pub const REFLECT_TEMPERATURE: f32 = 0.3;
 pub const DEFAULT_SOURCE_LOOKUP_LIMIT: usize = 3;
 /// Default lookup availability for reflect.
 pub const DEFAULT_ENABLE_SOURCE_LOOKUP: bool = true;
+
+/// Read the reflect temperature from environment.
+pub fn reflect_temperature_from_env() -> Result<f32> {
+    Ok(temperature_from_env("REFLECT_TEMPERATURE")?.unwrap_or(REFLECT_TEMPERATURE))
+}
 
 impl DefaultReflectPipeline {
     /// Create a new reflect pipeline.
@@ -74,6 +80,7 @@ impl DefaultReflectPipeline {
             DEFAULT_SOURCE_LOOKUP_LIMIT,
             None,
             DEFAULT_ENABLE_SOURCE_LOOKUP,
+            REFLECT_TEMPERATURE,
         )
     }
 
@@ -87,6 +94,7 @@ impl DefaultReflectPipeline {
         source_lookup_limit: usize,
         source_content_max_chars: Option<usize>,
         enable_source_lookup: bool,
+        temperature: f32,
     ) -> Self {
         Self {
             recall,
@@ -97,6 +105,7 @@ impl DefaultReflectPipeline {
             source_lookup_limit: source_lookup_limit.max(1),
             source_content_max_chars,
             enable_source_lookup,
+            temperature,
         }
     }
 }
@@ -293,7 +302,7 @@ impl DefaultReflectPipeline {
 
             let request = CompletionRequest::builder()
                 .messages(messages.clone())
-                .temperature(REFLECT_TEMPERATURE)
+                .temperature(self.temperature)
                 .reasoning_effort_opt(ReasoningEffortConfig::current()?.reflect)
                 .max_tokens_opt(self.max_output_tokens)
                 .system(system_prompt.clone())

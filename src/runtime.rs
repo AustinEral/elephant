@@ -11,7 +11,10 @@ use crate::consolidation::{ConsolidationConfig, DefaultConsolidator, DefaultOpin
 use crate::embedding::{self, EmbeddingClient, EmbeddingConfig, EmbeddingProvider};
 use crate::error::{Error, Result};
 use crate::llm::retry::{RetryPolicy, RetryingLlmClient};
-use crate::llm::{self, ClientConfig, LlmClient, ReasoningEffort, ReasoningEffortConfig};
+use crate::llm::{
+    self, ClientConfig, DeterminismAssessment, DeterminismRequirement, LlmClient, ReasoningEffort,
+    ReasoningEffortConfig,
+};
 use crate::metrics::{LlmStage, MeteredLlmClient, MetricsCollector};
 use crate::recall::DefaultRecallPipeline;
 use crate::recall::RecallPipeline;
@@ -78,17 +81,33 @@ pub struct RuntimeTuning {
     pub reflect_max_tokens: Option<usize>,
     /// Retain extraction reasoning effort override.
     pub retain_extract_reasoning_effort: Option<ReasoningEffort>,
+    /// Requested retain extraction temperature.
+    pub retain_extract_temperature: f32,
+    /// Effective retain extraction temperature forwarded to the provider, if any.
+    pub retain_extract_effective_temperature: Option<f32>,
     /// Total attempts for malformed extractor structured output.
     pub retain_extract_structured_output_max_attempts: usize,
     /// Retain entity-resolution reasoning effort override.
     pub retain_resolve_reasoning_effort: Option<ReasoningEffort>,
+    /// Requested retain entity-resolution temperature.
+    pub retain_resolve_temperature: f32,
+    /// Effective retain entity-resolution temperature forwarded to the provider, if any.
+    pub retain_resolve_effective_temperature: Option<f32>,
     /// Retain graph-builder reasoning effort override.
     pub retain_graph_reasoning_effort: Option<ReasoningEffort>,
+    /// Requested retain graph-builder temperature.
+    pub retain_graph_temperature: f32,
+    /// Effective retain graph-builder temperature forwarded to the provider, if any.
+    pub retain_graph_effective_temperature: Option<f32>,
     /// Whether reflect exposes the source lookup tool.
     #[serde(default = "default_true")]
     pub reflect_enable_source_lookup: bool,
     /// Reflect reasoning effort override.
     pub reflect_reasoning_effort: Option<ReasoningEffort>,
+    /// Requested reflect temperature.
+    pub reflect_temperature: f32,
+    /// Effective reflect temperature forwarded to the provider, if any.
+    pub reflect_effective_temperature: Option<f32>,
     /// Graph semantic-link threshold.
     pub graph_semantic_threshold: f32,
     /// Graph temporal-link max distance.
@@ -105,10 +124,38 @@ pub struct RuntimeTuning {
     pub consolidation_recall_budget: usize,
     /// Total attempts for malformed consolidator structured output.
     pub consolidation_structured_output_max_attempts: usize,
+    /// Requested consolidation temperature.
+    pub consolidate_temperature: f32,
+    /// Effective consolidation temperature forwarded to the provider, if any.
+    pub consolidate_effective_temperature: Option<f32>,
     /// Consolidation reasoning effort override.
     pub consolidate_reasoning_effort: Option<ReasoningEffort>,
+    /// Requested opinion-merge temperature.
+    pub opinion_merge_temperature: f32,
+    /// Effective opinion-merge temperature forwarded to the provider, if any.
+    pub opinion_merge_effective_temperature: Option<f32>,
     /// Opinion merge reasoning effort override.
     pub opinion_merge_reasoning_effort: Option<ReasoningEffort>,
+    /// Benchmark-facing determinism assessment for each active stage.
+    #[serde(default)]
+    pub determinism: RuntimeDeterminism,
+}
+
+/// Per-stage determinism assessment for benchmark provenance.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct RuntimeDeterminism {
+    /// Determinism assessment for retain extraction.
+    pub retain_extract: DeterminismAssessment,
+    /// Determinism assessment for retain entity resolution.
+    pub retain_resolve: DeterminismAssessment,
+    /// Determinism assessment for retain graph building.
+    pub retain_graph: DeterminismAssessment,
+    /// Determinism assessment for reflect.
+    pub reflect: DeterminismAssessment,
+    /// Determinism assessment for consolidation.
+    pub consolidate: DeterminismAssessment,
+    /// Determinism assessment for opinion merge.
+    pub opinion_merge: DeterminismAssessment,
 }
 
 /// Human-readable runtime model labels.
@@ -159,10 +206,46 @@ pub struct BuildRuntimeOptions {
     pub metrics: Option<Arc<MetricsCollector>>,
     /// Maximum Postgres pool connections. Defaults to 10 if not set.
     pub max_pool_connections: Option<u32>,
+    /// Optional benchmark determinism requirement.
+    pub determinism_requirement: Option<DeterminismRequirement>,
 }
 
 fn env_required(name: &str) -> Result<String> {
     env::var(name).map_err(|e| Error::Configuration(format!("{name} must be set: {e}")))
+}
+
+fn validate_explicit_temperature_override(
+    stage: &str,
+    env_name: &str,
+    explicit_override: Option<f32>,
+    resolution: &llm::TemperatureResolution,
+) -> Result<()> {
+    if explicit_override.is_some()
+        && let Some(reason) = resolution.unsupported_reason()
+    {
+        return Err(Error::Configuration(format!(
+            "{env_name} requested {requested} for {stage}, but {reason}",
+            requested = explicit_override.unwrap_or_default()
+        )));
+    }
+
+    Ok(())
+}
+
+fn validate_determinism_requirement(
+    stage: &str,
+    requirement: DeterminismRequirement,
+    assessment: &DeterminismAssessment,
+) -> Result<()> {
+    if !assessment.satisfies(requirement) {
+        return Err(Error::Configuration(format!(
+            "benchmark determinism requirement '{}' not met for {stage}: {}",
+            requirement.as_str(),
+            assessment.reason.as_deref().unwrap_or("no reason provided")
+        )));
+    }
+
+    Ok(())
 }
 
 fn stage_llm(
@@ -245,17 +328,6 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
     let database_url = env_required("DATABASE_URL")?;
     let llm_configs = llm::runtime_config_from_env()?;
 
-    let max_conns = options.max_pool_connections.unwrap_or(10);
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(max_conns)
-        .connect(&database_url)
-        .await?;
-    let store = Arc::new(PgMemoryStore::new(pool.clone()));
-    store.migrate().await?;
-
-    let emb_config = embedding::config_from_env()?;
-    let embeddings: Arc<dyn EmbeddingClient> = Arc::from(embedding::build_client(&emb_config)?);
-
     let dedup_threshold: Option<f32> = match env::var("DEDUP_THRESHOLD").as_deref() {
         Ok("none") => None,
         Ok(s) => Some(s.parse().map_err(|_| {
@@ -270,9 +342,165 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
         overlap_tokens: 64,
         preserve_turns: true,
     };
-    let graph_config = GraphConfig::default();
+    let mut graph_config = GraphConfig::default();
+    graph_config.causal_temperature = graph_builder::causal_temperature_from_env()?;
     let reasoning_effort = *ReasoningEffortConfig::current()?;
-    let extraction_config = extractor::config_from_env();
+    let extract_temperature_override = llm::temperature_from_env("RETAIN_EXTRACT_TEMPERATURE")?;
+    let extraction_config = extractor::config_from_env()?;
+    let extract_temperature_resolution = llm::resolve_temperature(
+        llm_configs.retain(),
+        Some(extraction_config.temperature),
+        reasoning_effort.retain_extract,
+    );
+    let extract_determinism = llm::assess_determinism(
+        llm_configs.retain(),
+        Some(extraction_config.temperature),
+        reasoning_effort.retain_extract,
+    );
+    validate_explicit_temperature_override(
+        "retain extraction",
+        "RETAIN_EXTRACT_TEMPERATURE",
+        extract_temperature_override,
+        &extract_temperature_resolution,
+    )?;
+    let resolve_temperature_override = llm::temperature_from_env("RETAIN_RESOLVE_TEMPERATURE")?;
+    let resolve_temperature = resolver::resolve_temperature_from_env()?;
+    let resolve_temperature_resolution = llm::resolve_temperature(
+        llm_configs.retain(),
+        Some(resolve_temperature),
+        reasoning_effort.retain_resolve,
+    );
+    let resolve_determinism = llm::assess_determinism(
+        llm_configs.retain(),
+        Some(resolve_temperature),
+        reasoning_effort.retain_resolve,
+    );
+    validate_explicit_temperature_override(
+        "retain entity resolution",
+        "RETAIN_RESOLVE_TEMPERATURE",
+        resolve_temperature_override,
+        &resolve_temperature_resolution,
+    )?;
+    let graph_temperature_override = llm::temperature_from_env("RETAIN_GRAPH_TEMPERATURE")?;
+    let graph_temperature_resolution = llm::resolve_temperature(
+        llm_configs.retain(),
+        Some(graph_config.causal_temperature),
+        reasoning_effort.retain_graph,
+    );
+    let graph_determinism = llm::assess_determinism(
+        llm_configs.retain(),
+        Some(graph_config.causal_temperature),
+        reasoning_effort.retain_graph,
+    );
+    validate_explicit_temperature_override(
+        "retain graph building",
+        "RETAIN_GRAPH_TEMPERATURE",
+        graph_temperature_override,
+        &graph_temperature_resolution,
+    )?;
+    let consolidate_temperature_override = llm::temperature_from_env("CONSOLIDATE_TEMPERATURE")?;
+    let consolidation_config: ConsolidationConfig = observation::config_from_env()?;
+    let consolidate_temperature_resolution = llm::resolve_temperature(
+        llm_configs.reflect(),
+        Some(consolidation_config.temperature),
+        reasoning_effort.consolidate,
+    );
+    let consolidate_determinism = llm::assess_determinism(
+        llm_configs.reflect(),
+        Some(consolidation_config.temperature),
+        reasoning_effort.consolidate,
+    );
+    validate_explicit_temperature_override(
+        "consolidation",
+        "CONSOLIDATE_TEMPERATURE",
+        consolidate_temperature_override,
+        &consolidate_temperature_resolution,
+    )?;
+    let opinion_merge_temperature_override =
+        llm::temperature_from_env("OPINION_MERGE_TEMPERATURE")?;
+    let opinion_merge_config = opinion_merger::config_from_env()?;
+    let opinion_merge_temperature_resolution = llm::resolve_temperature(
+        llm_configs.reflect(),
+        Some(opinion_merge_config.temperature),
+        reasoning_effort.opinion_merge,
+    );
+    let opinion_merge_determinism = llm::assess_determinism(
+        llm_configs.reflect(),
+        Some(opinion_merge_config.temperature),
+        reasoning_effort.opinion_merge,
+    );
+    validate_explicit_temperature_override(
+        "opinion merge",
+        "OPINION_MERGE_TEMPERATURE",
+        opinion_merge_temperature_override,
+        &opinion_merge_temperature_resolution,
+    )?;
+    let reflect_max_iter: usize = env::var("REFLECT_MAX_ITERATIONS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8);
+    let reflect_max_tokens = env::var("REFLECT_MAX_TOKENS")
+        .ok()
+        .and_then(|s| s.parse().ok());
+    let reflect_source_limit: usize = env::var("REFLECT_SOURCE_LIMIT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(crate::reflect::DEFAULT_SOURCE_LOOKUP_LIMIT);
+    let reflect_source_max_chars = env::var("REFLECT_SOURCE_MAX_CHARS")
+        .ok()
+        .and_then(|s| s.parse().ok());
+    let reflect_enable_source_lookup = match env::var("REFLECT_ENABLE_SOURCE_LOOKUP") {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "0" | "false" | "no" | "off" => false,
+            other => {
+                return Err(Error::Internal(format!(
+                    "REFLECT_ENABLE_SOURCE_LOOKUP must be a boolean, got: {other}"
+                )));
+            }
+        },
+        Err(_) => crate::reflect::DEFAULT_ENABLE_SOURCE_LOOKUP,
+    };
+    let reflect_temperature_override = llm::temperature_from_env("REFLECT_TEMPERATURE")?;
+    let reflect_temperature = crate::reflect::reflect_temperature_from_env()?;
+    let reflect_temperature_resolution = llm::resolve_temperature(
+        llm_configs.reflect(),
+        Some(reflect_temperature),
+        reasoning_effort.reflect,
+    );
+    let reflect_determinism = llm::assess_determinism(
+        llm_configs.reflect(),
+        Some(reflect_temperature),
+        reasoning_effort.reflect,
+    );
+    validate_explicit_temperature_override(
+        "reflect",
+        "REFLECT_TEMPERATURE",
+        reflect_temperature_override,
+        &reflect_temperature_resolution,
+    )?;
+    if let Some(requirement) = options.determinism_requirement {
+        validate_determinism_requirement("retain extraction", requirement, &extract_determinism)?;
+        validate_determinism_requirement(
+            "retain entity resolution",
+            requirement,
+            &resolve_determinism,
+        )?;
+        validate_determinism_requirement("retain graph building", requirement, &graph_determinism)?;
+        validate_determinism_requirement("reflect", requirement, &reflect_determinism)?;
+        validate_determinism_requirement("consolidation", requirement, &consolidate_determinism)?;
+        validate_determinism_requirement("opinion merge", requirement, &opinion_merge_determinism)?;
+    }
+
+    let emb_config = embedding::config_from_env()?;
+    let max_conns = options.max_pool_connections.unwrap_or(10);
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(max_conns)
+        .connect(&database_url)
+        .await?;
+    let store = Arc::new(PgMemoryStore::new(pool.clone()));
+    store.migrate().await?;
+    let embeddings: Arc<dyn EmbeddingClient> = Arc::from(embedding::build_client(&emb_config)?);
 
     let retain = Arc::new(DefaultRetainPipeline::new(
         Box::new(SimpleChunker),
@@ -284,13 +512,14 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
             )?,
             extraction_config,
         )),
-        Box::new(LayeredEntityResolver::new(
+        Box::new(LayeredEntityResolver::new_with_temperature(
             embedding::build_client(&emb_config)?,
             stage_llm(
                 llm_configs.retain(),
                 LlmStage::RetainResolve,
                 options.metrics.as_ref(),
             )?,
+            resolve_temperature,
         )),
         Box::new(DefaultGraphBuilder::new(
             stage_llm(
@@ -313,8 +542,6 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
 
     let reranker_config = reranker::config_from_env()?;
     let reranker = reranker::build_reranker(&reranker_config)?;
-    let consolidation_config: ConsolidationConfig = observation::config_from_env();
-
     let retriever_limit: usize = env::var("RETRIEVER_LIMIT")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -343,33 +570,6 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
         max_facts,
         4096,
     ));
-
-    let reflect_max_iter: usize = env::var("REFLECT_MAX_ITERATIONS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(8);
-    let reflect_max_tokens = env::var("REFLECT_MAX_TOKENS")
-        .ok()
-        .and_then(|s| s.parse().ok());
-    let reflect_source_limit: usize = env::var("REFLECT_SOURCE_LIMIT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(crate::reflect::DEFAULT_SOURCE_LOOKUP_LIMIT);
-    let reflect_source_max_chars = env::var("REFLECT_SOURCE_MAX_CHARS")
-        .ok()
-        .and_then(|s| s.parse().ok());
-    let reflect_enable_source_lookup = match env::var("REFLECT_ENABLE_SOURCE_LOOKUP") {
-        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
-            "1" | "true" | "yes" | "on" => true,
-            "0" | "false" | "no" | "off" => false,
-            other => {
-                return Err(Error::Internal(format!(
-                    "REFLECT_ENABLE_SOURCE_LOOKUP must be a boolean, got: {other}"
-                )));
-            }
-        },
-        Err(_) => crate::reflect::DEFAULT_ENABLE_SOURCE_LOOKUP,
-    };
     let reflect = Arc::new(DefaultReflectPipeline::new_with_limits(
         recall.clone(),
         stage_llm(
@@ -383,6 +583,7 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
         reflect_source_limit,
         reflect_source_max_chars,
         reflect_enable_source_lookup,
+        reflect_temperature,
     ));
 
     let consolidator = Arc::new(DefaultConsolidator::new(
@@ -396,7 +597,7 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
         recall.clone(),
         consolidation_config,
     ));
-    let opinion_merger = Arc::new(DefaultOpinionMerger::new(
+    let opinion_merger = Arc::new(DefaultOpinionMerger::new_with_config(
         store.clone(),
         stage_llm(
             llm_configs.reflect(),
@@ -404,6 +605,7 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
             options.metrics.as_ref(),
         )?,
         embeddings.clone(),
+        opinion_merge_config,
     ));
 
     Ok(ElephantRuntime {
@@ -430,12 +632,20 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
                 reflect_max_iterations: reflect_max_iter,
                 reflect_max_tokens,
                 retain_extract_reasoning_effort: reasoning_effort.retain_extract,
+                retain_extract_temperature: extraction_config.temperature,
+                retain_extract_effective_temperature: extract_temperature_resolution.effective(),
                 retain_extract_structured_output_max_attempts: extraction_config
                     .structured_output_max_attempts,
                 retain_resolve_reasoning_effort: reasoning_effort.retain_resolve,
+                retain_resolve_temperature: resolve_temperature,
+                retain_resolve_effective_temperature: resolve_temperature_resolution.effective(),
                 retain_graph_reasoning_effort: reasoning_effort.retain_graph,
+                retain_graph_temperature: graph_config.causal_temperature,
+                retain_graph_effective_temperature: graph_temperature_resolution.effective(),
                 reflect_enable_source_lookup,
                 reflect_reasoning_effort: reasoning_effort.reflect,
+                reflect_temperature,
+                reflect_effective_temperature: reflect_temperature_resolution.effective(),
                 graph_semantic_threshold: graph_config.semantic_threshold,
                 graph_temporal_max_days: graph_config.temporal_max_days,
                 graph_enable_causal: graph_config.enable_causal,
@@ -445,8 +655,21 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
                 consolidation_recall_budget: consolidation_config.recall_budget,
                 consolidation_structured_output_max_attempts: consolidation_config
                     .structured_output_max_attempts,
+                consolidate_temperature: consolidation_config.temperature,
+                consolidate_effective_temperature: consolidate_temperature_resolution.effective(),
                 consolidate_reasoning_effort: reasoning_effort.consolidate,
+                opinion_merge_temperature: opinion_merge_config.temperature,
+                opinion_merge_effective_temperature: opinion_merge_temperature_resolution
+                    .effective(),
                 opinion_merge_reasoning_effort: reasoning_effort.opinion_merge,
+                determinism: RuntimeDeterminism {
+                    retain_extract: extract_determinism,
+                    retain_resolve: resolve_determinism,
+                    retain_graph: graph_determinism,
+                    reflect: reflect_determinism,
+                    consolidate: consolidate_determinism,
+                    opinion_merge: opinion_merge_determinism,
+                },
             },
             prompt_hashes: runtime_prompt_hashes(),
         },
@@ -458,4 +681,75 @@ pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<Elep
         store,
         embeddings,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::llm::OpenAiConfig;
+
+    fn openai_client(model: &str) -> ClientConfig {
+        ClientConfig::OpenAi(OpenAiConfig::new("sk-test", model).unwrap())
+    }
+
+    #[test]
+    fn explicit_unsupported_temperature_override_is_rejected() {
+        let resolution = llm::resolve_temperature(
+            &openai_client("gpt-5.4-mini"),
+            Some(0.0),
+            Some(ReasoningEffort::None),
+        );
+
+        let err = validate_explicit_temperature_override(
+            "reflect",
+            "REFLECT_TEMPERATURE",
+            Some(0.0),
+            &resolution,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("REFLECT_TEMPERATURE"));
+        assert!(err.to_string().contains("gpt-5.4-mini"));
+    }
+
+    #[test]
+    fn default_unsupported_temperature_is_not_rejected() {
+        let resolution = llm::resolve_temperature(
+            &openai_client("gpt-5.4-mini"),
+            Some(crate::reflect::REFLECT_TEMPERATURE),
+            Some(ReasoningEffort::None),
+        );
+
+        validate_explicit_temperature_override("reflect", "REFLECT_TEMPERATURE", None, &resolution)
+            .unwrap();
+        assert_eq!(resolution.effective(), None);
+    }
+
+    #[test]
+    fn best_effort_requirement_rejects_unsupported_assessment() {
+        let err = validate_determinism_requirement(
+            "reflect",
+            DeterminismRequirement::BestEffort,
+            &DeterminismAssessment {
+                support: llm::DeterminismSupport::Unsupported,
+                reason: Some("temperature 0 not effective".into()),
+            },
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("best_effort"));
+    }
+
+    #[test]
+    fn best_effort_requirement_allows_best_effort_assessment() {
+        validate_determinism_requirement(
+            "reflect",
+            DeterminismRequirement::BestEffort,
+            &DeterminismAssessment {
+                support: llm::DeterminismSupport::BestEffort,
+                reason: Some("provider supports best-effort low variance".into()),
+            },
+        )
+        .unwrap();
+    }
 }
