@@ -23,11 +23,10 @@ mod common;
 mod dataset;
 mod ingest;
 
-use common::io::{append_jsonl, atomic_write_json, sidecar_path};
+use common::io::{append_jsonl, atomic_write_json, resolve_workspace_path, sidecar_path};
 use dataset::load_dataset;
 use ingest::{ConsolidationMode, IngestConfig, IngestFormat};
 
-use elephant::__bench::BenchHarnessBuilder;
 use elephant::consolidation::ConsolidationProgress;
 use elephant::metrics::{LlmStage, MetricsCollector, StageUsage, with_scoped_collector};
 use elephant::types::{NetworkType, ReflectQuery};
@@ -35,6 +34,7 @@ use elephant::{
     ElephantRuntime, RuntimePromptHashes as ElephantPromptHashes,
     RuntimeTuning as ElephantRuntimeTuning,
 };
+use elephant_bench::BenchHarnessBuilder;
 
 // --- Judge prompts ---
 
@@ -572,8 +572,9 @@ fn parse_args() -> BenchInvocation {
 // --- Config resolution ---
 
 fn load_json_config(path: &Path) -> Result<FileRunConfig, String> {
-    let raw =
-        fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    let resolved = resolve_workspace_path(path);
+    let raw = fs::read_to_string(&resolved)
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
     serde_json::from_str(&raw).map_err(|e| format!("failed to parse {}: {e}", path.display()))
 }
 
@@ -1112,8 +1113,9 @@ fn ensure_output_paths_are_safe(
 // --- Artifact loading ---
 
 fn load_benchmark_output(path: &Path) -> Result<BenchmarkOutput, String> {
-    let raw =
-        fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    let resolved = resolve_workspace_path(path);
+    let raw = fs::read_to_string(&resolved)
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
     serde_json::from_str(&raw).map_err(|e| format!("failed to parse {}: {e}", path.display()))
 }
 
@@ -1370,8 +1372,9 @@ impl SharedState {
 // --- Merge helpers ---
 
 fn read_jsonl_records<T: DeserializeOwned>(path: &Path) -> Result<Vec<T>, String> {
-    let raw =
-        fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    let resolved = resolve_workspace_path(path);
+    let raw = fs::read_to_string(&resolved)
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
     raw.lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| {
@@ -1406,8 +1409,9 @@ struct LoadedArtifactBundle {
 }
 
 fn load_artifact_bundle(path: &Path) -> Result<LoadedArtifactBundle, String> {
+    let resolved = resolve_workspace_path(path);
     let artifact_bytes =
-        fs::read(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+        fs::read(&resolved).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
     let output: BenchmarkOutput = serde_json::from_slice(&artifact_bytes)
         .map_err(|e| format!("failed to parse {}: {e}", path.display()))?;
 
@@ -1436,7 +1440,7 @@ fn load_artifact_bundle(path: &Path) -> Result<LoadedArtifactBundle, String> {
         Vec::new()
     } else {
         let debug_path = artifact_relative_path(path, &output.artifacts.debug_path);
-        if !debug_path.exists() {
+        if !resolve_workspace_path(&debug_path).exists() {
             return Err(format!(
                 "artifact {} is missing debug sidecar {}",
                 path.display(),

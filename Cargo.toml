@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "bench"]
+resolver = "3"
+
 [package]
 name = "elephant"
 version = "0.1.0"
@@ -22,7 +26,6 @@ tower = { version = "0.5.3", features = ["util"] }
 [dependencies]
 async-trait = "0.1.89"
 dotenvy = "0.15"
-flate2 = "1.1.2"
 futures = "0.3"
 axum = "0.8.8"
 chrono = { version = "0.4.44", features = ["serde"] }
@@ -44,27 +47,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 ulid = { version = "1.2.1", features = ["serde", "uuid"] }
 uuid = { version = "1.21.0", features = ["v4"] }
-tabled = { version = "0.20.0", features = ["ansi"] }
-
-[[bin]]
-name = "locomo-bench"
-path = "bench/locomo/locomo.rs"
-
-[[bin]]
-name = "view"
-path = "bench/view.rs"
-
-[[bin]]
-name = "longmemeval-bench"
-path = "bench/longmemeval/longmemeval.rs"
-
-[[bin]]
-name = "longmemeval-view"
-path = "bench/longmemeval/view.rs"
-
-[[bin]]
-name = "reset-consolidation"
-path = "bench/reset_consolidation.rs"
 
 [[test]]
 name = "evals_validate"

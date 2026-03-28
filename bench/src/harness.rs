@@ -1,13 +1,13 @@
-//! Transitional benchmark startup support over the typed config/runtime seam.
+//! Benchmark runtime startup support.
 
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use crate::Result;
-use crate::config::{BenchConfig, RuntimeConfig};
-use crate::llm::DeterminismRequirement;
-use crate::metrics::MetricsCollector;
-use crate::runtime::{ElephantRuntime, RuntimeBuilder};
+use elephant::llm::DeterminismRequirement;
+use elephant::metrics::MetricsCollector;
+use elephant::{ElephantRuntime, Result, RuntimeBuilder, RuntimeConfig};
+
+use crate::config::BenchConfig;
 
 /// Benchmark-facing runtime bundle.
 #[derive(Debug)]

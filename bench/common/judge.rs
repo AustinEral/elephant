@@ -6,10 +6,10 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use crate::common::failure;
-use elephant::__bench::BenchJudgeConfig;
 use elephant::llm::retry::{RetryPolicy, RetryingLlmClient};
 use elephant::llm::{self, CompletionRequest, LlmClient, Message};
 use elephant::metrics::{LlmStage, MeteredLlmClient, MetricsCollector};
+use elephant_bench::BenchJudgeConfig;
 
 /// Parsed judge LLM response.
 #[derive(Debug, Deserialize)]
