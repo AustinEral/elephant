@@ -1,12 +1,13 @@
-//! Transitional benchmark startup support over the typed config/runtime seam.
+//! Benchmark runtime startup support.
 
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use crate::Result;
-use crate::config::{BenchConfig, RuntimeConfig};
-use crate::llm::DeterminismRequirement;
-use crate::metrics::MetricsCollector;
-use crate::runtime::{ElephantRuntime, RuntimeBuilder};
+use elephant::llm::DeterminismRequirement;
+use elephant::metrics::MetricsCollector;
+use elephant::{ElephantRuntime, Result, RuntimeBuilder, RuntimeConfig};
+
+use crate::config::BenchConfig;
 
 /// Benchmark-facing runtime bundle.
 #[derive(Debug)]
@@ -68,7 +69,7 @@ impl BenchHarnessBuilder {
     }
 
     /// Override the maximum Postgres pool connection count.
-    pub fn max_pool_connections(mut self, max_pool_connections: u32) -> Self {
+    pub fn max_pool_connections(mut self, max_pool_connections: NonZeroU32) -> Self {
         self.runtime_builder = self
             .runtime_builder
             .max_pool_connections(max_pool_connections);

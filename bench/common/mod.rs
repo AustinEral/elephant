@@ -3,14 +3,15 @@ pub mod fingerprint;
 pub mod io;
 pub mod judge;
 
+use elephant::RuntimeTuning as ElephantRuntimeTuning;
 use elephant::llm::DeterminismRequirement;
 use elephant::llm::ReasoningEffort;
-use elephant::{BenchConfig, RuntimeTuning as ElephantRuntimeTuning};
+use elephant_bench::BenchConfig;
 
 #[allow(unused_imports)]
 pub use fingerprint::{fnv1a64, fnv1a64_hex};
 #[allow(unused_imports)]
-pub use io::{append_jsonl, sidecar_path};
+pub use io::{append_jsonl, resolve_workspace_path, sidecar_path};
 
 #[allow(dead_code)]
 fn format_reasoning_effort(effort: Option<ReasoningEffort>) -> &'static str {

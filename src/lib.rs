@@ -2,7 +2,6 @@
 //! Elephant — a Rust implementation of the Hindsight memory architecture.
 
 mod app;
-mod bench_support;
 mod config;
 pub mod consolidation;
 pub mod embedding;
@@ -19,10 +18,9 @@ pub mod storage;
 pub mod types;
 pub mod util;
 
-pub use bench_support::{BenchHarness, BenchHarnessBuilder};
 pub use config::{
-    BackgroundConsolidationConfig, BenchConfig, BenchJudgeConfig, ConfigError, ConfigErrorKind,
-    ConfigResult, LogFormat, ReflectConfig, RetrievalConfig, RuntimeConfig, ServerConfig,
+    BackgroundConsolidationConfig, ConfigError, ConfigResult, LogFormat, ReflectConfig,
+    RetrievalConfig, RuntimeConfig, ServerConfig,
 };
 pub use embedding::EmbeddingClient;
 pub use error::{Error, Result};

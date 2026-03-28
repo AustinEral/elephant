@@ -34,9 +34,10 @@ use elephant::types::{
     RetrievalSource, TurnId,
 };
 use elephant::{
-    BenchHarnessBuilder, ElephantRuntime, MemoryStore, RuntimePromptHashes as ElephantPromptHashes,
+    ElephantRuntime, MemoryStore, RuntimePromptHashes as ElephantPromptHashes,
     RuntimeTuning as ElephantRuntimeTuning,
 };
+use elephant_bench::{BenchHarnessBuilder, BenchJudgeConfig};
 
 // --- LoCoMo dataset types ---
 
@@ -645,7 +646,7 @@ fn benchmark_runtime_config(runtime: &ElephantRuntime) -> BenchmarkRuntimeConfig
 }
 
 async fn finalize_bank_stats(
-    store: &Arc<dyn MemoryStore>,
+    store: Arc<dyn MemoryStore>,
     bank_id: BankId,
     stats: &mut ConversationBankStats,
 ) -> Result<(), String> {
@@ -683,7 +684,7 @@ fn reflect_budget_tokens() -> usize {
     }
 }
 
-fn resolve_judge_config(override_model: Option<String>) -> elephant::BenchJudgeConfig {
+fn resolve_judge_config(override_model: Option<String>) -> BenchJudgeConfig {
     common::judge::resolve_judge_config(&common::judge::JudgeOverrides {
         provider: None,
         model: override_model,
@@ -708,6 +709,10 @@ async fn llm_judge(
 
 fn sidecar_path(output_path: &Path, suffix: &str) -> PathBuf {
     common::sidecar_path(output_path, suffix)
+}
+
+fn resolve_workspace_path(path: &Path) -> PathBuf {
+    common::resolve_workspace_path(path)
 }
 
 fn relative_artifact_path(base: &Path, target: &Path) -> String {
@@ -1714,14 +1719,16 @@ fn parse_usize_arg(raw: Option<&String>, flag: &str) -> Result<usize, String> {
 }
 
 fn load_json_config(path: &Path) -> Result<FileRunConfig, String> {
-    let raw =
-        fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    let resolved = resolve_workspace_path(path);
+    let raw = fs::read_to_string(&resolved)
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
     serde_json::from_str(&raw).map_err(|e| format!("failed to parse {}: {e}", path.display()))
 }
 
 fn load_benchmark_output(path: &Path) -> Result<BenchmarkOutput, String> {
-    let raw =
-        fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    let resolved = resolve_workspace_path(path);
+    let raw = fs::read_to_string(&resolved)
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
     serde_json::from_str(&raw).map_err(|e| format!("failed to parse {}: {e}", path.display()))
 }
 
@@ -1819,8 +1826,9 @@ struct PublishedArtifacts {
 }
 
 fn read_jsonl_records<T: DeserializeOwned>(path: &Path) -> Result<Vec<T>, String> {
-    let raw =
-        fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    let resolved = resolve_workspace_path(path);
+    let raw = fs::read_to_string(&resolved)
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
     raw.lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| {
@@ -1838,8 +1846,9 @@ fn artifact_relative_path(summary_path: &Path, rel: &str) -> PathBuf {
 }
 
 fn load_artifact_bundle(path: &Path) -> Result<LoadedArtifactBundle, String> {
+    let resolved = resolve_workspace_path(path);
     let artifact_bytes =
-        fs::read(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+        fs::read(&resolved).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
     let output: BenchmarkOutput = serde_json::from_slice(&artifact_bytes)
         .map_err(|e| format!("failed to parse {}: {e}", path.display()))?;
 
@@ -1871,7 +1880,7 @@ fn load_artifact_bundle(path: &Path) -> Result<LoadedArtifactBundle, String> {
         Vec::new()
     } else {
         let debug_path = artifact_relative_path(path, &output.artifacts.debug_path);
-        if !debug_path.exists() {
+        if !resolve_workspace_path(&debug_path).exists() {
             return Err(format!(
                 "artifact {} is missing debug sidecar {}",
                 path.display(),
@@ -1900,23 +1909,25 @@ fn load_artifact_bundle(path: &Path) -> Result<LoadedArtifactBundle, String> {
 }
 
 fn write_json_pretty<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
+    let resolved = resolve_workspace_path(path);
+    if let Some(parent) = resolved.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
     }
     let json = serde_json::to_vec_pretty(value)
         .map_err(|e| format!("failed to serialize {}: {e}", path.display()))?;
-    fs::write(path, json).map_err(|e| format!("failed to write {}: {e}", path.display()))
+    fs::write(&resolved, json).map_err(|e| format!("failed to write {}: {e}", path.display()))
 }
 
 fn write_jsonl_gzip<T: Serialize>(path: &Path, values: &[T]) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
+    let resolved = resolve_workspace_path(path);
+    if let Some(parent) = resolved.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
     }
 
-    let file =
-        fs::File::create(path).map_err(|e| format!("failed to create {}: {e}", path.display()))?;
+    let file = fs::File::create(&resolved)
+        .map_err(|e| format!("failed to create {}: {e}", path.display()))?;
     let encoder = GzEncoder::new(file, Compression::default());
     let mut writer = BufWriter::new(encoder);
     for value in values {
@@ -1936,11 +1947,12 @@ fn write_jsonl_gzip<T: Serialize>(path: &Path, values: &[T]) -> Result<(), Strin
 }
 
 fn load_publish_index(path: &Path) -> Result<PublishedBenchmarkIndex, String> {
-    if !path.exists() {
+    let resolved = resolve_workspace_path(path);
+    if !resolved.exists() {
         return Ok(PublishedBenchmarkIndex::default());
     }
-    let raw =
-        fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    let raw = fs::read_to_string(&resolved)
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
     serde_json::from_str(&raw).map_err(|e| format!("failed to parse {}: {e}", path.display()))
 }
 

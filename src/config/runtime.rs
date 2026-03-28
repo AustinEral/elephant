@@ -1,19 +1,29 @@
 //! Typed configuration for shared runtime startup.
 
+mod loaders;
+mod validation;
+
 use std::{env, fmt};
 
 use crate::consolidation::{ConsolidationConfig, opinion_merger};
-use crate::embedding::{EmbeddingConfig, EmbeddingProvider};
-use crate::llm::{
-    AnthropicConfig, AnthropicPromptCacheConfig, AnthropicPromptCacheTtl, ClientConfig,
-    DEFAULT_TIMEOUT_SECS, GeminiConfig, LlmConfig, OpenAiConfig, OpenAiPromptCacheConfig,
-    OpenAiPromptCacheRetention, Provider, ReasoningEffort, ReasoningEffortConfig, VertexConfig,
-};
-use crate::recall::reranker::{RerankerConfig, RerankerProvider};
+use crate::embedding::EmbeddingConfig;
+#[cfg(test)]
+use crate::llm::{ClientConfig, OpenAiConfig};
+use crate::llm::{LlmConfig, ReasoningEffortConfig};
+use crate::recall::reranker::RerankerConfig;
 use crate::retain::{extractor, graph_builder};
 
 use super::env as config_env;
-use super::error::{ConfigError, Result};
+use super::error::{ConfigError, ConfigErrorKind, Result};
+use loaders::{
+    embedding_config_from_env, parse_optional_positive_usize, parse_optional_reasoning_effort,
+    parse_optional_temperature, reranker_config_from_env, runtime_llm_config_from_env,
+};
+use validation::{
+    validate_embedding_config, validate_nonblank_field, validate_nonnegative_float,
+    validate_optional_nonnegative_float, validate_optional_unit_interval_float,
+    validate_positive_usize_field, validate_reranker_config, validate_unit_interval_float,
+};
 
 /// Validated startup configuration for the shared Elephant runtime.
 #[derive(Clone)]
@@ -86,6 +96,39 @@ impl fmt::Debug for RuntimeConfig {
 }
 
 impl RuntimeConfig {
+    /// Create runtime configuration from validated typed inputs using default stage settings.
+    pub fn new(
+        database_url: impl Into<String>,
+        llm: LlmConfig,
+        embedding: EmbeddingConfig,
+        reranker: RerankerConfig,
+    ) -> Result<Self> {
+        let config = Self {
+            database_url: database_url.into(),
+            llm,
+            embedding,
+            reranker,
+            dedup_threshold: Some(0.95),
+            reasoning_effort: ReasoningEffortConfig::default(),
+            extraction: extractor::ExtractionConfig::default(),
+            extract_temperature_override: None,
+            resolve_temperature: crate::retain::resolver::ENTITY_RESOLUTION_TEMPERATURE,
+            resolve_temperature_override: None,
+            graph: graph_builder::GraphConfig::default(),
+            graph_temperature_override: None,
+            consolidation: ConsolidationConfig::default(),
+            consolidate_temperature_override: None,
+            opinion_merge: opinion_merger::OpinionMergeConfig::default(),
+            opinion_merge_temperature_override: None,
+            reflect: ReflectConfig::default(),
+            reflect_temperature: crate::reflect::REFLECT_TEMPERATURE,
+            reflect_temperature_override: None,
+            retrieval: RetrievalConfig::default(),
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
     /// Load runtime configuration from the process environment.
     pub fn from_env() -> Result<Self> {
         let database_url = config_env::required_string(
@@ -113,10 +156,9 @@ impl RuntimeConfig {
             opinion_merge: parse_optional_reasoning_effort("OPINION_MERGE_REASONING_EFFORT")?,
         };
         let extraction = extractor::ExtractionConfig {
-            structured_output_max_attempts: config_env::optional_usize_lossy(
+            structured_output_max_attempts: parse_optional_positive_usize(
                 "RETAIN_EXTRACT_STRUCTURED_OUTPUT_MAX_ATTEMPTS",
-            )
-            .filter(|&v| v > 0)
+            )?
             .unwrap_or(extractor::ExtractionConfig::default().structured_output_max_attempts),
             temperature: parse_optional_temperature("RETAIN_EXTRACT_TEMPERATURE")?
                 .unwrap_or(extractor::ExtractionConfig::default().temperature),
@@ -136,16 +178,15 @@ impl RuntimeConfig {
         };
         let graph_temperature_override = parse_optional_temperature("RETAIN_GRAPH_TEMPERATURE")?;
         let consolidation = ConsolidationConfig {
-            batch_size: config_env::optional_usize_lossy("CONSOLIDATION_BATCH_SIZE")
+            batch_size: parse_optional_positive_usize("CONSOLIDATION_BATCH_SIZE")?
                 .unwrap_or(ConsolidationConfig::default().batch_size),
-            max_tokens: config_env::optional_usize_lossy("CONSOLIDATION_MAX_TOKENS")
+            max_tokens: parse_optional_positive_usize("CONSOLIDATION_MAX_TOKENS")?
                 .unwrap_or(ConsolidationConfig::default().max_tokens),
-            recall_budget: config_env::optional_usize_lossy("CONSOLIDATION_RECALL_BUDGET")
+            recall_budget: parse_optional_positive_usize("CONSOLIDATION_RECALL_BUDGET")?
                 .unwrap_or(ConsolidationConfig::default().recall_budget),
-            structured_output_max_attempts: config_env::optional_usize_lossy(
+            structured_output_max_attempts: parse_optional_positive_usize(
                 "CONSOLIDATION_STRUCTURED_OUTPUT_MAX_ATTEMPTS",
-            )
-            .filter(|&v| v > 0)
+            )?
             .unwrap_or(ConsolidationConfig::default().structured_output_max_attempts),
             temperature: parse_optional_temperature("CONSOLIDATE_TEMPERATURE")?
                 .unwrap_or(ConsolidationConfig::default().temperature),
@@ -164,473 +205,315 @@ impl RuntimeConfig {
         let reflect_temperature = parse_optional_temperature("REFLECT_TEMPERATURE")?
             .unwrap_or(crate::reflect::REFLECT_TEMPERATURE);
         let reflect_temperature_override = parse_optional_temperature("REFLECT_TEMPERATURE")?;
-        let retrieval = RetrievalConfig::from_env();
+        let retrieval = RetrievalConfig::from_env()?;
 
-        Ok(Self {
-            database_url,
-            llm,
-            embedding,
-            reranker,
-            dedup_threshold,
-            reasoning_effort,
-            extraction,
-            extract_temperature_override,
-            resolve_temperature,
-            resolve_temperature_override,
-            graph,
-            graph_temperature_override,
-            consolidation,
-            consolidate_temperature_override,
-            opinion_merge,
-            opinion_merge_temperature_override,
-            reflect,
-            reflect_temperature,
-            reflect_temperature_override,
-            retrieval,
-        })
+        Self::new(database_url, llm, embedding, reranker)?
+            .with_dedup_threshold(dedup_threshold)?
+            .with_reasoning_effort(reasoning_effort)?
+            .with_extraction(extraction)?
+            .with_extract_temperature_override(extract_temperature_override)?
+            .with_resolve_temperature(resolve_temperature)?
+            .with_resolve_temperature_override(resolve_temperature_override)?
+            .with_graph(graph)?
+            .with_graph_temperature_override(graph_temperature_override)?
+            .with_consolidation(consolidation)?
+            .with_consolidate_temperature_override(consolidate_temperature_override)?
+            .with_opinion_merge(opinion_merge)?
+            .with_opinion_merge_temperature_override(opinion_merge_temperature_override)?
+            .with_reflect(reflect)?
+            .with_reflect_temperature(reflect_temperature)?
+            .with_reflect_temperature_override(reflect_temperature_override)?
+            .with_retrieval(retrieval)
+    }
+
+    /// Override the near-duplicate similarity threshold in the range `0.0..=1.0`.
+    pub fn with_dedup_threshold(mut self, dedup_threshold: Option<f32>) -> Result<Self> {
+        self.dedup_threshold = dedup_threshold;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Override per-stage reasoning-effort settings.
+    pub fn with_reasoning_effort(
+        mut self,
+        reasoning_effort: ReasoningEffortConfig,
+    ) -> Result<Self> {
+        self.reasoning_effort = reasoning_effort;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Override retain extraction settings.
+    pub fn with_extraction(mut self, extraction: extractor::ExtractionConfig) -> Result<Self> {
+        self.extraction = extraction;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Set the explicit retain extraction temperature override, if any.
+    pub fn with_extract_temperature_override(
+        mut self,
+        extract_temperature_override: Option<f32>,
+    ) -> Result<Self> {
+        self.extract_temperature_override = extract_temperature_override;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Override the retain entity-resolution temperature.
+    pub fn with_resolve_temperature(mut self, resolve_temperature: f32) -> Result<Self> {
+        self.resolve_temperature = resolve_temperature;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Set the explicit retain entity-resolution temperature override, if any.
+    pub fn with_resolve_temperature_override(
+        mut self,
+        resolve_temperature_override: Option<f32>,
+    ) -> Result<Self> {
+        self.resolve_temperature_override = resolve_temperature_override;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Override retain graph-construction settings.
+    pub fn with_graph(mut self, graph: graph_builder::GraphConfig) -> Result<Self> {
+        self.graph = graph;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Set the explicit retain graph temperature override, if any.
+    pub fn with_graph_temperature_override(
+        mut self,
+        graph_temperature_override: Option<f32>,
+    ) -> Result<Self> {
+        self.graph_temperature_override = graph_temperature_override;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Override observation-consolidation settings.
+    pub fn with_consolidation(mut self, consolidation: ConsolidationConfig) -> Result<Self> {
+        self.consolidation = consolidation;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Set the explicit consolidation temperature override, if any.
+    pub fn with_consolidate_temperature_override(
+        mut self,
+        consolidate_temperature_override: Option<f32>,
+    ) -> Result<Self> {
+        self.consolidate_temperature_override = consolidate_temperature_override;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Override opinion-merge settings.
+    pub fn with_opinion_merge(
+        mut self,
+        opinion_merge: opinion_merger::OpinionMergeConfig,
+    ) -> Result<Self> {
+        self.opinion_merge = opinion_merge;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Set the explicit opinion-merge temperature override, if any.
+    pub fn with_opinion_merge_temperature_override(
+        mut self,
+        opinion_merge_temperature_override: Option<f32>,
+    ) -> Result<Self> {
+        self.opinion_merge_temperature_override = opinion_merge_temperature_override;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Override reflect-stage settings.
+    pub fn with_reflect(mut self, reflect: ReflectConfig) -> Result<Self> {
+        self.reflect = reflect;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Override the reflect temperature.
+    pub fn with_reflect_temperature(mut self, reflect_temperature: f32) -> Result<Self> {
+        self.reflect_temperature = reflect_temperature;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Set the explicit reflect temperature override, if any.
+    pub fn with_reflect_temperature_override(
+        mut self,
+        reflect_temperature_override: Option<f32>,
+    ) -> Result<Self> {
+        self.reflect_temperature_override = reflect_temperature_override;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Override retrieval-stage settings.
+    pub fn with_retrieval(mut self, retrieval: RetrievalConfig) -> Result<Self> {
+        self.retrieval = retrieval;
+        self.validate()?;
+        Ok(self)
+    }
+
+    fn validate(&self) -> Result<()> {
+        validate_nonblank_field("database_url", &self.database_url)?;
+        validate_embedding_config(&self.embedding)?;
+        validate_reranker_config(&self.reranker)?;
+        validate_optional_unit_interval_float("dedup_threshold", self.dedup_threshold)?;
+        validate_positive_usize_field(
+            "extraction.structured_output_max_attempts",
+            self.extraction.structured_output_max_attempts,
+        )?;
+        validate_nonnegative_float("extraction.temperature", self.extraction.temperature)?;
+        validate_optional_nonnegative_float(
+            "extract_temperature_override",
+            self.extract_temperature_override,
+        )?;
+        validate_nonnegative_float("resolve_temperature", self.resolve_temperature)?;
+        validate_optional_nonnegative_float(
+            "resolve_temperature_override",
+            self.resolve_temperature_override,
+        )?;
+        validate_unit_interval_float("graph.semantic_threshold", self.graph.semantic_threshold)?;
+        validate_nonnegative_float("graph.causal_temperature", self.graph.causal_temperature)?;
+        validate_optional_nonnegative_float(
+            "graph_temperature_override",
+            self.graph_temperature_override,
+        )?;
+        validate_positive_usize_field("consolidation.batch_size", self.consolidation.batch_size)?;
+        validate_positive_usize_field("consolidation.max_tokens", self.consolidation.max_tokens)?;
+        validate_positive_usize_field(
+            "consolidation.recall_budget",
+            self.consolidation.recall_budget,
+        )?;
+        validate_positive_usize_field(
+            "consolidation.structured_output_max_attempts",
+            self.consolidation.structured_output_max_attempts,
+        )?;
+        validate_nonnegative_float("consolidation.temperature", self.consolidation.temperature)?;
+        validate_optional_nonnegative_float(
+            "consolidate_temperature_override",
+            self.consolidate_temperature_override,
+        )?;
+        validate_nonnegative_float("opinion_merge.temperature", self.opinion_merge.temperature)?;
+        validate_optional_nonnegative_float(
+            "opinion_merge_temperature_override",
+            self.opinion_merge_temperature_override,
+        )?;
+        validate_nonnegative_float("reflect_temperature", self.reflect_temperature)?;
+        validate_optional_nonnegative_float(
+            "reflect_temperature_override",
+            self.reflect_temperature_override,
+        )?;
+        Ok(())
     }
 
     /// Return the configured database URL.
-    pub fn database_url(&self) -> &str {
+    pub(crate) fn database_url(&self) -> &str {
         &self.database_url
     }
 
     /// Return the validated LLM configuration bundle.
-    pub fn llm(&self) -> &LlmConfig {
+    pub(crate) fn llm(&self) -> &LlmConfig {
         &self.llm
     }
 
     /// Return the validated embedding provider configuration.
-    pub fn embedding(&self) -> &EmbeddingConfig {
+    pub(crate) fn embedding(&self) -> &EmbeddingConfig {
         &self.embedding
     }
 
     /// Return the validated reranker provider configuration.
-    pub fn reranker(&self) -> &RerankerConfig {
+    pub(crate) fn reranker(&self) -> &RerankerConfig {
         &self.reranker
     }
 
     /// Return the configured near-duplicate threshold.
-    pub fn dedup_threshold(&self) -> Option<f32> {
+    pub(crate) fn dedup_threshold(&self) -> Option<f32> {
         self.dedup_threshold
     }
 
     /// Return the reasoning-effort overrides.
-    pub fn reasoning_effort(&self) -> ReasoningEffortConfig {
+    pub(crate) fn reasoning_effort(&self) -> ReasoningEffortConfig {
         self.reasoning_effort
     }
 
     /// Return the retain extraction config.
-    pub fn extraction(&self) -> extractor::ExtractionConfig {
+    pub(crate) fn extraction(&self) -> extractor::ExtractionConfig {
         self.extraction
     }
 
     /// Return the explicit retain extraction temperature override, if any.
-    pub fn extract_temperature_override(&self) -> Option<f32> {
+    pub(crate) fn extract_temperature_override(&self) -> Option<f32> {
         self.extract_temperature_override
     }
 
     /// Return the retain entity-resolution temperature.
-    pub fn resolve_temperature(&self) -> f32 {
+    pub(crate) fn resolve_temperature(&self) -> f32 {
         self.resolve_temperature
     }
 
     /// Return the explicit retain entity-resolution temperature override, if any.
-    pub fn resolve_temperature_override(&self) -> Option<f32> {
+    pub(crate) fn resolve_temperature_override(&self) -> Option<f32> {
         self.resolve_temperature_override
     }
 
     /// Return the retain graph-building config.
-    pub fn graph(&self) -> graph_builder::GraphConfig {
+    pub(crate) fn graph(&self) -> graph_builder::GraphConfig {
         self.graph.clone()
     }
 
     /// Return the explicit retain graph temperature override, if any.
-    pub fn graph_temperature_override(&self) -> Option<f32> {
+    pub(crate) fn graph_temperature_override(&self) -> Option<f32> {
         self.graph_temperature_override
     }
 
     /// Return the observation consolidation config.
-    pub fn consolidation(&self) -> ConsolidationConfig {
+    pub(crate) fn consolidation(&self) -> ConsolidationConfig {
         self.consolidation
     }
 
     /// Return the explicit consolidation temperature override, if any.
-    pub fn consolidate_temperature_override(&self) -> Option<f32> {
+    pub(crate) fn consolidate_temperature_override(&self) -> Option<f32> {
         self.consolidate_temperature_override
     }
 
     /// Return the opinion-merge config.
-    pub fn opinion_merge(&self) -> opinion_merger::OpinionMergeConfig {
+    pub(crate) fn opinion_merge(&self) -> opinion_merger::OpinionMergeConfig {
         self.opinion_merge
     }
 
     /// Return the explicit opinion-merge temperature override, if any.
-    pub fn opinion_merge_temperature_override(&self) -> Option<f32> {
+    pub(crate) fn opinion_merge_temperature_override(&self) -> Option<f32> {
         self.opinion_merge_temperature_override
     }
 
     /// Return the reflect-stage runtime config.
-    pub fn reflect(&self) -> &ReflectConfig {
+    pub(crate) fn reflect(&self) -> &ReflectConfig {
         &self.reflect
     }
 
     /// Return the reflect temperature.
-    pub fn reflect_temperature(&self) -> f32 {
+    pub(crate) fn reflect_temperature(&self) -> f32 {
         self.reflect_temperature
     }
 
     /// Return the explicit reflect temperature override, if any.
-    pub fn reflect_temperature_override(&self) -> Option<f32> {
+    pub(crate) fn reflect_temperature_override(&self) -> Option<f32> {
         self.reflect_temperature_override
     }
 
     /// Return the retrieval-stage runtime config.
-    pub fn retrieval(&self) -> &RetrievalConfig {
+    pub(crate) fn retrieval(&self) -> &RetrievalConfig {
         &self.retrieval
     }
-}
-
-#[derive(Clone)]
-struct RuntimeLlmSharedConfig {
-    provider: Provider,
-    api_key: String,
-    vertex_project: Option<String>,
-    vertex_location: Option<String>,
-    base_url: Option<String>,
-    timeout_secs: u64,
-    openai_prompt_cache: Option<OpenAiPromptCacheConfig>,
-    anthropic_prompt_cache: Option<AnthropicPromptCacheConfig>,
-}
-
-fn required_string_any(names: &[&str]) -> Result<String> {
-    for name in names {
-        if let Some(value) = config_env::optional_string(name) {
-            return Ok(value);
-        }
-    }
-
-    Err(ConfigError::configuration(format!(
-        "{} must be set",
-        names.join(" or ")
-    )))
-}
-
-fn optional_string_any(names: &[&str]) -> Option<String> {
-    names
-        .iter()
-        .find_map(|name| config_env::optional_string(name))
-}
-
-fn parse_optional_temperature(name: &'static str) -> Result<Option<f32>> {
-    match env::var(name) {
-        Ok(raw) => {
-            let value = raw.trim().parse::<f32>().map_err(|_| {
-                ConfigError::configuration(format!("{name} must be a float, got: {raw}"))
-            })?;
-            if !value.is_finite() || value < 0.0 {
-                return Err(ConfigError::configuration(format!(
-                    "{name} must be a finite, non-negative float, got: {raw}"
-                )));
-            }
-            Ok(Some(value))
-        }
-        Err(env::VarError::NotPresent) => Ok(None),
-        Err(err) => Err(ConfigError::configuration(format!(
-            "{name} must be set: {err}"
-        ))),
-    }
-}
-
-fn parse_optional_reasoning_effort(name: &'static str) -> Result<Option<ReasoningEffort>> {
-    match env::var(name) {
-        Ok(raw) => {
-            let effort = match raw.trim().to_ascii_lowercase().as_str() {
-                "minimal" => ReasoningEffort::Minimal,
-                "low" => ReasoningEffort::Low,
-                "medium" => ReasoningEffort::Medium,
-                "high" => ReasoningEffort::High,
-                "xhigh" => ReasoningEffort::XHigh,
-                "none" => ReasoningEffort::None,
-                _ => {
-                    return Err(ConfigError::configuration(format!(
-                        "{name} must be one of: none, minimal, low, medium, high, xhigh; got: {raw}"
-                    )));
-                }
-            };
-            Ok(Some(effort))
-        }
-        Err(env::VarError::NotPresent) => Ok(None),
-        Err(err) => Err(ConfigError::configuration(format!(
-            "{name} must be set: {err}"
-        ))),
-    }
-}
-
-fn parse_timeout_secs() -> Result<u64> {
-    match env::var("LLM_TIMEOUT_SECS") {
-        Ok(value) => {
-            let timeout_secs = value.parse::<u64>().map_err(|_| {
-                ConfigError::configuration(format!(
-                    "LLM_TIMEOUT_SECS must be a positive integer, got: {value}"
-                ))
-            })?;
-            if timeout_secs == 0 {
-                return Err(ConfigError::configuration(
-                    "LLM_TIMEOUT_SECS must be greater than zero",
-                ));
-            }
-            Ok(timeout_secs)
-        }
-        Err(env::VarError::NotPresent) => Ok(DEFAULT_TIMEOUT_SECS),
-        Err(err) => Err(ConfigError::configuration(format!(
-            "LLM_TIMEOUT_SECS must be set: {err}"
-        ))),
-    }
-}
-
-fn prompt_cache_enabled() -> Result<bool> {
-    match env::var("LLM_PROMPT_CACHE_ENABLED") {
-        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
-            "1" | "true" | "yes" | "on" => Ok(true),
-            "0" | "false" | "no" | "off" => Ok(false),
-            other => Err(ConfigError::configuration(format!(
-                "LLM_PROMPT_CACHE_ENABLED must be a boolean, got: {other}"
-            ))),
-        },
-        Err(env::VarError::NotPresent) => Ok(false),
-        Err(err) => Err(ConfigError::configuration(format!(
-            "LLM_PROMPT_CACHE_ENABLED must be set: {err}"
-        ))),
-    }
-}
-
-fn parse_openai_prompt_cache() -> Result<Option<OpenAiPromptCacheConfig>> {
-    if !prompt_cache_enabled()? {
-        return Ok(None);
-    }
-
-    let retention = match env::var("OPENAI_PROMPT_CACHE_RETENTION") {
-        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
-            "in_memory" | "in-memory" => Some(OpenAiPromptCacheRetention::InMemory),
-            "24h" => Some(OpenAiPromptCacheRetention::Hours24),
-            other => {
-                return Err(ConfigError::configuration(format!(
-                    "OPENAI_PROMPT_CACHE_RETENTION must be one of: in_memory, in-memory, 24h; got: {other}"
-                )));
-            }
-        },
-        Err(env::VarError::NotPresent) => None,
-        Err(err) => {
-            return Err(ConfigError::configuration(format!(
-                "OPENAI_PROMPT_CACHE_RETENTION must be set: {err}"
-            )));
-        }
-    };
-
-    let mut config = OpenAiPromptCacheConfig::new();
-    if let Some(key) = config_env::optional_string("OPENAI_PROMPT_CACHE_KEY") {
-        config = config.with_key(key);
-    }
-    if let Some(retention) = retention {
-        config = config.with_retention(retention);
-    }
-    Ok(Some(config))
-}
-
-fn parse_anthropic_prompt_cache() -> Result<Option<AnthropicPromptCacheConfig>> {
-    if !prompt_cache_enabled()? {
-        return Ok(None);
-    }
-
-    let ttl = match env::var("ANTHROPIC_PROMPT_CACHE_TTL") {
-        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
-            "5m" => Some(AnthropicPromptCacheTtl::Minutes5),
-            "1h" => Some(AnthropicPromptCacheTtl::Hours1),
-            other => {
-                return Err(ConfigError::configuration(format!(
-                    "ANTHROPIC_PROMPT_CACHE_TTL must be one of: 5m, 1h; got: {other}"
-                )));
-            }
-        },
-        Err(env::VarError::NotPresent) => None,
-        Err(err) => {
-            return Err(ConfigError::configuration(format!(
-                "ANTHROPIC_PROMPT_CACHE_TTL must be set: {err}"
-            )));
-        }
-    };
-
-    let mut config = AnthropicPromptCacheConfig::new();
-    if let Some(ttl) = ttl {
-        config = config.with_ttl(ttl);
-    }
-    Ok(Some(config))
-}
-
-fn build_runtime_client_config(
-    shared: &RuntimeLlmSharedConfig,
-    model: String,
-) -> Result<ClientConfig> {
-    let config = match shared.provider {
-        Provider::Anthropic => {
-            let mut config = AnthropicConfig::new(shared.api_key.clone(), model)
-                .map_err(ConfigError::from)?
-                .with_timeout_secs(shared.timeout_secs)
-                .map_err(ConfigError::from)?;
-            if let Some(prompt_cache) = shared.anthropic_prompt_cache.clone() {
-                config = config.with_prompt_cache(prompt_cache);
-            }
-            ClientConfig::Anthropic(config)
-        }
-        Provider::OpenAi => {
-            let mut config = OpenAiConfig::new(shared.api_key.clone(), model)
-                .map_err(ConfigError::from)?
-                .with_timeout_secs(shared.timeout_secs)
-                .map_err(ConfigError::from)?;
-            if let Some(base_url) = shared.base_url.clone() {
-                config = config.with_base_url(base_url).map_err(ConfigError::from)?;
-            }
-            if let Some(prompt_cache) = shared.openai_prompt_cache.clone() {
-                config = config.with_prompt_cache(prompt_cache);
-            }
-            ClientConfig::OpenAi(config)
-        }
-        Provider::Gemini => {
-            let mut config = GeminiConfig::new(shared.api_key.clone(), model)
-                .map_err(ConfigError::from)?
-                .with_timeout_secs(shared.timeout_secs)
-                .map_err(ConfigError::from)?;
-            if let Some(base_url) = shared.base_url.clone() {
-                config = config.with_base_url(base_url).map_err(ConfigError::from)?;
-            }
-            ClientConfig::Gemini(config)
-        }
-        Provider::Vertex => {
-            let project = shared.vertex_project.clone().ok_or_else(|| {
-                ConfigError::configuration(
-                    "LLM_VERTEX_PROJECT or GOOGLE_CLOUD_PROJECT must be set for provider=vertex",
-                )
-            })?;
-            let mut config = VertexConfig::new(shared.api_key.clone(), model, project)
-                .map_err(ConfigError::from)?
-                .with_timeout_secs(shared.timeout_secs)
-                .map_err(ConfigError::from)?;
-            if let Some(location) = shared.vertex_location.clone() {
-                config = config.with_location(location).map_err(ConfigError::from)?;
-            }
-            if let Some(base_url) = shared.base_url.clone() {
-                config = config.with_base_url(base_url).map_err(ConfigError::from)?;
-            }
-            ClientConfig::Vertex(config)
-        }
-    };
-
-    Ok(config)
-}
-
-fn runtime_llm_config_from_env() -> Result<LlmConfig> {
-    let provider =
-        config_env::required_string("LLM_PROVIDER", super::error::ConfigErrorKind::Configuration)?
-            .parse::<Provider>()
-            .map_err(ConfigError::from)?;
-    let shared = RuntimeLlmSharedConfig {
-        provider,
-        api_key: config_env::required_string(
-            "LLM_API_KEY",
-            super::error::ConfigErrorKind::Configuration,
-        )?,
-        vertex_project: if provider == Provider::Vertex {
-            Some(required_string_any(&[
-                "LLM_VERTEX_PROJECT",
-                "GOOGLE_CLOUD_PROJECT",
-            ])?)
-        } else {
-            None
-        },
-        vertex_location: if provider == Provider::Vertex {
-            optional_string_any(&["LLM_VERTEX_LOCATION", "GOOGLE_CLOUD_LOCATION"])
-                .or(Some(VertexConfig::DEFAULT_LOCATION.into()))
-        } else {
-            None
-        },
-        base_url: config_env::optional_string("LLM_BASE_URL"),
-        timeout_secs: parse_timeout_secs()?,
-        openai_prompt_cache: if provider == Provider::OpenAi {
-            parse_openai_prompt_cache()?
-        } else {
-            None
-        },
-        anthropic_prompt_cache: if provider == Provider::Anthropic {
-            parse_anthropic_prompt_cache()?
-        } else {
-            None
-        },
-    };
-
-    let retain = build_runtime_client_config(
-        &shared,
-        required_string_any(&["RETAIN_LLM_MODEL", "LLM_MODEL"])?,
-    )?;
-    let reflect = build_runtime_client_config(
-        &shared,
-        required_string_any(&["REFLECT_LLM_MODEL", "LLM_MODEL"])?,
-    )?;
-
-    Ok(LlmConfig::new(retain, reflect))
-}
-
-fn embedding_config_from_env() -> Result<EmbeddingConfig> {
-    let provider = match config_env::required_string(
-        "EMBEDDING_PROVIDER",
-        super::error::ConfigErrorKind::Configuration,
-    )?
-    .as_str()
-    {
-        "openai" => EmbeddingProvider::OpenAi,
-        "local" => EmbeddingProvider::Local,
-        other => {
-            return Err(ConfigError::configuration(format!(
-                "unknown EMBEDDING_PROVIDER: {other}"
-            )));
-        }
-    };
-
-    Ok(EmbeddingConfig::from_parts(
-        provider,
-        config_env::optional_string("EMBEDDING_MODEL_PATH"),
-        config_env::optional_usize_lossy("EMBEDDING_MAX_SEQ_LEN").unwrap_or(512),
-        config_env::optional_string("EMBEDDING_API_KEY"),
-        config_env::optional_string("EMBEDDING_API_MODEL"),
-        config_env::optional_usize_lossy("EMBEDDING_API_DIMS"),
-    ))
-}
-
-fn reranker_config_from_env() -> Result<RerankerConfig> {
-    let provider = match config_env::required_string(
-        "RERANKER_PROVIDER",
-        super::error::ConfigErrorKind::Configuration,
-    )?
-    .as_str()
-    {
-        "local" => RerankerProvider::Local,
-        "api" => RerankerProvider::Api,
-        "none" => RerankerProvider::None,
-        other => {
-            return Err(ConfigError::configuration(format!(
-                "unknown RERANKER_PROVIDER: {other}"
-            )));
-        }
-    };
-
-    Ok(RerankerConfig::from_parts(
-        provider,
-        config_env::optional_string("RERANKER_MODEL_PATH"),
-        config_env::optional_usize_lossy("RERANKER_MAX_SEQ_LEN").unwrap_or(512),
-        config_env::optional_string("RERANKER_API_KEY"),
-        config_env::optional_string("RERANKER_API_URL"),
-        config_env::optional_string("RERANKER_API_MODEL"),
-    ))
 }
 
 /// Validated reflect-stage configuration loaded from environment.
@@ -644,26 +527,34 @@ pub struct ReflectConfig {
 }
 
 impl ReflectConfig {
-    /// Load reflect-stage configuration from the process environment.
-    pub fn from_env() -> Result<Self> {
-        let max_iterations =
-            config_env::optional_usize_lossy("REFLECT_MAX_ITERATIONS").unwrap_or(8);
-        let max_tokens = config_env::optional_usize_lossy("REFLECT_MAX_TOKENS");
-        let source_limit = config_env::optional_usize_lossy("REFLECT_SOURCE_LIMIT")
-            .unwrap_or(crate::reflect::DEFAULT_SOURCE_LOOKUP_LIMIT);
-        let source_max_chars = config_env::optional_usize_lossy("REFLECT_SOURCE_MAX_CHARS");
-        let enable_source_lookup = match env::var("REFLECT_ENABLE_SOURCE_LOOKUP") {
-            Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
-                "1" | "true" | "yes" | "on" => true,
-                "0" | "false" | "no" | "off" => false,
-                other => {
-                    return Err(ConfigError::configuration(format!(
-                        "REFLECT_ENABLE_SOURCE_LOOKUP must be a boolean, got: {other}"
-                    )));
-                }
-            },
-            Err(_) => crate::reflect::DEFAULT_ENABLE_SOURCE_LOOKUP,
-        };
+    /// Create reflect-stage configuration from validated values.
+    pub fn new(
+        max_iterations: usize,
+        max_tokens: Option<usize>,
+        source_limit: usize,
+        source_max_chars: Option<usize>,
+        enable_source_lookup: bool,
+    ) -> Result<Self> {
+        if max_iterations == 0 {
+            return Err(ConfigError::configuration(
+                "REFLECT_MAX_ITERATIONS must be greater than 0",
+            ));
+        }
+        if matches!(max_tokens, Some(0)) {
+            return Err(ConfigError::configuration(
+                "REFLECT_MAX_TOKENS must be greater than 0 if set",
+            ));
+        }
+        if source_limit == 0 {
+            return Err(ConfigError::configuration(
+                "REFLECT_SOURCE_LIMIT must be greater than 0",
+            ));
+        }
+        if matches!(source_max_chars, Some(0)) {
+            return Err(ConfigError::configuration(
+                "REFLECT_SOURCE_MAX_CHARS must be greater than 0 if set",
+            ));
+        }
 
         Ok(Self {
             max_iterations,
@@ -672,6 +563,39 @@ impl ReflectConfig {
             source_max_chars,
             enable_source_lookup,
         })
+    }
+
+    /// Load reflect-stage configuration from the process environment.
+    pub fn from_env() -> Result<Self> {
+        let max_iterations = config_env::parse_optional_usize(
+            "REFLECT_MAX_ITERATIONS",
+            ConfigErrorKind::Configuration,
+        )?
+        .unwrap_or(8);
+        let max_tokens =
+            config_env::parse_optional_usize("REFLECT_MAX_TOKENS", ConfigErrorKind::Configuration)?;
+        let source_limit = config_env::parse_optional_usize(
+            "REFLECT_SOURCE_LIMIT",
+            ConfigErrorKind::Configuration,
+        )?
+        .unwrap_or(crate::reflect::DEFAULT_SOURCE_LOOKUP_LIMIT);
+        let source_max_chars = config_env::parse_optional_usize(
+            "REFLECT_SOURCE_MAX_CHARS",
+            ConfigErrorKind::Configuration,
+        )?;
+        let enable_source_lookup = config_env::parse_optional_bool(
+            "REFLECT_ENABLE_SOURCE_LOOKUP",
+            ConfigErrorKind::Configuration,
+        )?
+        .unwrap_or(crate::reflect::DEFAULT_ENABLE_SOURCE_LOOKUP);
+
+        Self::new(
+            max_iterations,
+            max_tokens,
+            source_limit,
+            source_max_chars,
+            enable_source_lookup,
+        )
     }
 
     /// Return the reflect iteration cap.
@@ -700,6 +624,18 @@ impl ReflectConfig {
     }
 }
 
+impl Default for ReflectConfig {
+    fn default() -> Self {
+        Self {
+            max_iterations: 8,
+            max_tokens: None,
+            source_limit: crate::reflect::DEFAULT_SOURCE_LOOKUP_LIMIT,
+            source_max_chars: None,
+            enable_source_lookup: crate::reflect::DEFAULT_ENABLE_SOURCE_LOOKUP,
+        }
+    }
+}
+
 /// Validated retrieval-stage configuration loaded from environment.
 #[derive(Debug, Clone, Copy)]
 pub struct RetrievalConfig {
@@ -708,12 +644,34 @@ pub struct RetrievalConfig {
 }
 
 impl RetrievalConfig {
-    /// Load retrieval-stage configuration from the process environment.
-    pub fn from_env() -> Self {
-        Self {
-            retriever_limit: config_env::optional_usize_lossy("RETRIEVER_LIMIT").unwrap_or(40),
-            max_facts: config_env::optional_usize_lossy("MAX_FACTS").unwrap_or(50),
+    /// Create retrieval-stage configuration from validated values.
+    pub fn new(retriever_limit: usize, max_facts: usize) -> Result<Self> {
+        if retriever_limit == 0 {
+            return Err(ConfigError::configuration(
+                "RETRIEVER_LIMIT must be greater than 0",
+            ));
         }
+        if max_facts == 0 {
+            return Err(ConfigError::configuration(
+                "MAX_FACTS must be greater than 0",
+            ));
+        }
+
+        Ok(Self {
+            retriever_limit,
+            max_facts,
+        })
+    }
+
+    /// Load retrieval-stage configuration from the process environment.
+    pub fn from_env() -> Result<Self> {
+        let retriever_limit =
+            config_env::parse_optional_usize("RETRIEVER_LIMIT", ConfigErrorKind::Configuration)?
+                .unwrap_or(40);
+        let max_facts =
+            config_env::parse_optional_usize("MAX_FACTS", ConfigErrorKind::Configuration)?
+                .unwrap_or(50);
+        Self::new(retriever_limit, max_facts)
     }
 
     /// Return the candidate limit per retrieval strategy.
@@ -727,14 +685,132 @@ impl RetrievalConfig {
     }
 }
 
+impl Default for RetrievalConfig {
+    fn default() -> Self {
+        Self {
+            retriever_limit: 40,
+            max_facts: 50,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::embedding::EmbeddingProvider;
+    use crate::recall::reranker::RerankerProvider;
+    use std::env;
     use std::sync::{Mutex, OnceLock};
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn set_minimal_runtime_env() {
+        unsafe {
+            env::set_var("DATABASE_URL", "postgres://example");
+            env::set_var("LLM_PROVIDER", "openai");
+            env::set_var("LLM_API_KEY", "test-key");
+            env::set_var("LLM_MODEL", "gpt-4o-mini");
+            env::set_var("EMBEDDING_PROVIDER", "local");
+            env::set_var("EMBEDDING_MODEL_PATH", "/tmp/model");
+            env::set_var("RERANKER_PROVIDER", "none");
+        }
+    }
+
+    fn clear_minimal_runtime_env() {
+        unsafe {
+            env::remove_var("DATABASE_URL");
+            env::remove_var("LLM_PROVIDER");
+            env::remove_var("LLM_API_KEY");
+            env::remove_var("LLM_MODEL");
+            env::remove_var("EMBEDDING_PROVIDER");
+            env::remove_var("EMBEDDING_MODEL_PATH");
+            env::remove_var("RERANKER_PROVIDER");
+        }
+    }
+
+    fn minimal_programmatic_runtime_config() -> RuntimeConfig {
+        let retain = ClientConfig::OpenAi(OpenAiConfig::new("test-key", "gpt-4o-mini").unwrap());
+        let reflect = ClientConfig::OpenAi(OpenAiConfig::new("test-key", "gpt-4o-mini").unwrap());
+        RuntimeConfig::new(
+            "postgres://example",
+            LlmConfig::new(retain, reflect),
+            EmbeddingConfig::local("/tmp/model"),
+            RerankerConfig::none(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn runtime_config_new_uses_defaults() {
+        let config = minimal_programmatic_runtime_config();
+
+        assert_eq!(config.database_url(), "postgres://example");
+        assert_eq!(config.retrieval().retriever_limit(), 40);
+        assert_eq!(config.retrieval().max_facts(), 50);
+        assert_eq!(config.reflect().max_iterations(), 8);
+        assert_eq!(
+            config.resolve_temperature(),
+            crate::retain::resolver::ENTITY_RESOLUTION_TEMPERATURE
+        );
+    }
+
+    #[test]
+    fn runtime_config_new_rejects_blank_database_url() {
+        let retain = ClientConfig::OpenAi(OpenAiConfig::new("test-key", "gpt-4o-mini").unwrap());
+        let reflect = ClientConfig::OpenAi(OpenAiConfig::new("test-key", "gpt-4o-mini").unwrap());
+
+        let err = RuntimeConfig::new(
+            "   ",
+            LlmConfig::new(retain, reflect),
+            EmbeddingConfig::local("/tmp/model"),
+            RerankerConfig::none(),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            err.kind(),
+            super::super::error::ConfigErrorKind::Configuration
+        );
+        assert!(err.to_string().contains("database_url"));
+    }
+
+    #[test]
+    fn runtime_config_programmatic_path_rejects_invalid_embedding_config() {
+        let retain = ClientConfig::OpenAi(OpenAiConfig::new("test-key", "gpt-4o-mini").unwrap());
+        let reflect = ClientConfig::OpenAi(OpenAiConfig::new("test-key", "gpt-4o-mini").unwrap());
+
+        let err = RuntimeConfig::new(
+            "postgres://example",
+            LlmConfig::new(retain, reflect),
+            EmbeddingConfig::local(""),
+            RerankerConfig::none(),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            err.kind(),
+            super::super::error::ConfigErrorKind::Configuration
+        );
+        assert!(err.to_string().contains("embedding.model_path"));
+    }
+
+    #[test]
+    fn runtime_config_programmatic_path_rejects_invalid_stage_override() {
+        let err = minimal_programmatic_runtime_config()
+            .with_consolidation(ConsolidationConfig {
+                batch_size: 0,
+                ..ConsolidationConfig::default()
+            })
+            .unwrap_err();
+
+        assert_eq!(
+            err.kind(),
+            super::super::error::ConfigErrorKind::Configuration
+        );
+        assert!(err.to_string().contains("consolidation.batch_size"));
     }
 
     #[test]
@@ -757,16 +833,29 @@ mod tests {
     }
 
     #[test]
-    fn retrieval_config_preserves_lossy_defaulting() {
+    fn reflect_config_rejects_zero_source_limit() {
+        let err = ReflectConfig::new(8, None, 0, None, true).unwrap_err();
+        assert_eq!(
+            err.kind(),
+            super::super::error::ConfigErrorKind::Configuration
+        );
+        assert!(err.to_string().contains("REFLECT_SOURCE_LIMIT"));
+    }
+
+    #[test]
+    fn retrieval_config_rejects_invalid_values() {
         let _guard = env_lock().lock().unwrap();
         unsafe {
             env::set_var("RETRIEVER_LIMIT", "not-a-number");
             env::set_var("MAX_FACTS", "still-not-a-number");
         }
 
-        let config = RetrievalConfig::from_env();
-        assert_eq!(config.retriever_limit(), 40);
-        assert_eq!(config.max_facts(), 50);
+        let err = RetrievalConfig::from_env().unwrap_err();
+        assert_eq!(
+            err.kind(),
+            super::super::error::ConfigErrorKind::Configuration
+        );
+        assert!(err.to_string().contains("RETRIEVER_LIMIT"));
 
         unsafe {
             env::remove_var("RETRIEVER_LIMIT");
@@ -775,16 +864,51 @@ mod tests {
     }
 
     #[test]
+    fn retrieval_config_rejects_zero_limits() {
+        let err = RetrievalConfig::new(0, 50).unwrap_err();
+        assert_eq!(
+            err.kind(),
+            super::super::error::ConfigErrorKind::Configuration
+        );
+        assert!(err.to_string().contains("RETRIEVER_LIMIT"));
+
+        let err = RetrievalConfig::new(40, 0).unwrap_err();
+        assert_eq!(
+            err.kind(),
+            super::super::error::ConfigErrorKind::Configuration
+        );
+        assert!(err.to_string().contains("MAX_FACTS"));
+    }
+
+    #[test]
+    fn runtime_config_rejects_zero_extraction_retry_count() {
+        let _guard = env_lock().lock().unwrap();
+        set_minimal_runtime_env();
+        unsafe {
+            env::set_var("RETAIN_EXTRACT_STRUCTURED_OUTPUT_MAX_ATTEMPTS", "0");
+        }
+
+        let err = RuntimeConfig::from_env().unwrap_err();
+        assert_eq!(
+            err.kind(),
+            super::super::error::ConfigErrorKind::Configuration
+        );
+        assert!(
+            err.to_string()
+                .contains("RETAIN_EXTRACT_STRUCTURED_OUTPUT_MAX_ATTEMPTS")
+        );
+
+        unsafe {
+            env::remove_var("RETAIN_EXTRACT_STRUCTURED_OUTPUT_MAX_ATTEMPTS");
+        }
+        clear_minimal_runtime_env();
+    }
+
+    #[test]
     fn runtime_config_rejects_invalid_dedup_threshold_as_configuration_error() {
         let _guard = env_lock().lock().unwrap();
+        set_minimal_runtime_env();
         unsafe {
-            env::set_var("DATABASE_URL", "postgres://example");
-            env::set_var("LLM_PROVIDER", "openai");
-            env::set_var("LLM_API_KEY", "test-key");
-            env::set_var("LLM_MODEL", "gpt-4o-mini");
-            env::set_var("EMBEDDING_PROVIDER", "local");
-            env::set_var("EMBEDDING_MODEL_PATH", "/tmp/model");
-            env::set_var("RERANKER_PROVIDER", "none");
             env::set_var("DEDUP_THRESHOLD", "nope");
         }
 
@@ -796,14 +920,128 @@ mod tests {
         assert!(err.to_string().contains("DEDUP_THRESHOLD"));
 
         unsafe {
-            env::remove_var("DATABASE_URL");
-            env::remove_var("LLM_PROVIDER");
-            env::remove_var("LLM_API_KEY");
-            env::remove_var("LLM_MODEL");
+            env::remove_var("DEDUP_THRESHOLD");
+        }
+        clear_minimal_runtime_env();
+    }
+
+    #[test]
+    fn runtime_config_rejects_dedup_threshold_above_one() {
+        let _guard = env_lock().lock().unwrap();
+        set_minimal_runtime_env();
+
+        let err = RuntimeConfig::from_env()
+            .unwrap()
+            .with_dedup_threshold(Some(1.1))
+            .unwrap_err();
+        assert_eq!(
+            err.kind(),
+            super::super::error::ConfigErrorKind::Configuration
+        );
+        assert!(err.to_string().contains("dedup_threshold"));
+
+        clear_minimal_runtime_env();
+    }
+
+    #[test]
+    fn runtime_config_rejects_graph_semantic_threshold_above_one() {
+        let _guard = env_lock().lock().unwrap();
+        set_minimal_runtime_env();
+
+        let config = RuntimeConfig::from_env().unwrap();
+        let graph = graph_builder::GraphConfig {
+            semantic_threshold: 1.1,
+            ..config.graph()
+        };
+        let err = config.with_graph(graph).unwrap_err();
+        assert_eq!(
+            err.kind(),
+            super::super::error::ConfigErrorKind::Configuration
+        );
+        assert!(err.to_string().contains("graph.semantic_threshold"));
+
+        clear_minimal_runtime_env();
+    }
+
+    #[test]
+    fn embedding_config_rejects_missing_openai_dimensions() {
+        let _guard = env_lock().lock().unwrap();
+        unsafe {
+            env::set_var("EMBEDDING_PROVIDER", "openai");
+            env::set_var("EMBEDDING_API_KEY", "embed-key");
+            env::set_var("EMBEDDING_API_MODEL", "text-embedding-3-small");
+        }
+
+        let err = embedding_config_from_env().unwrap_err();
+        assert_eq!(
+            err.kind(),
+            super::super::error::ConfigErrorKind::Configuration
+        );
+        assert!(err.to_string().contains("EMBEDDING_API_DIMS"));
+
+        unsafe {
+            env::remove_var("EMBEDDING_PROVIDER");
+            env::remove_var("EMBEDDING_API_KEY");
+            env::remove_var("EMBEDDING_API_MODEL");
+        }
+    }
+
+    #[test]
+    fn embedding_config_ignores_inactive_openai_dimensions_for_local_provider() {
+        let _guard = env_lock().lock().unwrap();
+        unsafe {
+            env::set_var("EMBEDDING_PROVIDER", "local");
+            env::set_var("EMBEDDING_MODEL_PATH", "/tmp/model");
+            env::set_var("EMBEDDING_API_DIMS", "not-a-number");
+        }
+
+        let config = embedding_config_from_env().unwrap();
+        assert_eq!(config.provider(), EmbeddingProvider::Local);
+
+        unsafe {
             env::remove_var("EMBEDDING_PROVIDER");
             env::remove_var("EMBEDDING_MODEL_PATH");
+            env::remove_var("EMBEDDING_API_DIMS");
+        }
+    }
+
+    #[test]
+    fn reranker_config_rejects_missing_api_url() {
+        let _guard = env_lock().lock().unwrap();
+        unsafe {
+            env::set_var("RERANKER_PROVIDER", "api");
+            env::set_var("RERANKER_API_KEY", "rerank-key");
+            env::set_var("RERANKER_API_MODEL", "rerank-v1");
+        }
+
+        let err = reranker_config_from_env().unwrap_err();
+        assert_eq!(
+            err.kind(),
+            super::super::error::ConfigErrorKind::Configuration
+        );
+        assert!(err.to_string().contains("RERANKER_API_URL"));
+
+        unsafe {
             env::remove_var("RERANKER_PROVIDER");
-            env::remove_var("DEDUP_THRESHOLD");
+            env::remove_var("RERANKER_API_KEY");
+            env::remove_var("RERANKER_API_MODEL");
+        }
+    }
+
+    #[test]
+    fn reranker_config_ignores_inactive_local_seq_len_when_disabled() {
+        let _guard = env_lock().lock().unwrap();
+        unsafe {
+            env::set_var("RERANKER_PROVIDER", "none");
+            env::set_var("RERANKER_MAX_SEQ_LEN", "not-a-number");
+        }
+
+        let config = reranker_config_from_env().unwrap();
+        assert_eq!(config.provider(), RerankerProvider::None);
+
+        unsafe {
+            env::remove_var("RERANKER_PROVIDER");
+            env::remove_var("RERANKER_MAX_SEQ_LEN");
         }
     }
 
