@@ -18,13 +18,13 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::ImageExt;
 
 use elephant::consolidation::{DefaultConsolidator, DefaultOpinionMerger};
-use elephant::embedding::{self, EmbeddingClient, EmbeddingConfig, EmbeddingProvider};
+use elephant::embedding::{self, EmbeddingClient, EmbeddingConfig};
 use elephant::llm::LlmClient;
 use elephant::recall::DefaultRecallPipeline;
 use elephant::recall::budget::EstimateTokenizer;
 use elephant::recall::graph::{GraphRetriever, GraphRetrieverConfig};
 use elephant::recall::keyword::KeywordRetriever;
-use elephant::recall::reranker::{self, RerankerConfig, RerankerProvider};
+use elephant::recall::reranker::{self, RerankerConfig};
 use elephant::recall::semantic::SemanticRetriever;
 use elephant::recall::temporal::TemporalRetriever;
 use elephant::reflect::DefaultReflectPipeline;
@@ -196,15 +196,8 @@ impl RealTestHarness {
                 GraphRetrieverConfig::default(),
             )),
             Box::new(TemporalRetriever::new(store_arc.clone())),
-            reranker::build_reranker(&RerankerConfig {
-                provider: RerankerProvider::None,
-                model_path: None,
-                max_seq_len: 512,
-                api_key: None,
-                api_url: None,
-                api_model: None,
-            })
-            .expect("reranker"),
+            reranker::build_reranker(&RerankerConfig::none().with_max_seq_len(512))
+                .expect("reranker"),
             Box::new(EstimateTokenizer),
             60.0,
             50,
@@ -260,26 +253,17 @@ impl RealTestHarness {
 
 fn local_embedding_config() -> EmbeddingConfig {
     let _ = dotenvy::dotenv();
-    EmbeddingConfig {
-        provider: EmbeddingProvider::Local,
-        model_path: Some(embedding_model_path()),
-        max_seq_len: 512,
-        api_key: None,
-        model: None,
-        dimensions: None,
-    }
+    EmbeddingConfig::local(embedding_model_path()).with_max_seq_len(512)
 }
 
 fn openai_embedding_config() -> EmbeddingConfig {
     let _ = dotenvy::dotenv();
-    EmbeddingConfig {
-        provider: EmbeddingProvider::OpenAi,
-        model_path: None,
-        max_seq_len: 512,
-        api_key: Some(embedding_api_key()),
-        model: Some(embedding_api_model()),
-        dimensions: Some(embedding_api_dims()),
-    }
+    EmbeddingConfig::openai(
+        embedding_api_key(),
+        embedding_api_model(),
+        embedding_api_dims(),
+    )
+    .with_max_seq_len(512)
 }
 
 // ---------------------------------------------------------------------------

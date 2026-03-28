@@ -9,6 +9,7 @@ use crate::metrics::MetricsCollector;
 use crate::runtime::{ElephantRuntime, RuntimeBuilder};
 
 /// Benchmark-facing runtime bundle.
+#[derive(Debug)]
 pub struct BenchHarness {
     runtime: ElephantRuntime,
     determinism_requirement: Option<DeterminismRequirement>,
@@ -32,6 +33,7 @@ impl BenchHarness {
 }
 
 /// Builder for benchmark startup policy and runtime construction.
+#[derive(Debug)]
 pub struct BenchHarnessBuilder {
     runtime_builder: RuntimeBuilder,
     determinism_requirement: Option<DeterminismRequirement>,

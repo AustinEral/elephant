@@ -1,5 +1,7 @@
 //! MCP server adapter — exposes elephant pipelines as MCP tools.
 
+use std::fmt;
+
 use chrono::DateTime;
 use chrono::Utc;
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -246,6 +248,14 @@ pub struct ElephantMcp {
     app: AppHandle,
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
+}
+
+impl fmt::Debug for ElephantMcp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ElephantMcp")
+            .field("app", &self.app)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ElephantMcp {

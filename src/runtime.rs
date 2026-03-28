@@ -1,5 +1,6 @@
 //! Shared runtime builder for the API server and in-process benchmarks.
 
+use std::fmt;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -198,12 +199,31 @@ pub struct ElephantRuntime {
     pub embeddings: Arc<dyn EmbeddingClient>,
 }
 
+impl fmt::Debug for ElephantRuntime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ElephantRuntime")
+            .field("info", &self.info)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Builder for a fully constructed Elephant runtime.
 pub struct RuntimeBuilder {
     config: RuntimeConfig,
     metrics: Option<Arc<MetricsCollector>>,
     max_pool_connections: Option<u32>,
     determinism_requirement: Option<DeterminismRequirement>,
+}
+
+impl fmt::Debug for RuntimeBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RuntimeBuilder")
+            .field("config", &self.config)
+            .field("metrics_installed", &self.metrics.is_some())
+            .field("max_pool_connections", &self.max_pool_connections)
+            .field("determinism_requirement", &self.determinism_requirement)
+            .finish()
+    }
 }
 
 impl RuntimeBuilder {
@@ -628,14 +648,13 @@ fn stage_llm(
 }
 
 fn embedding_label(config: &EmbeddingConfig) -> String {
-    match config.provider {
+    match config.provider() {
         EmbeddingProvider::OpenAi => {
-            format!("openai/{}", config.model.clone().unwrap_or_default())
+            format!("openai/{}", config.model().unwrap_or_default())
         }
         EmbeddingProvider::Local => {
             let name = config
-                .model_path
-                .as_deref()
+                .model_path()
                 .and_then(|p| std::path::Path::new(p).file_name())
                 .and_then(|f| f.to_str())
                 .unwrap_or("unknown");
@@ -645,18 +664,17 @@ fn embedding_label(config: &EmbeddingConfig) -> String {
 }
 
 fn reranker_label(config: &RerankerConfig) -> String {
-    match config.provider {
+    match config.provider() {
         RerankerProvider::Local => {
             let name = config
-                .model_path
-                .as_deref()
+                .model_path()
                 .and_then(|p| std::path::Path::new(p).file_name())
                 .and_then(|f| f.to_str())
                 .unwrap_or("unknown");
             format!("local/{name}")
         }
         RerankerProvider::Api => {
-            format!("api/{}", config.api_model.as_deref().unwrap_or("unknown"))
+            format!("api/{}", config.api_model().unwrap_or("unknown"))
         }
         RerankerProvider::None => "none".into(),
     }

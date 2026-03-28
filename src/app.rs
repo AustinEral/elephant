@@ -2,6 +2,7 @@
 
 mod consolidation;
 
+use std::fmt;
 use std::sync::Arc;
 
 use crate::config::ServerConfig;
@@ -20,7 +21,7 @@ use crate::types::{
 };
 
 /// Shared runtime and policy info exposed to transports.
-#[derive(Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct AppInfo {
     /// Server binary version.
     pub version: String,
@@ -37,7 +38,7 @@ pub struct AppInfo {
 }
 
 /// Model labels exposed by the app facade.
-#[derive(Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct AppModelsInfo {
     /// The LLM model used for retain.
     pub retain: String,
@@ -50,7 +51,7 @@ pub struct AppModelsInfo {
 }
 
 /// Retrieval tuning exposed by the app facade.
-#[derive(Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct AppRetrievalInfo {
     /// Retriever candidate limit per retrieval strategy.
     pub retriever_limit: usize,
@@ -59,7 +60,7 @@ pub struct AppRetrievalInfo {
 }
 
 /// Reflect tuning exposed by the app facade.
-#[derive(Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct AppReflectInfo {
     /// Reflect iteration cap.
     pub max_iterations: usize,
@@ -70,7 +71,7 @@ pub struct AppReflectInfo {
 }
 
 /// Consolidation runtime tuning exposed by the app facade.
-#[derive(Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct AppConsolidationInfo {
     /// Consolidation batch size.
     pub batch_size: usize,
@@ -81,7 +82,7 @@ pub struct AppConsolidationInfo {
 }
 
 /// Background consolidation policy exposed by the app facade.
-#[derive(Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct AppBackgroundConsolidationInfo {
     /// Whether automatic background consolidation is enabled.
     pub enabled: bool,
@@ -104,6 +105,14 @@ pub struct AppHandle {
     opinion_merger: Arc<dyn OpinionMerger>,
     store: Arc<dyn MemoryStore>,
     embeddings: Arc<dyn EmbeddingClient>,
+}
+
+impl fmt::Debug for AppHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AppHandle")
+            .field("info", &self.info)
+            .finish_non_exhaustive()
+    }
 }
 
 impl AppHandle {
