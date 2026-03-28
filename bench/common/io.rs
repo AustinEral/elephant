@@ -82,6 +82,25 @@ mod tests {
     }
 
     #[test]
+    fn resolve_workspace_path_rewrites_logical_bench_paths() {
+        let resolved = resolve_workspace_path(Path::new("bench/locomo/profiles/smoke.json"));
+        let expected = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("bench/locomo/profiles/smoke.json");
+        assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn resolve_workspace_path_leaves_non_bench_paths_unchanged() {
+        let relative = Path::new("data/example.json");
+        assert_eq!(resolve_workspace_path(relative), relative);
+
+        let absolute = std::env::temp_dir().join("elephant-absolute-test.json");
+        assert_eq!(resolve_workspace_path(&absolute), absolute);
+    }
+
+    #[test]
     fn append_jsonl_creates_and_appends() {
         let dir = std::env::temp_dir().join("elephant_test_io");
         let _ = std::fs::create_dir_all(&dir);
