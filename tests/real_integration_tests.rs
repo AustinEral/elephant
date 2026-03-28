@@ -196,8 +196,7 @@ impl RealTestHarness {
                 GraphRetrieverConfig::default(),
             )),
             Box::new(TemporalRetriever::new(store_arc.clone())),
-            reranker::build_reranker(&RerankerConfig::none().with_max_seq_len(512))
-                .expect("reranker"),
+            reranker::build_reranker(&RerankerConfig::none()).expect("reranker"),
             Box::new(EstimateTokenizer),
             60.0,
             50,
@@ -253,7 +252,7 @@ impl RealTestHarness {
 
 fn local_embedding_config() -> EmbeddingConfig {
     let _ = dotenvy::dotenv();
-    EmbeddingConfig::local(embedding_model_path()).with_max_seq_len(512)
+    EmbeddingConfig::local(embedding_model_path())
 }
 
 fn openai_embedding_config() -> EmbeddingConfig {
@@ -263,7 +262,6 @@ fn openai_embedding_config() -> EmbeddingConfig {
         embedding_api_model(),
         embedding_api_dims(),
     )
-    .with_max_seq_len(512)
 }
 
 // ---------------------------------------------------------------------------

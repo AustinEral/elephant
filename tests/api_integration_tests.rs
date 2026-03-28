@@ -150,8 +150,7 @@ impl TestHarness {
                 GraphRetrieverConfig::default(),
             )),
             Box::new(TemporalRetriever::new(store_arc.clone())),
-            reranker::build_reranker(&RerankerConfig::none().with_max_seq_len(512))
-                .expect("reranker"),
+            reranker::build_reranker(&RerankerConfig::none()).expect("reranker"),
             Box::new(EstimateTokenizer),
             60.0,
             50,

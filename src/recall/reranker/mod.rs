@@ -318,13 +318,13 @@ mod tests {
 
     #[test]
     fn build_reranker_local_missing_path() {
-        let config = RerankerConfig::local("").with_max_seq_len(512);
+        let config = RerankerConfig::local("");
         assert!(build_reranker(&config).is_err());
     }
 
     #[test]
     fn build_reranker_api_missing_fields() {
-        let config = RerankerConfig::api("", "", "").with_max_seq_len(512);
+        let config = RerankerConfig::api("", "", "");
         assert!(build_reranker(&config).is_err());
     }
 
@@ -350,8 +350,7 @@ mod tests {
 
     #[test]
     fn build_reranker_api_all_fields() {
-        let config = RerankerConfig::api("key", "https://api.example.com/v1", "rerank-v1")
-            .with_max_seq_len(512);
+        let config = RerankerConfig::api("key", "https://api.example.com/v1", "rerank-v1");
         assert!(build_reranker(&config).is_ok());
     }
 }
