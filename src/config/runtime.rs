@@ -1,6 +1,6 @@
 //! Typed configuration for shared runtime startup.
 
-use std::env;
+use std::{env, fmt};
 
 use crate::consolidation::{ConsolidationConfig, opinion_merger};
 use crate::embedding::{EmbeddingConfig, EmbeddingProvider};
@@ -16,7 +16,7 @@ use super::env as config_env;
 use super::error::{ConfigError, Result};
 
 /// Validated startup configuration for the shared Elephant runtime.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RuntimeConfig {
     database_url: String,
     llm: LlmConfig,
@@ -38,6 +38,51 @@ pub struct RuntimeConfig {
     reflect_temperature: f32,
     reflect_temperature_override: Option<f32>,
     retrieval: RetrievalConfig,
+}
+
+impl fmt::Debug for RuntimeConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RuntimeConfig")
+            .field("database_url", &"<redacted>")
+            .field("llm", &self.llm)
+            .field("embedding", &self.embedding)
+            .field("reranker", &self.reranker)
+            .field("dedup_threshold", &self.dedup_threshold)
+            .field("reasoning_effort", &self.reasoning_effort)
+            .field("extraction", &self.extraction)
+            .field(
+                "extract_temperature_override",
+                &self.extract_temperature_override,
+            )
+            .field("resolve_temperature", &self.resolve_temperature)
+            .field(
+                "resolve_temperature_override",
+                &self.resolve_temperature_override,
+            )
+            .field("graph", &self.graph)
+            .field(
+                "graph_temperature_override",
+                &self.graph_temperature_override,
+            )
+            .field("consolidation", &self.consolidation)
+            .field(
+                "consolidate_temperature_override",
+                &self.consolidate_temperature_override,
+            )
+            .field("opinion_merge", &self.opinion_merge)
+            .field(
+                "opinion_merge_temperature_override",
+                &self.opinion_merge_temperature_override,
+            )
+            .field("reflect", &self.reflect)
+            .field("reflect_temperature", &self.reflect_temperature)
+            .field(
+                "reflect_temperature_override",
+                &self.reflect_temperature_override,
+            )
+            .field("retrieval", &self.retrieval)
+            .finish()
+    }
 }
 
 impl RuntimeConfig {
@@ -759,6 +804,51 @@ mod tests {
             env::remove_var("EMBEDDING_MODEL_PATH");
             env::remove_var("RERANKER_PROVIDER");
             env::remove_var("DEDUP_THRESHOLD");
+        }
+    }
+
+    #[test]
+    fn runtime_config_debug_redacts_database_url_and_api_keys() {
+        let _guard = env_lock().lock().unwrap();
+        unsafe {
+            env::set_var(
+                "DATABASE_URL",
+                "postgres://user:db-secret@example.test/elephant",
+            );
+            env::set_var("LLM_PROVIDER", "openai");
+            env::set_var("LLM_API_KEY", "llm-secret");
+            env::set_var("LLM_MODEL", "gpt-4o-mini");
+            env::set_var("EMBEDDING_PROVIDER", "openai");
+            env::set_var("EMBEDDING_API_KEY", "embed-secret");
+            env::set_var("EMBEDDING_API_MODEL", "text-embedding-3-small");
+            env::set_var("EMBEDDING_API_DIMS", "1536");
+            env::set_var("RERANKER_PROVIDER", "api");
+            env::set_var("RERANKER_API_KEY", "reranker-secret");
+            env::set_var("RERANKER_API_URL", "https://reranker.example.test");
+            env::set_var("RERANKER_API_MODEL", "rerank-v1");
+        }
+
+        let config = RuntimeConfig::from_env().unwrap();
+        let debug = format!("{config:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("db-secret"));
+        assert!(!debug.contains("llm-secret"));
+        assert!(!debug.contains("embed-secret"));
+        assert!(!debug.contains("reranker-secret"));
+
+        unsafe {
+            env::remove_var("DATABASE_URL");
+            env::remove_var("LLM_PROVIDER");
+            env::remove_var("LLM_API_KEY");
+            env::remove_var("LLM_MODEL");
+            env::remove_var("EMBEDDING_PROVIDER");
+            env::remove_var("EMBEDDING_API_KEY");
+            env::remove_var("EMBEDDING_API_MODEL");
+            env::remove_var("EMBEDDING_API_DIMS");
+            env::remove_var("RERANKER_PROVIDER");
+            env::remove_var("RERANKER_API_KEY");
+            env::remove_var("RERANKER_API_URL");
+            env::remove_var("RERANKER_API_MODEL");
         }
     }
 }

@@ -4,6 +4,7 @@ pub mod api;
 pub mod local;
 
 use async_trait::async_trait;
+use std::fmt;
 
 use crate::error::{Error, Result};
 use crate::types::ScoredFact;
@@ -20,7 +21,7 @@ pub enum RerankerProvider {
 }
 
 /// Configuration for the reranker provider.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RerankerConfig {
     provider: RerankerProvider,
     model_path: Option<String>,
@@ -28,6 +29,19 @@ pub struct RerankerConfig {
     api_key: Option<String>,
     api_url: Option<String>,
     api_model: Option<String>,
+}
+
+impl fmt::Debug for RerankerConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RerankerConfig")
+            .field("provider", &self.provider)
+            .field("model_path", &self.model_path)
+            .field("max_seq_len", &self.max_seq_len)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("api_url", &self.api_url)
+            .field("api_model", &self.api_model)
+            .finish()
+    }
 }
 
 impl RerankerConfig {
@@ -316,6 +330,20 @@ mod tests {
         let text = format_reranker_input(&sf);
         assert!(text.starts_with("[Date: June 15, 2024 (2024-06-15)]"));
         assert!(text.contains("Alice joined Acme Corp"));
+    }
+
+    #[test]
+    fn api_config_debug_redacts_api_key() {
+        let config = RerankerConfig::api(
+            "reranker-secret",
+            "https://reranker.example.test",
+            "rerank-v1",
+        );
+        let debug = format!("{config:?}");
+
+        assert!(debug.contains("rerank-v1"));
+        assert!(!debug.contains("reranker-secret"));
+        assert!(debug.contains("<redacted>"));
     }
 
     #[test]

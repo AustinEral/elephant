@@ -5,6 +5,7 @@ pub mod mock;
 pub mod openai;
 
 use async_trait::async_trait;
+use std::fmt;
 
 use crate::error::Result;
 
@@ -35,7 +36,7 @@ pub enum EmbeddingProvider {
 }
 
 /// Configuration for the embedding provider.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct EmbeddingConfig {
     provider: EmbeddingProvider,
     model_path: Option<String>,
@@ -43,6 +44,19 @@ pub struct EmbeddingConfig {
     api_key: Option<String>,
     model: Option<String>,
     dimensions: Option<usize>,
+}
+
+impl fmt::Debug for EmbeddingConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EmbeddingConfig")
+            .field("provider", &self.provider)
+            .field("model_path", &self.model_path)
+            .field("max_seq_len", &self.max_seq_len)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("model", &self.model)
+            .field("dimensions", &self.dimensions)
+            .finish()
+    }
 }
 
 impl EmbeddingConfig {
@@ -182,5 +196,15 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].len(), 384);
         assert_eq!(client.dimensions(), 384);
+    }
+
+    #[test]
+    fn openai_config_debug_redacts_api_key() {
+        let config = EmbeddingConfig::openai("sk-embedding-secret", "text-embedding-3-small", 1536);
+        let debug = format!("{config:?}");
+
+        assert!(debug.contains("text-embedding-3-small"));
+        assert!(!debug.contains("sk-embedding-secret"));
+        assert!(debug.contains("<redacted>"));
     }
 }

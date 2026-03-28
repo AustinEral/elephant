@@ -1,6 +1,6 @@
 //! Typed configuration for benchmark startup policy.
 
-use std::env;
+use std::{env, fmt};
 
 use crate::llm::{
     AnthropicConfig, AnthropicPromptCacheConfig, AnthropicPromptCacheTtl, ClientConfig,
@@ -62,9 +62,17 @@ impl BenchConfig {
 }
 
 /// Validated judge client configuration for benchmark evaluation.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct BenchJudgeConfig {
     client: ClientConfig,
+}
+
+impl fmt::Debug for BenchJudgeConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BenchJudgeConfig")
+            .field("client_label", &self.client.label())
+            .finish()
+    }
 }
 
 impl BenchJudgeConfig {
@@ -390,6 +398,27 @@ mod tests {
         unsafe {
             env::remove_var("LLM_PROVIDER");
             env::remove_var("LLM_API_KEY");
+        }
+    }
+
+    #[test]
+    fn judge_config_debug_redacts_client_secrets() {
+        let _guard = env_lock().lock().unwrap();
+        unsafe {
+            env::set_var("LLM_PROVIDER", "openai");
+            env::set_var("LLM_API_KEY", "judge-secret");
+            env::set_var("LLM_MODEL", "gpt-4o-mini");
+        }
+
+        let config = BenchJudgeConfig::from_env(None, None).unwrap();
+        let debug = format!("{config:?}");
+        assert!(debug.contains("openai/gpt-4o-mini"));
+        assert!(!debug.contains("judge-secret"));
+
+        unsafe {
+            env::remove_var("LLM_PROVIDER");
+            env::remove_var("LLM_API_KEY");
+            env::remove_var("LLM_MODEL");
         }
     }
 }
