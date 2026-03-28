@@ -39,6 +39,22 @@ pub(super) fn validate_optional_nonnegative_float(name: &str, value: Option<f32>
     Ok(())
 }
 
+pub(super) fn validate_unit_interval_float(name: &str, value: f32) -> Result<()> {
+    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+        return Err(ConfigError::configuration(format!(
+            "{name} must be a finite float between 0.0 and 1.0"
+        )));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_optional_unit_interval_float(name: &str, value: Option<f32>) -> Result<()> {
+    if let Some(value) = value {
+        validate_unit_interval_float(name, value)?;
+    }
+    Ok(())
+}
+
 pub(super) fn validate_embedding_config(config: &EmbeddingConfig) -> Result<()> {
     validate_positive_usize_field("embedding.max_seq_len", config.max_seq_len())?;
     match config.provider() {

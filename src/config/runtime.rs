@@ -21,7 +21,8 @@ use loaders::{
 };
 use validation::{
     validate_embedding_config, validate_nonblank_field, validate_nonnegative_float,
-    validate_optional_nonnegative_float, validate_positive_usize_field, validate_reranker_config,
+    validate_optional_nonnegative_float, validate_optional_unit_interval_float,
+    validate_positive_usize_field, validate_reranker_config, validate_unit_interval_float,
 };
 
 /// Validated startup configuration for the shared Elephant runtime.
@@ -225,7 +226,7 @@ impl RuntimeConfig {
             .with_retrieval(retrieval)
     }
 
-    /// Override the near-duplicate similarity threshold.
+    /// Override the near-duplicate similarity threshold in the range `0.0..=1.0`.
     pub fn with_dedup_threshold(mut self, dedup_threshold: Option<f32>) -> Result<Self> {
         self.dedup_threshold = dedup_threshold;
         self.validate()?;
@@ -365,7 +366,7 @@ impl RuntimeConfig {
         validate_nonblank_field("database_url", &self.database_url)?;
         validate_embedding_config(&self.embedding)?;
         validate_reranker_config(&self.reranker)?;
-        validate_optional_nonnegative_float("dedup_threshold", self.dedup_threshold)?;
+        validate_optional_unit_interval_float("dedup_threshold", self.dedup_threshold)?;
         validate_positive_usize_field(
             "extraction.structured_output_max_attempts",
             self.extraction.structured_output_max_attempts,
@@ -380,7 +381,7 @@ impl RuntimeConfig {
             "resolve_temperature_override",
             self.resolve_temperature_override,
         )?;
-        validate_nonnegative_float("graph.semantic_threshold", self.graph.semantic_threshold)?;
+        validate_unit_interval_float("graph.semantic_threshold", self.graph.semantic_threshold)?;
         validate_nonnegative_float("graph.causal_temperature", self.graph.causal_temperature)?;
         validate_optional_nonnegative_float(
             "graph_temperature_override",
@@ -921,6 +922,44 @@ mod tests {
         unsafe {
             env::remove_var("DEDUP_THRESHOLD");
         }
+        clear_minimal_runtime_env();
+    }
+
+    #[test]
+    fn runtime_config_rejects_dedup_threshold_above_one() {
+        let _guard = env_lock().lock().unwrap();
+        set_minimal_runtime_env();
+
+        let err = RuntimeConfig::from_env()
+            .unwrap()
+            .with_dedup_threshold(Some(1.1))
+            .unwrap_err();
+        assert_eq!(
+            err.kind(),
+            super::super::error::ConfigErrorKind::Configuration
+        );
+        assert!(err.to_string().contains("dedup_threshold"));
+
+        clear_minimal_runtime_env();
+    }
+
+    #[test]
+    fn runtime_config_rejects_graph_semantic_threshold_above_one() {
+        let _guard = env_lock().lock().unwrap();
+        set_minimal_runtime_env();
+
+        let config = RuntimeConfig::from_env().unwrap();
+        let graph = graph_builder::GraphConfig {
+            semantic_threshold: 1.1,
+            ..config.graph()
+        };
+        let err = config.with_graph(graph).unwrap_err();
+        assert_eq!(
+            err.kind(),
+            super::super::error::ConfigErrorKind::Configuration
+        );
+        assert!(err.to_string().contains("graph.semantic_threshold"));
+
         clear_minimal_runtime_env();
     }
 
