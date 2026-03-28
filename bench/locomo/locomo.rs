@@ -3823,7 +3823,11 @@ async fn main() {
     let runtime = Arc::new(harness.into_runtime());
 
     let judge_config = resolve_judge_config(config.judge_model.clone());
-    let judge = common::judge::build_judge_client(metrics.clone(), &judge_config);
+    let judge =
+        common::judge::build_judge_client(metrics.clone(), &judge_config).unwrap_or_else(|err| {
+            eprintln!("failed to build judge client: {err}");
+            std::process::exit(1);
+        });
     let judge_label = common::judge::judge_label(&judge_config);
 
     println!("retain_model: {}", runtime.info().retain_model);

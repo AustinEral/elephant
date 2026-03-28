@@ -2148,10 +2148,16 @@ async fn main() {
     };
     let judge: Option<Arc<dyn elephant::llm::LlmClient>> =
         if !matches!(command, BenchCommand::Ingest) {
-            Some(common::judge::build_judge_client(
-                metrics.clone(),
-                judge_config.as_ref().expect("judge config"),
-            ))
+            Some(
+                common::judge::build_judge_client(
+                    metrics.clone(),
+                    judge_config.as_ref().expect("judge config"),
+                )
+                .unwrap_or_else(|err| {
+                    eprintln!("failed to build judge client: {err}");
+                    std::process::exit(1);
+                }),
+            )
         } else {
             None
         };

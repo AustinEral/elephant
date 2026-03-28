@@ -22,11 +22,6 @@ impl BenchHarness {
         self.determinism_requirement
     }
 
-    /// Borrow the constructed runtime.
-    pub fn runtime(&self) -> &ElephantRuntime {
-        &self.runtime
-    }
-
     /// Consume the harness and return the constructed runtime.
     pub fn into_runtime(self) -> ElephantRuntime {
         self.runtime
