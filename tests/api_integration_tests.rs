@@ -18,8 +18,8 @@ use tower::util::ServiceExt;
 
 use elephant::consolidation::{DefaultConsolidator, DefaultOpinionMerger};
 use elephant::embedding::mock::MockEmbeddings;
-use elephant::llm::LlmClient;
 use elephant::llm::mock::MockLlmClient;
+use elephant::llm::{CompletionResponse, LlmClient, ToolCall};
 use elephant::recall::DefaultRecallPipeline;
 use elephant::recall::budget::EstimateTokenizer;
 use elephant::recall::graph::{GraphRetriever, GraphRetrieverConfig};
@@ -236,14 +236,19 @@ fn extraction_response(content: &str, entity: &str) -> String {
     .unwrap()
 }
 
-fn reflect_response(text: &str) -> String {
-    serde_json::to_string(&json!({
-        "response": text,
-        "sources": [],
-        "new_opinions": [],
-        "confidence": 0.8
-    }))
-    .unwrap()
+fn tool_call_response(id: &str, name: &str, arguments: Value) -> CompletionResponse {
+    CompletionResponse {
+        content: String::new(),
+        input_tokens: 10,
+        output_tokens: 20,
+        stop_reason: Some("tool_use".into()),
+        tool_calls: vec![ToolCall {
+            id: id.into(),
+            name: name.into(),
+            arguments,
+        }],
+        prompt_cache: None,
+    }
 }
 
 // --- Tests ---
@@ -431,9 +436,33 @@ async fn reflect_with_context() {
     let resp = h.app().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // Push reflect LLM response
-    h.llm.push_response(reflect_response(
-        "Rust prevents data races through its ownership system and borrow checker.",
+    // Reflect uses a forced tool sequence:
+    // 0 -> search_observations
+    // 1 -> recall
+    // 2 -> done
+    h.llm.push_response_full(tool_call_response(
+        "call_1",
+        "search_observations",
+        json!({
+            "query": "How does Rust prevent data races?",
+            "reason": "high-level overview"
+        }),
+    ));
+    h.llm.push_response_full(tool_call_response(
+        "call_2",
+        "recall",
+        json!({
+            "query": "Rust data races ownership borrow checker",
+            "reason": "ground the answer in retained facts"
+        }),
+    ));
+    h.llm.push_response_full(tool_call_response(
+        "call_3",
+        "done",
+        json!({
+            "response": "Rust prevents data races through its ownership system and borrow checker.",
+            "source_ids": []
+        }),
     ));
 
     // Reflect
