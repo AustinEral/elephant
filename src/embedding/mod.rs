@@ -6,7 +6,6 @@ pub mod openai;
 
 use async_trait::async_trait;
 
-use crate::config::ConfigError;
 use crate::error::Result;
 
 /// Trait abstraction over embedding providers.
@@ -47,66 +46,52 @@ pub struct EmbeddingConfig {
 }
 
 impl EmbeddingConfig {
+    pub(crate) fn from_parts(
+        provider: EmbeddingProvider,
+        model_path: Option<String>,
+        max_seq_len: usize,
+        api_key: Option<String>,
+        model: Option<String>,
+        dimensions: Option<usize>,
+    ) -> Self {
+        Self {
+            provider,
+            model_path,
+            max_seq_len,
+            api_key,
+            model,
+            dimensions,
+        }
+    }
+
     /// Create a local embedding configuration from a model directory.
     pub fn local(model_path: impl Into<String>) -> Self {
-        Self {
-            provider: EmbeddingProvider::Local,
-            model_path: Some(model_path.into()),
-            max_seq_len: 512,
-            api_key: None,
-            model: None,
-            dimensions: None,
-        }
+        Self::from_parts(
+            EmbeddingProvider::Local,
+            Some(model_path.into()),
+            512,
+            None,
+            None,
+            None,
+        )
     }
 
     /// Create an OpenAI embedding configuration from explicit credentials.
     pub fn openai(api_key: impl Into<String>, model: impl Into<String>, dimensions: usize) -> Self {
-        Self {
-            provider: EmbeddingProvider::OpenAi,
-            model_path: None,
-            max_seq_len: 512,
-            api_key: Some(api_key.into()),
-            model: Some(model.into()),
-            dimensions: Some(dimensions),
-        }
+        Self::from_parts(
+            EmbeddingProvider::OpenAi,
+            None,
+            512,
+            Some(api_key.into()),
+            Some(model.into()),
+            Some(dimensions),
+        )
     }
 
     /// Override the maximum tokenized sequence length.
     pub fn with_max_seq_len(mut self, max_seq_len: usize) -> Self {
         self.max_seq_len = max_seq_len;
         self
-    }
-
-    /// Read embedding configuration from environment.
-    pub fn from_env() -> std::result::Result<Self, ConfigError> {
-        let provider = match std::env::var("EMBEDDING_PROVIDER")
-            .map_err(|e| {
-                ConfigError::configuration(format!("EMBEDDING_PROVIDER must be set: {e}"))
-            })?
-            .as_str()
-        {
-            "openai" => EmbeddingProvider::OpenAi,
-            "local" => EmbeddingProvider::Local,
-            other => {
-                return Err(ConfigError::configuration(format!(
-                    "unknown EMBEDDING_PROVIDER: {other}"
-                )));
-            }
-        };
-
-        Ok(Self {
-            provider,
-            model_path: std::env::var("EMBEDDING_MODEL_PATH").ok(),
-            max_seq_len: std::env::var("EMBEDDING_MAX_SEQ_LEN")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(512),
-            api_key: std::env::var("EMBEDDING_API_KEY").ok(),
-            model: std::env::var("EMBEDDING_API_MODEL").ok(),
-            dimensions: std::env::var("EMBEDDING_API_DIMS")
-                .ok()
-                .and_then(|s| s.parse().ok()),
-        })
     }
 
     /// Return the selected provider.
@@ -138,11 +123,6 @@ impl EmbeddingConfig {
     pub fn dimensions(&self) -> Option<usize> {
         self.dimensions
     }
-}
-
-/// Read embedding configuration from environment.
-pub fn config_from_env() -> Result<EmbeddingConfig> {
-    EmbeddingConfig::from_env().map_err(Into::into)
 }
 
 /// Build an embedding client from a configuration.

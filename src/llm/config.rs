@@ -688,8 +688,9 @@ fn client_config_from_env_vars(
     )
 }
 
+#[cfg(test)]
 /// Build the retain and reflect client configs from the standard runtime environment.
-pub fn runtime_config_from_env() -> Result<LlmConfig> {
+fn runtime_config_from_env() -> Result<LlmConfig> {
     let provider = required_env_any(&["LLM_PROVIDER"])?.parse::<Provider>()?;
     let api_key = required_env_any(&["LLM_API_KEY"])?;
     let retain_model = required_env_any(&["RETAIN_LLM_MODEL", "LLM_MODEL"])?;

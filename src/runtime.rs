@@ -27,7 +27,7 @@ use crate::recall::temporal::TemporalRetriever;
 use crate::reflect::{DefaultReflectPipeline, ReflectPipeline};
 use crate::retain::chunker::SimpleChunker;
 use crate::retain::extractor::{self, LlmFactExtractor};
-use crate::retain::graph_builder::{self, DefaultGraphBuilder, GraphConfig};
+use crate::retain::graph_builder::{self, DefaultGraphBuilder};
 use crate::retain::resolver::{self, LayeredEntityResolver};
 use crate::retain::{self, DefaultRetainPipeline, RetainPipeline};
 use crate::storage::MemoryStore;
@@ -266,6 +266,7 @@ impl RuntimeBuilder {
         let extract_temperature_override = runtime_config.extract_temperature_override();
         let resolve_temperature = runtime_config.resolve_temperature();
         let resolve_temperature_override = runtime_config.resolve_temperature_override();
+        let graph_config = runtime_config.graph();
         let graph_temperature_override = runtime_config.graph_temperature_override();
         let consolidation_config = runtime_config.consolidation();
         let consolidate_temperature_override = runtime_config.consolidate_temperature_override();
@@ -282,8 +283,6 @@ impl RuntimeBuilder {
             overlap_tokens: 64,
             preserve_turns: true,
         };
-        let mut graph_config = GraphConfig::default();
-        graph_config.causal_temperature = runtime_config.graph_causal_temperature();
         let extract_temperature_resolution = llm::resolve_temperature(
             llm_configs.retain(),
             Some(extraction_config.temperature),
@@ -319,12 +318,12 @@ impl RuntimeBuilder {
         let graph_temperature_resolution = llm::resolve_temperature(
             llm_configs.retain(),
             Some(graph_config.causal_temperature),
-            reasoning_effort.retain_graph,
+            graph_config.causal_reasoning_effort,
         );
         let graph_determinism = llm::assess_determinism(
             llm_configs.retain(),
             Some(graph_config.causal_temperature),
-            reasoning_effort.retain_graph,
+            graph_config.causal_reasoning_effort,
         );
         validate_explicit_temperature_override(
             "retain graph building",
@@ -428,7 +427,7 @@ impl RuntimeBuilder {
                 )?,
                 extraction_config,
             )),
-            Box::new(LayeredEntityResolver::new_with_temperature(
+            Box::new(LayeredEntityResolver::new_with_options(
                 embedding::build_client(emb_config)?,
                 stage_llm(
                     llm_configs.retain(),
@@ -436,6 +435,7 @@ impl RuntimeBuilder {
                     self.metrics.as_ref(),
                 )?,
                 resolve_temperature,
+                reasoning_effort.retain_resolve,
             )),
             Box::new(DefaultGraphBuilder::new(
                 stage_llm(
@@ -493,6 +493,7 @@ impl RuntimeBuilder {
             reflect_config.source_max_chars(),
             reflect_config.enable_source_lookup(),
             reflect_temperature,
+            reasoning_effort.reflect,
         ));
 
         let consolidator = Arc::new(DefaultConsolidator::new(
@@ -550,7 +551,7 @@ impl RuntimeBuilder {
                     retain_resolve_temperature: resolve_temperature,
                     retain_resolve_effective_temperature: resolve_temperature_resolution
                         .effective(),
-                    retain_graph_reasoning_effort: reasoning_effort.retain_graph,
+                    retain_graph_reasoning_effort: graph_config.causal_reasoning_effort,
                     retain_graph_temperature: graph_config.causal_temperature,
                     retain_graph_effective_temperature: graph_temperature_resolution.effective(),
                     reflect_enable_source_lookup: reflect_config.enable_source_lookup(),

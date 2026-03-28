@@ -16,8 +16,7 @@ use tracing::{Instrument, debug, error, info, info_span, trace};
 
 use crate::error::Result;
 use crate::llm::{
-    CompletionRequest, LlmClient, Message, ReasoningEffortConfig, ToolChoice, ToolDefinition,
-    ToolResult, temperature_from_env,
+    CompletionRequest, LlmClient, Message, ReasoningEffort, ToolChoice, ToolDefinition, ToolResult,
 };
 use crate::recall::RecallPipeline;
 use crate::recall::temporal::{parse_reference_datetime, parse_temporal_reference};
@@ -47,6 +46,7 @@ pub struct DefaultReflectPipeline {
     source_content_max_chars: Option<usize>,
     enable_source_lookup: bool,
     temperature: f32,
+    reasoning_effort: Option<ReasoningEffort>,
 }
 
 /// Reflect agent prompt template.
@@ -57,11 +57,6 @@ pub const REFLECT_TEMPERATURE: f32 = 0.3;
 pub const DEFAULT_SOURCE_LOOKUP_LIMIT: usize = 3;
 /// Default lookup availability for reflect.
 pub const DEFAULT_ENABLE_SOURCE_LOOKUP: bool = true;
-
-/// Read the reflect temperature from environment.
-pub fn reflect_temperature_from_env() -> Result<f32> {
-    Ok(temperature_from_env("REFLECT_TEMPERATURE")?.unwrap_or(REFLECT_TEMPERATURE))
-}
 
 impl DefaultReflectPipeline {
     /// Create a new reflect pipeline.
@@ -81,6 +76,7 @@ impl DefaultReflectPipeline {
             None,
             DEFAULT_ENABLE_SOURCE_LOOKUP,
             REFLECT_TEMPERATURE,
+            None,
         )
     }
 
@@ -95,6 +91,7 @@ impl DefaultReflectPipeline {
         source_content_max_chars: Option<usize>,
         enable_source_lookup: bool,
         temperature: f32,
+        reasoning_effort: Option<ReasoningEffort>,
     ) -> Self {
         Self {
             recall,
@@ -106,6 +103,7 @@ impl DefaultReflectPipeline {
             source_content_max_chars,
             enable_source_lookup,
             temperature,
+            reasoning_effort,
         }
     }
 }
@@ -303,7 +301,7 @@ impl DefaultReflectPipeline {
             let request = CompletionRequest::builder()
                 .messages(messages.clone())
                 .temperature(self.temperature)
-                .reasoning_effort_opt(ReasoningEffortConfig::current()?.reflect)
+                .reasoning_effort_opt(self.reasoning_effort)
                 .max_tokens_opt(self.max_output_tokens)
                 .system(system_prompt.clone())
                 .tools(iter_tools)

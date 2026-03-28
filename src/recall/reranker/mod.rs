@@ -5,7 +5,6 @@ pub mod local;
 
 use async_trait::async_trait;
 
-use crate::config::ConfigError;
 use crate::error::{Error, Result};
 use crate::types::ScoredFact;
 
@@ -32,16 +31,27 @@ pub struct RerankerConfig {
 }
 
 impl RerankerConfig {
+    pub(crate) fn from_parts(
+        provider: RerankerProvider,
+        model_path: Option<String>,
+        max_seq_len: usize,
+        api_key: Option<String>,
+        api_url: Option<String>,
+        api_model: Option<String>,
+    ) -> Self {
+        Self {
+            provider,
+            model_path,
+            max_seq_len,
+            api_key,
+            api_url,
+            api_model,
+        }
+    }
+
     /// Create a config that preserves fused recall order.
     pub fn none() -> Self {
-        Self {
-            provider: RerankerProvider::None,
-            model_path: None,
-            max_seq_len: 512,
-            api_key: None,
-            api_url: None,
-            api_model: None,
-        }
+        Self::from_parts(RerankerProvider::None, None, 512, None, None, None)
     }
 
     /// Create a local reranker configuration from a model directory.
@@ -74,35 +84,6 @@ impl RerankerConfig {
         self
     }
 
-    /// Read reranker configuration from environment.
-    pub fn from_env() -> std::result::Result<Self, ConfigError> {
-        let provider = match std::env::var("RERANKER_PROVIDER")
-            .map_err(|e| ConfigError::configuration(format!("RERANKER_PROVIDER must be set: {e}")))?
-            .as_str()
-        {
-            "local" => RerankerProvider::Local,
-            "api" => RerankerProvider::Api,
-            "none" => RerankerProvider::None,
-            other => {
-                return Err(ConfigError::configuration(format!(
-                    "unknown RERANKER_PROVIDER: {other}"
-                )));
-            }
-        };
-
-        Ok(Self {
-            provider,
-            model_path: std::env::var("RERANKER_MODEL_PATH").ok(),
-            max_seq_len: std::env::var("RERANKER_MAX_SEQ_LEN")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(512),
-            api_key: std::env::var("RERANKER_API_KEY").ok(),
-            api_url: std::env::var("RERANKER_API_URL").ok(),
-            api_model: std::env::var("RERANKER_API_MODEL").ok(),
-        })
-    }
-
     /// Return the selected provider.
     pub fn provider(&self) -> RerankerProvider {
         self.provider.clone()
@@ -132,11 +113,6 @@ impl RerankerConfig {
     pub fn api_model(&self) -> Option<&str> {
         self.api_model.as_deref()
     }
-}
-
-/// Read reranker configuration from environment.
-pub fn config_from_env() -> Result<RerankerConfig> {
-    RerankerConfig::from_env().map_err(Into::into)
 }
 
 /// Build a reranker from configuration.
