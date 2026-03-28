@@ -182,21 +182,21 @@ fn default_true() -> bool {
 /// Fully constructed Elephant runtime.
 pub struct ElephantRuntime {
     /// Runtime model labels.
-    pub info: RuntimeInfo,
+    info: RuntimeInfo,
     /// Retain pipeline.
-    pub retain: Arc<dyn RetainPipeline>,
+    retain: Arc<dyn RetainPipeline>,
     /// Recall pipeline.
-    pub recall: Arc<dyn RecallPipeline>,
+    recall: Arc<dyn RecallPipeline>,
     /// Reflect pipeline.
-    pub reflect: Arc<dyn ReflectPipeline>,
+    reflect: Arc<dyn ReflectPipeline>,
     /// Consolidator.
-    pub consolidator: Arc<dyn Consolidator>,
+    consolidator: Arc<dyn Consolidator>,
     /// Opinion merger.
-    pub opinion_merger: Arc<dyn OpinionMerger>,
+    opinion_merger: Arc<dyn OpinionMerger>,
     /// Shared storage.
-    pub store: Arc<dyn MemoryStore>,
+    store: Arc<dyn MemoryStore>,
     /// Embedding client.
-    pub embeddings: Arc<dyn EmbeddingClient>,
+    embeddings: Arc<dyn EmbeddingClient>,
 }
 
 impl fmt::Debug for ElephantRuntime {
@@ -204,6 +204,71 @@ impl fmt::Debug for ElephantRuntime {
         f.debug_struct("ElephantRuntime")
             .field("info", &self.info)
             .finish_non_exhaustive()
+    }
+}
+
+impl ElephantRuntime {
+    /// Create a runtime from already-constructed components.
+    pub fn from_parts(
+        info: RuntimeInfo,
+        retain: Arc<dyn RetainPipeline>,
+        recall: Arc<dyn RecallPipeline>,
+        reflect: Arc<dyn ReflectPipeline>,
+        consolidator: Arc<dyn Consolidator>,
+        opinion_merger: Arc<dyn OpinionMerger>,
+        store: Arc<dyn MemoryStore>,
+        embeddings: Arc<dyn EmbeddingClient>,
+    ) -> Self {
+        Self {
+            info,
+            retain,
+            recall,
+            reflect,
+            consolidator,
+            opinion_merger,
+            store,
+            embeddings,
+        }
+    }
+
+    /// Return immutable runtime metadata and tuning snapshots.
+    pub fn info(&self) -> &RuntimeInfo {
+        &self.info
+    }
+
+    /// Return the retain pipeline.
+    pub fn retain_pipeline(&self) -> &Arc<dyn RetainPipeline> {
+        &self.retain
+    }
+
+    /// Return the recall pipeline.
+    pub fn recall_pipeline(&self) -> &Arc<dyn RecallPipeline> {
+        &self.recall
+    }
+
+    /// Return the reflect pipeline.
+    pub fn reflect_pipeline(&self) -> &Arc<dyn ReflectPipeline> {
+        &self.reflect
+    }
+
+    /// Return the consolidator.
+    pub fn consolidator(&self) -> &Arc<dyn Consolidator> {
+        &self.consolidator
+    }
+
+    /// Return the opinion merger.
+    pub fn opinion_merger(&self) -> &Arc<dyn OpinionMerger> {
+        &self.opinion_merger
+    }
+
+    /// Return the shared storage backend.
+    pub fn store(&self) -> &Arc<dyn MemoryStore> {
+        &self.store
+    }
+
+    /// Return the shared embedding client.
+    pub fn embeddings(&self) -> &Arc<dyn EmbeddingClient> {
+        &self.embeddings
     }
 }
 

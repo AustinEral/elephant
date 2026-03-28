@@ -1,5 +1,6 @@
 //! Provider selection and client configuration for the `llm` module.
 
+#[cfg(test)]
 use std::env;
 use std::str::FromStr;
 
@@ -11,6 +12,7 @@ use crate::error::{Error, Result};
 pub const DEFAULT_TIMEOUT_SECS: u64 = 600;
 
 /// Prompt caching configuration for a concrete provider client.
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 enum PromptCacheConfig {
     /// Disable prompt caching.
@@ -492,6 +494,7 @@ fn validate_timeout_secs(timeout_secs: u64) -> Result<u64> {
     }
 }
 
+#[cfg(test)]
 fn env_bool(name: &str, default: bool) -> Result<bool> {
     match env::var(name) {
         Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
@@ -505,6 +508,7 @@ fn env_bool(name: &str, default: bool) -> Result<bool> {
     }
 }
 
+#[cfg(test)]
 fn required_env_any(names: &[&str]) -> Result<String> {
     for name in names {
         if let Ok(value) = env::var(name) {
@@ -517,6 +521,7 @@ fn required_env_any(names: &[&str]) -> Result<String> {
     )))
 }
 
+#[cfg(test)]
 fn optional_env_any(names: &[&str]) -> Option<String> {
     for name in names {
         if let Ok(value) = env::var(name) {
@@ -526,6 +531,7 @@ fn optional_env_any(names: &[&str]) -> Option<String> {
     None
 }
 
+#[cfg(test)]
 fn timeout_secs_from_env() -> Result<u64> {
     match env::var("LLM_TIMEOUT_SECS") {
         Ok(value) => validate_timeout_secs(value.parse().map_err(|_| {
@@ -537,10 +543,12 @@ fn timeout_secs_from_env() -> Result<u64> {
     }
 }
 
+#[cfg(test)]
 fn vertex_project_from_env(names: &[&str]) -> Result<String> {
     required_env_any(names)
 }
 
+#[cfg(test)]
 fn vertex_location_from_env(names: &[&str]) -> Result<String> {
     match optional_env_any(names) {
         Some(value) => validate_nonempty("location", value),
@@ -548,6 +556,7 @@ fn vertex_location_from_env(names: &[&str]) -> Result<String> {
     }
 }
 
+#[cfg(test)]
 fn prompt_cache_config_from_env(provider: Provider) -> Result<PromptCacheConfig> {
     if !env_bool("LLM_PROMPT_CACHE_ENABLED", false)? {
         return Ok(PromptCacheConfig::Disabled);
@@ -601,6 +610,7 @@ fn prompt_cache_config_from_env(provider: Provider) -> Result<PromptCacheConfig>
     }
 }
 
+#[cfg(test)]
 fn build_client_config(
     provider: Provider,
     api_key: String,
@@ -740,8 +750,9 @@ fn runtime_config_from_env() -> Result<LlmConfig> {
     Ok(LlmConfig::new(retain, reflect))
 }
 
+#[cfg(test)]
 /// Build the benchmark judge client configuration from the judge fallback chain.
-pub fn judge_client_config_from_env(
+fn judge_client_config_from_env(
     override_provider: Option<Provider>,
     override_model: Option<&str>,
 ) -> Result<ClientConfig> {

@@ -1170,13 +1170,13 @@ fn run_config_from_artifact(artifact: &BenchmarkOutput) -> Result<RunConfig, Str
 fn benchmark_prompt_hashes(runtime: &ElephantRuntime) -> BenchmarkPromptHashes {
     BenchmarkPromptHashes {
         judge: judge_prompt_hash(),
-        elephant: runtime.info.prompt_hashes.clone(),
+        elephant: runtime.info().prompt_hashes.clone(),
     }
 }
 
 fn benchmark_runtime_config(runtime: &ElephantRuntime) -> BenchmarkRuntimeConfig {
     BenchmarkRuntimeConfig {
-        elephant: runtime.info.tuning.clone(),
+        elephant: runtime.info().tuning.clone(),
         reflect_budget_tokens: reflect_budget_tokens(),
     }
 }
@@ -1190,7 +1190,7 @@ async fn count_unconsolidated_facts(
     bank_id: elephant::types::BankId,
 ) -> Result<usize, String> {
     runtime
-        .store
+        .store()
         .get_facts_by_bank(
             bank_id,
             elephant::types::FactFilter {
@@ -1220,7 +1220,7 @@ async fn consolidate_with_bench_progress(
     let total_batches = if total_facts == 0 {
         0
     } else {
-        total_facts.div_ceil(runtime.info.tuning.consolidation_batch_size)
+        total_facts.div_ceil(runtime.info().tuning.consolidation_batch_size)
     };
     eprintln!(
         "  {qid} consolidating {total_facts} fact{} in {total_batches} batch{}...",
@@ -1230,7 +1230,7 @@ async fn consolidate_with_bench_progress(
 
     let started = Instant::now();
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let consolidator = runtime.consolidator.clone();
+    let consolidator = runtime.consolidator().clone();
     let task = tokio::spawn(async move {
         with_scoped_collector(
             metrics,
@@ -1961,13 +1961,13 @@ async fn main() {
     if !config.instances.is_empty() {
         eprintln!("  instances:      {:?}", config.instances);
     }
-    eprintln!("  retain_model:   {}", runtime.info.retain_model);
-    eprintln!("  reflect_model:  {}", runtime.info.reflect_model);
-    eprintln!("  embedding_model: {}", runtime.info.embedding_model);
-    eprintln!("  reranker_model: {}", runtime.info.reranker_model);
+    eprintln!("  retain_model:   {}", runtime.info().retain_model);
+    eprintln!("  reflect_model:  {}", runtime.info().reflect_model);
+    eprintln!("  embedding_model: {}", runtime.info().embedding_model);
+    eprintln!("  reranker_model: {}", runtime.info().reranker_model);
     eprintln!(
         "  reasoning_effort: {}",
-        common::format_reasoning_effort_summary(&runtime.info.tuning)
+        common::format_reasoning_effort_summary(&runtime.info().tuning)
     );
     if let Some(requirement) = determinism_requirement {
         eprintln!(
@@ -2140,17 +2140,22 @@ async fn main() {
 
     // Build judge client (only needed for Run/Qa)
     let judge_overrides = resolve_judge_overrides(&config);
+    let judge_config = if !matches!(command, BenchCommand::Ingest) {
+        Some(common::judge::resolve_judge_config(&judge_overrides).unwrap())
+    } else {
+        None
+    };
     let judge: Option<Arc<dyn elephant::llm::LlmClient>> =
         if !matches!(command, BenchCommand::Ingest) {
             Some(common::judge::build_judge_client(
                 metrics.clone(),
-                &judge_overrides,
+                judge_config.as_ref().expect("judge config"),
             ))
         } else {
             None
         };
     let jl = if !matches!(command, BenchCommand::Ingest) {
-        common::judge::judge_label(&judge_overrides)
+        common::judge::judge_label(judge_config.as_ref().expect("judge config"))
     } else {
         String::new()
     };
@@ -2186,10 +2191,10 @@ async fn main() {
         debug_path: debug_path.clone(),
         judge_label: jl.clone(),
         tag: config.tag.clone(),
-        retain_model: runtime.info.retain_model.clone(),
-        reflect_model: runtime.info.reflect_model.clone(),
-        embedding_model: runtime.info.embedding_model.clone(),
-        reranker_model: runtime.info.reranker_model.clone(),
+        retain_model: runtime.info().retain_model.clone(),
+        reflect_model: runtime.info().reflect_model.clone(),
+        embedding_model: runtime.info().embedding_model.clone(),
+        reranker_model: runtime.info().reranker_model.clone(),
         consolidation_strategy: config.consolidation.as_str().into(),
         manifest,
         metrics: metrics.clone(),
@@ -2259,7 +2264,7 @@ async fn main() {
                         .parse()
                         .map_err(|e| format!("bad bank_id: {e}"))?;
                     eprintln!("  {qid} deleting partial bank {}", status.bank_id);
-                    if let Err(e) = runtime.store.delete_bank(bid).await {
+                    if let Err(e) = runtime.store().delete_bank(bid).await {
                         eprintln!("  {qid} delete_bank failed (continuing): {e}");
                     }
                 }
@@ -2271,10 +2276,10 @@ async fn main() {
                     mission: "Long-term conversational memory benchmark".into(),
                     directives: vec![],
                     disposition: elephant::types::Disposition::default(),
-                    embedding_model: runtime.embeddings.model_name().to_string(),
-                    embedding_dimensions: runtime.embeddings.dimensions() as u16,
+                    embedding_model: runtime.embeddings().model_name().to_string(),
+                    embedding_dimensions: runtime.embeddings().dimensions() as u16,
                 };
-                if let Err(e) = runtime.store.create_bank(&bank).await {
+                if let Err(e) = runtime.store().create_bank(&bank).await {
                     let err_msg = format!("failed to create bank: {e}");
                     eprintln!("ERROR {qid}: {err_msg}");
                     let qr = QuestionResult {
@@ -2501,7 +2506,7 @@ async fn main() {
 
             let reflect_result = with_scoped_collector(
                 metrics.clone(),
-                runtime.reflect.reflect(&ReflectQuery {
+                runtime.reflect_pipeline().reflect(&ReflectQuery {
                     bank_id: bank_id_str.parse().unwrap(),
                     question: instance.question.clone(),
                     context: None,

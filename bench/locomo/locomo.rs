@@ -629,13 +629,13 @@ fn fmt_elapsed(seconds: f64) -> String {
 fn benchmark_prompt_hashes(runtime: &ElephantRuntime) -> BenchmarkPromptHashes {
     BenchmarkPromptHashes {
         judge: fnv1a64_hex(JUDGE_PROMPT),
-        elephant: runtime.info.prompt_hashes.clone(),
+        elephant: runtime.info().prompt_hashes.clone(),
     }
 }
 
 fn benchmark_runtime_config(runtime: &ElephantRuntime) -> BenchmarkRuntimeConfig {
     BenchmarkRuntimeConfig {
-        elephant: runtime.info.tuning.clone(),
+        elephant: runtime.info().tuning.clone(),
         reflect_budget_tokens: reflect_budget_tokens(),
         judge_temperature: common::judge::JUDGE_TEMPERATURE,
         judge_max_tokens: common::judge::JUDGE_MAX_TOKENS,
@@ -683,24 +683,12 @@ fn reflect_budget_tokens() -> usize {
     }
 }
 
-fn build_judge_client(
-    metrics: Arc<MetricsCollector>,
-    override_model: Option<String>,
-) -> Arc<dyn LlmClient> {
-    common::judge::build_judge_client(
-        metrics,
-        &common::judge::JudgeOverrides {
-            provider: None,
-            model: override_model,
-        },
-    )
-}
-
-fn judge_label(override_model: &Option<String>) -> String {
-    common::judge::judge_label(&common::judge::JudgeOverrides {
+fn resolve_judge_config(override_model: Option<String>) -> elephant::BenchJudgeConfig {
+    common::judge::resolve_judge_config(&common::judge::JudgeOverrides {
         provider: None,
-        model: override_model.clone(),
+        model: override_model,
     })
+    .unwrap()
 }
 
 async fn llm_judge(
@@ -2765,7 +2753,7 @@ async fn count_unconsolidated_facts(
     bank_id: BankId,
 ) -> Result<usize, String> {
     runtime
-        .store
+        .store()
         .get_facts_by_bank(
             bank_id,
             elephant::types::FactFilter {
@@ -2795,7 +2783,7 @@ async fn consolidate_with_bench_progress(
     let total_batches = if total_facts == 0 {
         0
     } else {
-        total_facts.div_ceil(runtime.info.tuning.consolidation_batch_size)
+        total_facts.div_ceil(runtime.info().tuning.consolidation_batch_size)
     };
     println!(
         "[{tag}] Consolidating {total_facts} fact{} in {total_batches} batch{}...",
@@ -2805,7 +2793,7 @@ async fn consolidate_with_bench_progress(
 
     let started = Instant::now();
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let consolidator = runtime.consolidator.clone();
+    let consolidator = runtime.consolidator().clone();
     let task = tokio::spawn(async move {
         with_scoped_collector(
             conversation_metrics,
@@ -2873,11 +2861,11 @@ async fn run_conversation(
             mission: "Long-term conversational memory benchmark".into(),
             directives: vec![],
             disposition: Disposition::default(),
-            embedding_model: runtime.embeddings.model_name().to_string(),
-            embedding_dimensions: runtime.embeddings.dimensions() as u16,
+            embedding_model: runtime.embeddings().model_name().to_string(),
+            embedding_dimensions: runtime.embeddings().dimensions() as u16,
         };
         runtime
-            .store
+            .store()
             .create_bank(&bank)
             .await
             .map_err(|e| format!("[{tag}] failed to create bank: {e}"))?;
@@ -2919,7 +2907,7 @@ async fn run_conversation(
                 };
                 match with_scoped_collector(
                     conversation_metrics.clone(),
-                    runtime.retain.retain(&RetainInput {
+                    runtime.retain_pipeline().retain(&RetainInput {
                         bank_id: bank.id,
                         content,
                         timestamp,
@@ -2958,7 +2946,7 @@ async fn run_conversation(
 
                     let resp = with_scoped_collector(
                         conversation_metrics.clone(),
-                        runtime.retain.retain(&RetainInput {
+                        runtime.retain_pipeline().retain(&RetainInput {
                             bank_id: bank.id,
                             content: turn_text.clone(),
                             timestamp,
@@ -3099,7 +3087,7 @@ async fn run_conversation(
         .lock()
         .await
         .record_conversation_metrics(sample_id.clone(), conversation_metrics.snapshot());
-    finalize_bank_stats(&runtime.store, bank_id, &mut bank_stats).await?;
+    finalize_bank_stats(runtime.store(), bank_id, &mut bank_stats).await?;
     shared
         .lock()
         .await
@@ -3192,7 +3180,7 @@ async fn run_conversation(
                 with_scoped_collector(question_metrics_for_scope, async {
                     let t0 = Instant::now();
                     let reflect_result = runtime
-                        .reflect
+                        .reflect_pipeline()
                         .reflect(&ReflectQuery {
                             bank_id,
                             question: question.clone(),
@@ -3838,16 +3826,17 @@ async fn main() {
     let determinism_requirement = harness.determinism_requirement();
     let runtime = Arc::new(harness.into_runtime());
 
-    let judge = build_judge_client(metrics.clone(), config.judge_model.clone());
-    let judge_label = judge_label(&config.judge_model);
+    let judge_config = resolve_judge_config(config.judge_model.clone());
+    let judge = common::judge::build_judge_client(metrics.clone(), &judge_config);
+    let judge_label = common::judge::judge_label(&judge_config);
 
-    println!("retain_model: {}", runtime.info.retain_model);
-    println!("reflect_model: {}", runtime.info.reflect_model);
-    println!("reranker_model: {}", runtime.info.reranker_model);
-    println!("embedding_model: {}", runtime.info.embedding_model);
+    println!("retain_model: {}", runtime.info().retain_model);
+    println!("reflect_model: {}", runtime.info().reflect_model);
+    println!("reranker_model: {}", runtime.info().reranker_model);
+    println!("embedding_model: {}", runtime.info().embedding_model);
     println!(
         "Reasoning effort: {}",
-        common::format_reasoning_effort_summary(&runtime.info.tuning)
+        common::format_reasoning_effort_summary(&runtime.info().tuning)
     );
     if let Some(requirement) = determinism_requirement {
         println!(
@@ -3927,10 +3916,10 @@ async fn main() {
         debug_path: debug_path.clone(),
         judge_label: judge_label.clone(),
         tag: config.tag.clone(),
-        retain_model: runtime.info.retain_model.clone(),
-        reflect_model: runtime.info.reflect_model.clone(),
-        embedding_model: runtime.info.embedding_model.clone(),
-        reranker_model: runtime.info.reranker_model.clone(),
+        retain_model: runtime.info().retain_model.clone(),
+        reflect_model: runtime.info().reflect_model.clone(),
+        embedding_model: runtime.info().embedding_model.clone(),
+        reranker_model: runtime.info().reranker_model.clone(),
         consolidation_strategy: consolidation_strategy.into(),
         manifest,
         metrics: metrics.clone(),

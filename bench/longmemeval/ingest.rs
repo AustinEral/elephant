@@ -251,10 +251,10 @@ pub async fn ingest_instance(
             mission: "Long-term conversational memory benchmark".into(),
             directives: vec![],
             disposition: Disposition::default(),
-            embedding_model: runtime.embeddings.model_name().to_string(),
-            embedding_dimensions: runtime.embeddings.dimensions() as u16,
+            embedding_model: runtime.embeddings().model_name().to_string(),
+            embedding_dimensions: runtime.embeddings().dimensions() as u16,
         };
-        runtime.store.create_bank(&bank).await?;
+        runtime.store().create_bank(&bank).await?;
         bank.id
     };
 
@@ -293,7 +293,7 @@ pub async fn ingest_instance(
         let timestamp = parse_haystack_date(date_str);
 
         match runtime
-            .retain
+            .retain_pipeline()
             .retain(&RetainInput {
                 bank_id,
                 content,
@@ -335,7 +335,7 @@ pub async fn ingest_instance(
 
         // Per-session consolidation
         if config.consolidation.per_session() {
-            match runtime.consolidator.consolidate(bank_id).await {
+            match runtime.consolidator().consolidate(bank_id).await {
                 Ok(cr) => {
                     stats.observations_created += cr.observations_created;
                     stats.observations_updated += cr.observations_updated;
@@ -358,7 +358,7 @@ pub async fn ingest_instance(
     let mut consolidation_time_s = 0.0;
     if config.consolidation.enabled() && !config.consolidation.per_session() {
         let total_facts = runtime
-            .store
+            .store()
             .get_facts_by_bank(
                 bank_id,
                 FactFilter {
@@ -373,7 +373,7 @@ pub async fn ingest_instance(
         let total_batches = if total_facts == 0 {
             0
         } else {
-            total_facts.div_ceil(runtime.info.tuning.consolidation_batch_size)
+            total_facts.div_ceil(runtime.info().tuning.consolidation_batch_size)
         };
         eprintln!(
             "  {} consolidating {} facts in {} batches...",
@@ -381,7 +381,7 @@ pub async fn ingest_instance(
         );
         let t0 = Instant::now();
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let consolidator = runtime.consolidator.clone();
+        let consolidator = runtime.consolidator().clone();
         let consolidate_bank_id = bank_id;
         let task = tokio::spawn(async move {
             consolidator

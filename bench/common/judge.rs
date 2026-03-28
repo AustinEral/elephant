@@ -6,6 +6,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use crate::common::failure;
+use elephant::BenchJudgeConfig;
 use elephant::llm::retry::{RetryPolicy, RetryingLlmClient};
 use elephant::llm::{self, CompletionRequest, LlmClient, Message};
 use elephant::metrics::{LlmStage, MeteredLlmClient, MetricsCollector};
@@ -25,6 +26,12 @@ pub const JUDGE_MAX_ATTEMPTS: usize = 3;
 pub struct JudgeOverrides {
     pub provider: Option<llm::Provider>,
     pub model: Option<String>,
+}
+
+pub fn resolve_judge_config(
+    overrides: &JudgeOverrides,
+) -> Result<BenchJudgeConfig, elephant::ConfigError> {
+    BenchJudgeConfig::from_env(overrides.provider, overrides.model.as_deref())
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -98,19 +105,15 @@ pub async fn llm_judge(
 /// the resolved provider and/or model.
 pub fn build_judge_client(
     metrics: Arc<MetricsCollector>,
-    overrides: &JudgeOverrides,
+    judge_config: &BenchJudgeConfig,
 ) -> Arc<dyn LlmClient> {
-    let judge_config =
-        llm::judge_client_config_from_env(overrides.provider, overrides.model.as_deref()).unwrap();
-    let inner: Arc<dyn LlmClient> = Arc::from(llm::build_client(&judge_config).unwrap());
+    let inner: Arc<dyn LlmClient> = Arc::from(llm::build_client(judge_config.client()).unwrap());
     let metered: Arc<dyn LlmClient> =
         Arc::new(MeteredLlmClient::new(inner, metrics, LlmStage::Judge));
     Arc::new(RetryingLlmClient::new(metered, RetryPolicy::default()))
 }
 
 /// Returns "provider/model" string identifying the judge configuration.
-pub fn judge_label(overrides: &JudgeOverrides) -> String {
-    llm::judge_client_config_from_env(overrides.provider, overrides.model.as_deref())
-        .unwrap()
-        .label()
+pub fn judge_label(judge_config: &BenchJudgeConfig) -> String {
+    judge_config.label()
 }

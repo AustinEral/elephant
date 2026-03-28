@@ -178,8 +178,8 @@ impl TestHarness {
             self.llm.clone() as Arc<dyn elephant::LlmClient>,
             self.embeddings.clone() as Arc<dyn elephant::EmbeddingClient>,
         ));
-        let runtime = ElephantRuntime {
-            info: RuntimeInfo {
+        let runtime = ElephantRuntime::from_parts(
+            RuntimeInfo {
                 retain_model: "test".into(),
                 reflect_model: "test".into(),
                 embedding_model: "test".into(),
@@ -192,9 +192,9 @@ impl TestHarness {
             reflect,
             consolidator,
             opinion_merger,
-            store: self.store.clone(),
-            embeddings: self.embeddings.clone(),
-        };
+            self.store.clone(),
+            self.embeddings.clone(),
+        );
         let app = AppHandle::new(&runtime, &ServerConfig::from_env().expect("server config"))
             .expect("app handle");
 

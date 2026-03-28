@@ -21,8 +21,8 @@ pub mod util;
 
 pub use bench_support::{BenchHarness, BenchHarnessBuilder};
 pub use config::{
-    BackgroundConsolidationConfig, BenchConfig, ConfigError, ConfigErrorKind, ConfigResult,
-    LogFormat, ReflectConfig, RetrievalConfig, RuntimeConfig, ServerConfig,
+    BackgroundConsolidationConfig, BenchConfig, BenchJudgeConfig, ConfigError, ConfigErrorKind,
+    ConfigResult, LogFormat, ReflectConfig, RetrievalConfig, RuntimeConfig, ServerConfig,
 };
 pub use embedding::EmbeddingClient;
 pub use error::{Error, Result};
