@@ -5,7 +5,7 @@ pub mod judge;
 
 use elephant::llm::DeterminismRequirement;
 use elephant::llm::ReasoningEffort;
-use elephant::{BenchConfig, RuntimeTuning as ElephantRuntimeTuning};
+use elephant::{__bench::BenchConfig, RuntimeTuning as ElephantRuntimeTuning};
 
 #[allow(unused_imports)]
 pub use fingerprint::{fnv1a64, fnv1a64_hex};

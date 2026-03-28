@@ -19,12 +19,6 @@ pub fn optional_string(name: &str) -> Option<String> {
     env::var(name).ok()
 }
 
-pub fn optional_usize_lossy(name: &str) -> Option<usize> {
-    env::var(name)
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-}
-
 pub fn parse_optional_bool(name: &'static str, kind: ConfigErrorKind) -> Result<Option<bool>> {
     match env::var(name) {
         Ok(value) => match value.trim().to_ascii_lowercase().as_str() {

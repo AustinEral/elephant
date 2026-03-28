@@ -36,11 +36,43 @@ use elephant::retain::resolver::LayeredEntityResolver;
 use elephant::storage::pg::PgMemoryStore;
 use elephant::types::*;
 use elephant::{
-    AppHandle, ElephantRuntime, RuntimeInfo, RuntimePromptHashes, RuntimeTuning, ServerConfig,
-    router,
+    AppHandle, ServerBackgroundConsolidationInfo, ServerConsolidationRuntimeInfo, ServerInfo,
+    ServerModelsInfo, ServerReflectInfo, ServerRetrievalInfo, router,
 };
 
 const EMBED_DIMS: usize = 384;
+
+fn test_server_info() -> ServerInfo {
+    ServerInfo {
+        version: env!("CARGO_PKG_VERSION").into(),
+        models: ServerModelsInfo {
+            retain: "test".into(),
+            reflect: "test".into(),
+            embedding: "test".into(),
+            reranker: "none".into(),
+        },
+        retrieval: ServerRetrievalInfo {
+            retriever_limit: 20,
+            max_facts: 50,
+        },
+        reflect: ServerReflectInfo {
+            max_iterations: 8,
+            max_tokens: None,
+            source_lookup_enabled: true,
+        },
+        consolidation: ServerConsolidationRuntimeInfo {
+            batch_size: 16,
+            max_tokens: 2048,
+            recall_budget: 1024,
+        },
+        server_consolidation: ServerBackgroundConsolidationInfo {
+            enabled: true,
+            min_facts: 32,
+            cooldown_secs: 30,
+            merge_opinions_after: false,
+        },
+    }
+}
 
 struct TestHarness {
     pool: PgPool,
@@ -178,15 +210,8 @@ impl TestHarness {
             self.llm.clone() as Arc<dyn elephant::LlmClient>,
             self.embeddings.clone() as Arc<dyn elephant::EmbeddingClient>,
         ));
-        let runtime = ElephantRuntime::from_parts(
-            RuntimeInfo {
-                retain_model: "test".into(),
-                reflect_model: "test".into(),
-                embedding_model: "test".into(),
-                reranker_model: "none".into(),
-                tuning: RuntimeTuning::default(),
-                prompt_hashes: RuntimePromptHashes::default(),
-            },
+        let app = AppHandle::from_parts_for_testing(
+            test_server_info(),
             retain,
             recall,
             reflect,
@@ -195,8 +220,6 @@ impl TestHarness {
             self.store.clone(),
             self.embeddings.clone(),
         );
-        let app = AppHandle::new(&runtime, &ServerConfig::from_env().expect("server config"))
-            .expect("app handle");
 
         router(app)
     }

@@ -19,10 +19,9 @@ pub mod storage;
 pub mod types;
 pub mod util;
 
-pub use bench_support::{BenchHarness, BenchHarnessBuilder};
 pub use config::{
-    BackgroundConsolidationConfig, BenchConfig, BenchJudgeConfig, ConfigError, ConfigErrorKind,
-    ConfigResult, LogFormat, ReflectConfig, RetrievalConfig, RuntimeConfig, ServerConfig,
+    BackgroundConsolidationConfig, ConfigError, ConfigResult, LogFormat, ReflectConfig,
+    RetrievalConfig, RuntimeConfig, ServerConfig,
 };
 pub use embedding::EmbeddingClient;
 pub use error::{Error, Result};
@@ -38,3 +37,10 @@ pub use server::{
 };
 pub use storage::MemoryStore;
 pub use types::*;
+
+/// Hidden transitional bench-only exports kept for in-repo binaries during the seam migration.
+#[doc(hidden)]
+pub mod __bench {
+    pub use crate::bench_support::{BenchHarness, BenchHarnessBuilder};
+    pub use crate::config::{BenchConfig, BenchJudgeConfig};
+}

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use crate::common::failure;
-use elephant::BenchJudgeConfig;
+use elephant::__bench::BenchJudgeConfig;
 use elephant::llm::retry::{RetryPolicy, RetryingLlmClient};
 use elephant::llm::{self, CompletionRequest, LlmClient, Message};
 use elephant::metrics::{LlmStage, MeteredLlmClient, MetricsCollector};

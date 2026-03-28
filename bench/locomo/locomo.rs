@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio::task::JoinSet;
 
+use elephant::__bench::{BenchHarnessBuilder, BenchJudgeConfig};
 use elephant::consolidation::ConsolidationProgress;
 use elephant::llm::LlmClient;
 use elephant::metrics::{LlmStage, MetricsCollector, StageUsage, with_scoped_collector};
@@ -34,7 +35,7 @@ use elephant::types::{
     RetrievalSource, TurnId,
 };
 use elephant::{
-    BenchHarnessBuilder, ElephantRuntime, MemoryStore, RuntimePromptHashes as ElephantPromptHashes,
+    ElephantRuntime, MemoryStore, RuntimePromptHashes as ElephantPromptHashes,
     RuntimeTuning as ElephantRuntimeTuning,
 };
 
@@ -645,7 +646,7 @@ fn benchmark_runtime_config(runtime: &ElephantRuntime) -> BenchmarkRuntimeConfig
 }
 
 async fn finalize_bank_stats(
-    store: &Arc<dyn MemoryStore>,
+    store: Arc<dyn MemoryStore>,
     bank_id: BankId,
     stats: &mut ConversationBankStats,
 ) -> Result<(), String> {
@@ -683,7 +684,7 @@ fn reflect_budget_tokens() -> usize {
     }
 }
 
-fn resolve_judge_config(override_model: Option<String>) -> elephant::BenchJudgeConfig {
+fn resolve_judge_config(override_model: Option<String>) -> BenchJudgeConfig {
     common::judge::resolve_judge_config(&common::judge::JudgeOverrides {
         provider: None,
         model: override_model,

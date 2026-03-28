@@ -208,68 +208,44 @@ impl fmt::Debug for ElephantRuntime {
 }
 
 impl ElephantRuntime {
-    /// Create a runtime from already-constructed components.
-    #[allow(clippy::too_many_arguments)]
-    pub fn from_parts(
-        info: RuntimeInfo,
-        retain: Arc<dyn RetainPipeline>,
-        recall: Arc<dyn RecallPipeline>,
-        reflect: Arc<dyn ReflectPipeline>,
-        consolidator: Arc<dyn Consolidator>,
-        opinion_merger: Arc<dyn OpinionMerger>,
-        store: Arc<dyn MemoryStore>,
-        embeddings: Arc<dyn EmbeddingClient>,
-    ) -> Self {
-        Self {
-            info,
-            retain,
-            recall,
-            reflect,
-            consolidator,
-            opinion_merger,
-            store,
-            embeddings,
-        }
-    }
-
     /// Return immutable runtime metadata and tuning snapshots.
     pub fn info(&self) -> &RuntimeInfo {
         &self.info
     }
 
     /// Return the retain pipeline.
-    pub fn retain_pipeline(&self) -> &Arc<dyn RetainPipeline> {
-        &self.retain
+    pub fn retain_pipeline(&self) -> Arc<dyn RetainPipeline> {
+        self.retain.clone()
     }
 
     /// Return the recall pipeline.
-    pub fn recall_pipeline(&self) -> &Arc<dyn RecallPipeline> {
-        &self.recall
+    pub fn recall_pipeline(&self) -> Arc<dyn RecallPipeline> {
+        self.recall.clone()
     }
 
     /// Return the reflect pipeline.
-    pub fn reflect_pipeline(&self) -> &Arc<dyn ReflectPipeline> {
-        &self.reflect
+    pub fn reflect_pipeline(&self) -> Arc<dyn ReflectPipeline> {
+        self.reflect.clone()
     }
 
     /// Return the consolidator.
-    pub fn consolidator(&self) -> &Arc<dyn Consolidator> {
-        &self.consolidator
+    pub fn consolidator(&self) -> Arc<dyn Consolidator> {
+        self.consolidator.clone()
     }
 
     /// Return the opinion merger.
-    pub fn opinion_merger(&self) -> &Arc<dyn OpinionMerger> {
-        &self.opinion_merger
+    pub fn opinion_merger(&self) -> Arc<dyn OpinionMerger> {
+        self.opinion_merger.clone()
     }
 
     /// Return the shared storage backend.
-    pub fn store(&self) -> &Arc<dyn MemoryStore> {
-        &self.store
+    pub fn store(&self) -> Arc<dyn MemoryStore> {
+        self.store.clone()
     }
 
     /// Return the shared embedding client.
-    pub fn embeddings(&self) -> &Arc<dyn EmbeddingClient> {
-        &self.embeddings
+    pub fn embeddings(&self) -> Arc<dyn EmbeddingClient> {
+        self.embeddings.clone()
     }
 }
 

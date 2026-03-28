@@ -1,5 +1,7 @@
 //! Typed configuration for server startup and server-only policy.
 
+use std::net::SocketAddr;
+
 use super::env as config_env;
 use super::error::{ConfigError, ConfigErrorKind, Result};
 
@@ -12,31 +14,67 @@ pub enum LogFormat {
     Json,
 }
 
+impl std::str::FromStr for LogFormat {
+    type Err = ConfigError;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "text" => Ok(Self::Text),
+            "json" => Ok(Self::Json),
+            other => Err(ConfigError::configuration(format!(
+                "LOG_FORMAT must be one of: text, json; got: {other}"
+            ))),
+        }
+    }
+}
+
 /// Validated server startup configuration loaded from environment.
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
-    listen_addr: String,
+    listen_addr: SocketAddr,
     log_format: LogFormat,
     background_consolidation: BackgroundConsolidationConfig,
 }
 
 impl ServerConfig {
+    /// Create server startup configuration from validated values.
+    pub fn new(
+        listen_addr: SocketAddr,
+        log_format: LogFormat,
+        background_consolidation: BackgroundConsolidationConfig,
+    ) -> Self {
+        Self {
+            listen_addr,
+            log_format,
+            background_consolidation,
+        }
+    }
+
     /// Load server startup configuration from the process environment.
     pub fn from_env() -> Result<Self> {
-        Ok(Self {
-            listen_addr: config_env::optional_string("LISTEN_ADDR")
-                .unwrap_or_else(|| "0.0.0.0:3001".into()),
-            log_format: match config_env::optional_string("LOG_FORMAT").as_deref() {
-                Some("json") => LogFormat::Json,
-                _ => LogFormat::Text,
-            },
-            background_consolidation: BackgroundConsolidationConfig::from_env()?,
-        })
+        let listen_addr = match config_env::optional_string("LISTEN_ADDR") {
+            Some(raw) => raw.parse::<SocketAddr>().map_err(|_| {
+                ConfigError::configuration(format!(
+                    "LISTEN_ADDR must be a valid socket address, got: {raw}"
+                ))
+            })?,
+            None => SocketAddr::from(([0, 0, 0, 0], 3001)),
+        };
+        let log_format = match config_env::optional_string("LOG_FORMAT") {
+            Some(raw) => raw.parse::<LogFormat>()?,
+            None => LogFormat::Text,
+        };
+
+        Ok(Self::new(
+            listen_addr,
+            log_format,
+            BackgroundConsolidationConfig::from_env()?,
+        ))
     }
 
     /// Return the address the server should bind to.
-    pub fn listen_addr(&self) -> &str {
-        &self.listen_addr
+    pub fn listen_addr(&self) -> SocketAddr {
+        self.listen_addr
     }
 
     /// Return the configured log format.
@@ -155,17 +193,34 @@ mod tests {
     }
 
     #[test]
-    fn server_config_preserves_plain_log_default() {
+    fn server_config_rejects_invalid_log_format() {
         let _guard = env_lock().lock().unwrap();
         unsafe {
-            env::set_var("LOG_FORMAT", "JSON");
+            env::set_var("LOG_FORMAT", "yaml");
         }
 
-        let config = ServerConfig::from_env().unwrap();
-        assert_eq!(config.log_format(), LogFormat::Text);
+        let err = ServerConfig::from_env().unwrap_err();
+        assert_eq!(err.kind(), ConfigErrorKind::Configuration);
+        assert!(err.to_string().contains("LOG_FORMAT"));
 
         unsafe {
             env::remove_var("LOG_FORMAT");
+        }
+    }
+
+    #[test]
+    fn server_config_rejects_invalid_listen_addr() {
+        let _guard = env_lock().lock().unwrap();
+        unsafe {
+            env::set_var("LISTEN_ADDR", "localhost");
+        }
+
+        let err = ServerConfig::from_env().unwrap_err();
+        assert_eq!(err.kind(), ConfigErrorKind::Configuration);
+        assert!(err.to_string().contains("LISTEN_ADDR"));
+
+        unsafe {
+            env::remove_var("LISTEN_ADDR");
         }
     }
 }

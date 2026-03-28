@@ -1,6 +1,7 @@
 //! Transitional typed config API for runtime, server, and benchmark startup.
 
 mod bench;
+mod client_env;
 mod env;
 mod error;
 mod runtime;

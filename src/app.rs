@@ -147,22 +147,21 @@ impl AppHandle {
                 server_consolidation: server_consolidation_policy.to_info(),
             },
             retain: consolidation::wrap_retain_pipeline_with_consolidation(
-                runtime.retain_pipeline().clone(),
-                runtime.store().clone(),
-                runtime.consolidator().clone(),
-                runtime.opinion_merger().clone(),
+                runtime.retain_pipeline(),
+                runtime.store(),
+                runtime.consolidator(),
+                runtime.opinion_merger(),
                 server_consolidation_policy,
             )?,
-            recall: runtime.recall_pipeline().clone(),
-            reflect: runtime.reflect_pipeline().clone(),
-            consolidator: runtime.consolidator().clone(),
-            opinion_merger: runtime.opinion_merger().clone(),
-            store: runtime.store().clone(),
-            embeddings: runtime.embeddings().clone(),
+            recall: runtime.recall_pipeline(),
+            reflect: runtime.reflect_pipeline(),
+            consolidator: runtime.consolidator(),
+            opinion_merger: runtime.opinion_merger(),
+            store: runtime.store(),
+            embeddings: runtime.embeddings(),
         })
     }
 
-    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_parts(
         info: AppInfo,
@@ -184,6 +183,31 @@ impl AppHandle {
             store,
             embeddings,
         }
+    }
+
+    /// Construct an application handle from explicit test doubles and runtime info.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts_for_testing(
+        info: AppInfo,
+        retain: Arc<dyn RetainPipeline>,
+        recall: Arc<dyn RecallPipeline>,
+        reflect: Arc<dyn ReflectPipeline>,
+        consolidator: Arc<dyn Consolidator>,
+        opinion_merger: Arc<dyn OpinionMerger>,
+        store: Arc<dyn MemoryStore>,
+        embeddings: Arc<dyn EmbeddingClient>,
+    ) -> Self {
+        Self::from_parts(
+            info,
+            retain,
+            recall,
+            reflect,
+            consolidator,
+            opinion_merger,
+            store,
+            embeddings,
+        )
     }
 
     /// Return shared runtime and policy info for transports.
