@@ -94,12 +94,12 @@ pub(super) fn runtime_llm_config_from_env() -> Result<LlmConfig> {
             None
         },
         if provider == Provider::Vertex {
-            optional_string_any(&["LLM_VERTEX_LOCATION", "GOOGLE_CLOUD_LOCATION"])
+            optional_string_any(&["LLM_VERTEX_LOCATION", "GOOGLE_CLOUD_LOCATION"])?
                 .or(Some(VertexConfig::DEFAULT_LOCATION.into()))
         } else {
             None
         },
-        config_env::optional_string("LLM_BASE_URL"),
+        config_env::optional_string("LLM_BASE_URL", ConfigErrorKind::Configuration)?,
     )?;
 
     let retain = build_client_config(

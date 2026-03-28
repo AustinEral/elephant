@@ -52,18 +52,20 @@ impl ServerConfig {
 
     /// Load server startup configuration from the process environment.
     pub fn from_env() -> Result<Self> {
-        let listen_addr = match config_env::optional_string("LISTEN_ADDR") {
-            Some(raw) => raw.parse::<SocketAddr>().map_err(|_| {
-                ConfigError::configuration(format!(
-                    "LISTEN_ADDR must be a valid socket address, got: {raw}"
-                ))
-            })?,
-            None => SocketAddr::from(([0, 0, 0, 0], 3001)),
-        };
-        let log_format = match config_env::optional_string("LOG_FORMAT") {
-            Some(raw) => raw.parse::<LogFormat>()?,
-            None => LogFormat::Text,
-        };
+        let listen_addr =
+            match config_env::optional_string("LISTEN_ADDR", ConfigErrorKind::Configuration)? {
+                Some(raw) => raw.parse::<SocketAddr>().map_err(|_| {
+                    ConfigError::configuration(format!(
+                        "LISTEN_ADDR must be a valid socket address, got: {raw}"
+                    ))
+                })?,
+                None => SocketAddr::from(([0, 0, 0, 0], 3001)),
+            };
+        let log_format =
+            match config_env::optional_string("LOG_FORMAT", ConfigErrorKind::Configuration)? {
+                Some(raw) => raw.parse::<LogFormat>()?,
+                None => LogFormat::Text,
+            };
 
         Ok(Self::new(
             listen_addr,

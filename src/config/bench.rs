@@ -112,13 +112,13 @@ impl BenchJudgeConfig {
                     "JUDGE_VERTEX_LOCATION",
                     "LLM_VERTEX_LOCATION",
                     "GOOGLE_CLOUD_LOCATION",
-                ])
+                ])?
                 .unwrap_or_else(|| VertexConfig::DEFAULT_LOCATION.into()),
             )
         } else {
             None
         };
-        let base_url = optional_string_any(&["JUDGE_BASE_URL", "LLM_BASE_URL"]);
+        let base_url = optional_string_any(&["JUDGE_BASE_URL", "LLM_BASE_URL"])?;
         let shared = SharedClientEnvConfig::new(
             provider,
             api_key,

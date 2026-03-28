@@ -9,7 +9,7 @@ use crate::llm::{
 };
 
 use super::env as config_env;
-use super::error::{ConfigError, Result};
+use super::error::{ConfigError, ConfigErrorKind, Result};
 
 #[derive(Clone)]
 pub(crate) struct SharedClientEnvConfig {
@@ -54,7 +54,7 @@ impl SharedClientEnvConfig {
 
 pub(crate) fn required_string_any(names: &[&str]) -> Result<String> {
     for name in names {
-        if let Some(value) = config_env::optional_string(name) {
+        if let Some(value) = config_env::optional_string(name, ConfigErrorKind::Configuration)? {
             return Ok(value);
         }
     }
@@ -65,10 +65,13 @@ pub(crate) fn required_string_any(names: &[&str]) -> Result<String> {
     )))
 }
 
-pub(crate) fn optional_string_any(names: &[&str]) -> Option<String> {
-    names
-        .iter()
-        .find_map(|name| config_env::optional_string(name))
+pub(crate) fn optional_string_any(names: &[&str]) -> Result<Option<String>> {
+    for name in names {
+        if let Some(value) = config_env::optional_string(name, ConfigErrorKind::Configuration)? {
+            return Ok(Some(value));
+        }
+    }
+    Ok(None)
 }
 
 pub(crate) fn build_client_config(
@@ -192,7 +195,9 @@ fn parse_openai_prompt_cache() -> Result<Option<OpenAiPromptCacheConfig>> {
     };
 
     let mut config = OpenAiPromptCacheConfig::new();
-    if let Some(key) = config_env::optional_string("OPENAI_PROMPT_CACHE_KEY") {
+    if let Some(key) =
+        config_env::optional_string("OPENAI_PROMPT_CACHE_KEY", ConfigErrorKind::Configuration)?
+    {
         config = config.with_key(key);
     }
     if let Some(retention) = retention {

@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::env;
 use std::fs;
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
@@ -1922,7 +1923,9 @@ async fn main() {
             std::process::exit(1);
         })
         .metrics(metrics.clone())
-        .max_pool_connections(std::cmp::min(config.instance_jobs as u32 * 8, 80))
+        .max_pool_connections(
+            NonZeroU32::new(std::cmp::min(config.instance_jobs as u32 * 8, 80).max(1)).unwrap(),
+        )
         .build()
         .await
         .unwrap_or_else(|err| {

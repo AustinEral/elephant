@@ -1,5 +1,6 @@
 //! Transitional benchmark startup support over the typed config/runtime seam.
 
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use crate::Result;
@@ -68,7 +69,7 @@ impl BenchHarnessBuilder {
     }
 
     /// Override the maximum Postgres pool connection count.
-    pub fn max_pool_connections(mut self, max_pool_connections: u32) -> Self {
+    pub fn max_pool_connections(mut self, max_pool_connections: NonZeroU32) -> Self {
         self.runtime_builder = self
             .runtime_builder
             .max_pool_connections(max_pool_connections);

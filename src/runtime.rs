@@ -1,6 +1,7 @@
 //! Shared runtime builder for the API server and in-process benchmarks.
 
 use std::fmt;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -253,7 +254,7 @@ impl ElephantRuntime {
 pub struct RuntimeBuilder {
     config: RuntimeConfig,
     metrics: Option<Arc<MetricsCollector>>,
-    max_pool_connections: Option<u32>,
+    max_pool_connections: Option<NonZeroU32>,
     determinism_requirement: Option<DeterminismRequirement>,
 }
 
@@ -286,7 +287,7 @@ impl RuntimeBuilder {
     }
 
     /// Override the maximum Postgres pool connection count.
-    pub fn max_pool_connections(mut self, max_pool_connections: u32) -> Self {
+    pub fn max_pool_connections(mut self, max_pool_connections: NonZeroU32) -> Self {
         self.max_pool_connections = Some(max_pool_connections);
         self
     }
@@ -450,7 +451,7 @@ impl RuntimeBuilder {
             )?;
         }
 
-        let max_conns = self.max_pool_connections.unwrap_or(10);
+        let max_conns = self.max_pool_connections.map(NonZeroU32::get).unwrap_or(10);
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(max_conns)
             .connect(runtime_config.database_url())
