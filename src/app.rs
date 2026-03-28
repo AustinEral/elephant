@@ -163,6 +163,7 @@ impl AppHandle {
     }
 
     #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_parts(
         info: AppInfo,
         retain: Arc<dyn RetainPipeline>,

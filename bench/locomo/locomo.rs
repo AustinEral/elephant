@@ -507,10 +507,10 @@ fn get_session_turns(conv: &Conversation, idx: usize) -> Vec<Turn> {
     }
     for suffix in ["dialogue", "dialog"] {
         let key = format!("session_{idx}_{suffix}");
-        if let Some(v) = conv.sessions.get(&key) {
-            if let Ok(turns) = serde_json::from_value::<Vec<Turn>>(v.clone()) {
-                return turns;
-            }
+        if let Some(v) = conv.sessions.get(&key)
+            && let Ok(turns) = serde_json::from_value::<Vec<Turn>>(v.clone())
+        {
+            return turns;
         }
     }
     Vec::new()
@@ -914,18 +914,13 @@ fn flush_results(
 
 // --- CLI ---
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 enum RunProfile {
+    #[default]
     Full,
     Smoke,
     LegacyRaw,
-}
-
-impl Default for RunProfile {
-    fn default() -> Self {
-        Self::Full
-    }
 }
 
 impl RunProfile {
@@ -978,18 +973,13 @@ impl BenchCommand {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 enum IngestMode {
+    #[default]
     Turn,
     Session,
     RawJson,
-}
-
-impl Default for IngestMode {
-    fn default() -> Self {
-        Self::Turn
-    }
 }
 
 impl IngestMode {
@@ -1039,18 +1029,13 @@ impl FromStr for IngestMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 enum ConsolidationMode {
+    #[default]
     End,
     PerSession,
     Off,
-}
-
-impl Default for ConsolidationMode {
-    fn default() -> Self {
-        Self::End
-    }
 }
 
 impl ConsolidationMode {
@@ -2770,7 +2755,7 @@ async fn count_unconsolidated_facts(
 fn should_log_consolidation_progress(progress: &ConsolidationProgress) -> bool {
     progress.batch_index == 1
         || progress.batch_index == progress.total_batches
-        || progress.batch_index % 10 == 0
+        || progress.batch_index.is_multiple_of(10)
 }
 
 async fn consolidate_with_bench_progress(
@@ -3151,7 +3136,6 @@ async fn run_conversation(
         let completed = completed.clone();
         let evidence_refs = qa.evidence.clone();
         let turn_refs = turn_refs.clone();
-        let bank_id = bank_id;
         let temporal_context = temporal_context.clone();
         let conversation_metrics = conversation_metrics.clone();
         let question_metrics = Arc::new(MetricsCollector::new());

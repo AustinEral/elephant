@@ -17,17 +17,12 @@ use elephant::types::{Disposition, FactFilter, MemoryBank, RetainInput};
 use super::dataset::{LongMemEvalInstance, Turn};
 
 /// Session formatting mode for ingestion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum IngestFormat {
+    #[default]
     Text,
     Json,
-}
-
-impl Default for IngestFormat {
-    fn default() -> Self {
-        Self::Text
-    }
 }
 
 impl IngestFormat {
@@ -54,18 +49,13 @@ impl FromStr for IngestFormat {
 }
 
 /// Consolidation strategy after ingestion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ConsolidationMode {
+    #[default]
     End,
     PerSession,
     Off,
-}
-
-impl Default for ConsolidationMode {
-    fn default() -> Self {
-        Self::End
-    }
 }
 
 impl ConsolidationMode {
@@ -106,7 +96,7 @@ impl ConsolidationMode {
 }
 
 /// Configuration for LongMemEval ingestion.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IngestConfig {
     /// Session formatting: text (default) or json.
     pub format: IngestFormat,
@@ -115,16 +105,6 @@ pub struct IngestConfig {
     /// Optional limit on the number of haystack sessions to ingest.
     #[serde(default)]
     pub session_limit: Option<usize>,
-}
-
-impl Default for IngestConfig {
-    fn default() -> Self {
-        Self {
-            format: IngestFormat::default(),
-            consolidation: ConsolidationMode::default(),
-            session_limit: None,
-        }
-    }
 }
 
 /// Result of ingesting one LongMemEval instance.

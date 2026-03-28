@@ -81,6 +81,7 @@ impl DefaultReflectPipeline {
     }
 
     /// Create a new reflect pipeline with explicit completion limits.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_limits(
         recall: Arc<dyn RecallPipeline>,
         llm: Arc<dyn LlmClient>,

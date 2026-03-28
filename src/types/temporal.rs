@@ -40,7 +40,7 @@ where
                 return Ok(Some(dt));
             }
             // Try date-only (e.g. "2015-01-01")
-            if let Ok(date) = NaiveDate::parse_from_str(&s, "%Y-%m-%d") {
+            if let Ok(date) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
                 return Ok(Some(date.and_hms_opt(0, 0, 0).unwrap().and_utc()));
             }
             Err(serde::de::Error::custom(format!(

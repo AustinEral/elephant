@@ -247,6 +247,7 @@ fn prompt_cache_config(provider: Provider) -> Result<PromptCacheConfig> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_client_config(
     provider: Provider,
     api_key: String,

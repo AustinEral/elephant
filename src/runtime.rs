@@ -209,6 +209,7 @@ impl fmt::Debug for ElephantRuntime {
 
 impl ElephantRuntime {
     /// Create a runtime from already-constructed components.
+    #[allow(clippy::too_many_arguments)]
     pub fn from_parts(
         info: RuntimeInfo,
         retain: Arc<dyn RetainPipeline>,

@@ -578,7 +578,7 @@ fn prompt_cache_config_from_env(provider: Provider) -> Result<PromptCacheConfig>
             };
 
             let mut config = OpenAiPromptCacheConfig::new();
-            if let Some(key) = env::var("OPENAI_PROMPT_CACHE_KEY").ok() {
+            if let Ok(key) = env::var("OPENAI_PROMPT_CACHE_KEY") {
                 config = config.with_key(key);
             }
             if let Some(retention) = retention {
@@ -611,6 +611,7 @@ fn prompt_cache_config_from_env(provider: Provider) -> Result<PromptCacheConfig>
 }
 
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 fn build_client_config(
     provider: Provider,
     api_key: String,

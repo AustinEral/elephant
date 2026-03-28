@@ -124,18 +124,13 @@ impl BenchCommand {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 enum RunProfile {
     Smoke,
+    #[default]
     FullS,
     FullM,
-}
-
-impl Default for RunProfile {
-    fn default() -> Self {
-        Self::FullS
-    }
 }
 
 impl RunProfile {
@@ -1207,7 +1202,7 @@ async fn count_unconsolidated_facts(
 fn should_log_consolidation_progress(progress: &ConsolidationProgress) -> bool {
     progress.batch_index == 1
         || progress.batch_index == progress.total_batches
-        || progress.batch_index % 10 == 0
+        || progress.batch_index.is_multiple_of(10)
 }
 
 async fn consolidate_with_bench_progress(
@@ -1806,14 +1801,12 @@ async fn main() {
     let output_path = default_output_path(command, &config, artifact_path.as_deref());
 
     // Resume validation
-    if config.resume {
-        if !output_path.exists() {
-            eprintln!(
-                "--resume requires existing artifact at {}",
-                output_path.display()
-            );
-            std::process::exit(1);
-        }
+    if config.resume && !output_path.exists() {
+        eprintln!(
+            "--resume requires existing artifact at {}",
+            output_path.display()
+        );
+        std::process::exit(1);
     }
 
     // Safety check (--resume implies overwrite is OK for the summary)
@@ -1997,27 +1990,27 @@ async fn main() {
 
     if is_resume && output_path.exists() {
         // Load existing summary to get bank IDs and instance_status
-        if let Ok(bytes) = fs::read(&output_path) {
-            if let Ok(existing) = serde_json::from_slice::<BenchmarkOutput>(&bytes) {
-                for (qid, bid) in &existing.banks {
-                    existing_banks
-                        .entry(qid.clone())
-                        .or_insert_with(|| bid.clone());
-                }
-                resume_instance_status = existing.instance_status;
-                resume_instance_timings = existing.instance_timings;
+        if let Ok(bytes) = fs::read(&output_path)
+            && let Ok(existing) = serde_json::from_slice::<BenchmarkOutput>(&bytes)
+        {
+            for (qid, bid) in &existing.banks {
+                existing_banks
+                    .entry(qid.clone())
+                    .or_insert_with(|| bid.clone());
             }
+            resume_instance_status = existing.instance_status;
+            resume_instance_timings = existing.instance_timings;
         }
         // Load completed question results from sidecar (needed for skip classification)
-        if questions_path.exists() {
-            if let Ok(records) = read_jsonl_records::<QuestionResult>(&questions_path) {
-                completed_results = records;
-            }
+        if questions_path.exists()
+            && let Ok(records) = read_jsonl_records::<QuestionResult>(&questions_path)
+        {
+            completed_results = records;
         }
-        if debug_path.exists() {
-            if let Ok(records) = read_jsonl_records::<QuestionDebugRecord>(&debug_path) {
-                completed_debug = records;
-            }
+        if debug_path.exists()
+            && let Ok(records) = read_jsonl_records::<QuestionDebugRecord>(&debug_path)
+        {
+            completed_debug = records;
         }
 
         // Classify instances and build resume plan
