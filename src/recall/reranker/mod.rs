@@ -41,14 +41,14 @@ impl RerankerConfig {
     /// Read reranker configuration from environment.
     pub fn from_env() -> std::result::Result<Self, ConfigError> {
         let provider = match std::env::var("RERANKER_PROVIDER")
-            .map_err(|e| ConfigError::internal(format!("RERANKER_PROVIDER must be set: {e}")))?
+            .map_err(|e| ConfigError::configuration(format!("RERANKER_PROVIDER must be set: {e}")))?
             .as_str()
         {
             "local" => RerankerProvider::Local,
             "api" => RerankerProvider::Api,
             "none" => RerankerProvider::None,
             other => {
-                return Err(ConfigError::internal(format!(
+                return Err(ConfigError::configuration(format!(
                     "unknown RERANKER_PROVIDER: {other}"
                 )));
             }

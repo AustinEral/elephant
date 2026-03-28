@@ -7,13 +7,12 @@ use serde::{Deserialize, Serialize};
 use crate::config::RuntimeConfig;
 use crate::consolidation::observation;
 use crate::consolidation::opinion_merger;
-use crate::consolidation::{ConsolidationConfig, DefaultConsolidator, DefaultOpinionMerger};
+use crate::consolidation::{DefaultConsolidator, DefaultOpinionMerger};
 use crate::embedding::{self, EmbeddingClient, EmbeddingConfig, EmbeddingProvider};
 use crate::error::{Error, Result};
 use crate::llm::retry::{RetryPolicy, RetryingLlmClient};
 use crate::llm::{
     self, ClientConfig, DeterminismAssessment, DeterminismRequirement, LlmClient, ReasoningEffort,
-    ReasoningEffortConfig,
 };
 use crate::metrics::{LlmStage, MeteredLlmClient, MetricsCollector};
 use crate::recall::DefaultRecallPipeline;
@@ -242,7 +241,20 @@ impl RuntimeBuilder {
         let llm_configs = runtime_config.llm();
         let emb_config = runtime_config.embedding();
         let reranker_config = runtime_config.reranker();
+        let reasoning_effort = runtime_config.reasoning_effort();
+        let extraction_config = runtime_config.extraction();
+        let extract_temperature_override = runtime_config.extract_temperature_override();
+        let resolve_temperature = runtime_config.resolve_temperature();
+        let resolve_temperature_override = runtime_config.resolve_temperature_override();
+        let graph_temperature_override = runtime_config.graph_temperature_override();
+        let consolidation_config = runtime_config.consolidation();
+        let consolidate_temperature_override = runtime_config.consolidate_temperature_override();
+        let opinion_merge_config = runtime_config.opinion_merge();
+        let opinion_merge_temperature_override =
+            runtime_config.opinion_merge_temperature_override();
         let reflect_config = runtime_config.reflect();
+        let reflect_temperature = runtime_config.reflect_temperature();
+        let reflect_temperature_override = runtime_config.reflect_temperature_override();
         let retrieval_config = runtime_config.retrieval();
         let dedup_threshold = runtime_config.dedup_threshold();
         let chunk_config = ChunkConfig {
@@ -251,10 +263,7 @@ impl RuntimeBuilder {
             preserve_turns: true,
         };
         let mut graph_config = GraphConfig::default();
-        graph_config.causal_temperature = graph_builder::causal_temperature_from_env()?;
-        let reasoning_effort = *ReasoningEffortConfig::current()?;
-        let extract_temperature_override = llm::temperature_from_env("RETAIN_EXTRACT_TEMPERATURE")?;
-        let extraction_config = extractor::config_from_env()?;
+        graph_config.causal_temperature = runtime_config.graph_causal_temperature();
         let extract_temperature_resolution = llm::resolve_temperature(
             llm_configs.retain(),
             Some(extraction_config.temperature),
@@ -271,8 +280,6 @@ impl RuntimeBuilder {
             extract_temperature_override,
             &extract_temperature_resolution,
         )?;
-        let resolve_temperature_override = llm::temperature_from_env("RETAIN_RESOLVE_TEMPERATURE")?;
-        let resolve_temperature = resolver::resolve_temperature_from_env()?;
         let resolve_temperature_resolution = llm::resolve_temperature(
             llm_configs.retain(),
             Some(resolve_temperature),
@@ -289,7 +296,6 @@ impl RuntimeBuilder {
             resolve_temperature_override,
             &resolve_temperature_resolution,
         )?;
-        let graph_temperature_override = llm::temperature_from_env("RETAIN_GRAPH_TEMPERATURE")?;
         let graph_temperature_resolution = llm::resolve_temperature(
             llm_configs.retain(),
             Some(graph_config.causal_temperature),
@@ -306,9 +312,6 @@ impl RuntimeBuilder {
             graph_temperature_override,
             &graph_temperature_resolution,
         )?;
-        let consolidate_temperature_override =
-            llm::temperature_from_env("CONSOLIDATE_TEMPERATURE")?;
-        let consolidation_config: ConsolidationConfig = observation::config_from_env()?;
         let consolidate_temperature_resolution = llm::resolve_temperature(
             llm_configs.reflect(),
             Some(consolidation_config.temperature),
@@ -325,9 +328,6 @@ impl RuntimeBuilder {
             consolidate_temperature_override,
             &consolidate_temperature_resolution,
         )?;
-        let opinion_merge_temperature_override =
-            llm::temperature_from_env("OPINION_MERGE_TEMPERATURE")?;
-        let opinion_merge_config = opinion_merger::config_from_env()?;
         let opinion_merge_temperature_resolution = llm::resolve_temperature(
             llm_configs.reflect(),
             Some(opinion_merge_config.temperature),
@@ -344,8 +344,6 @@ impl RuntimeBuilder {
             opinion_merge_temperature_override,
             &opinion_merge_temperature_resolution,
         )?;
-        let reflect_temperature_override = llm::temperature_from_env("REFLECT_TEMPERATURE")?;
-        let reflect_temperature = crate::reflect::reflect_temperature_from_env()?;
         let reflect_temperature_resolution = llm::resolve_temperature(
             llm_configs.reflect(),
             Some(reflect_temperature),

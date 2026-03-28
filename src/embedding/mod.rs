@@ -56,13 +56,15 @@ impl EmbeddingConfig {
     /// Read embedding configuration from environment.
     pub fn from_env() -> std::result::Result<Self, ConfigError> {
         let provider = match std::env::var("EMBEDDING_PROVIDER")
-            .map_err(|e| ConfigError::internal(format!("EMBEDDING_PROVIDER must be set: {e}")))?
+            .map_err(|e| {
+                ConfigError::configuration(format!("EMBEDDING_PROVIDER must be set: {e}"))
+            })?
             .as_str()
         {
             "openai" => EmbeddingProvider::OpenAi,
             "local" => EmbeddingProvider::Local,
             other => {
-                return Err(ConfigError::internal(format!(
+                return Err(ConfigError::configuration(format!(
                     "unknown EMBEDDING_PROVIDER: {other}"
                 )));
             }
