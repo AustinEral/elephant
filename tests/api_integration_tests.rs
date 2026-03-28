@@ -16,6 +16,7 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::ImageExt;
 use tower::util::ServiceExt;
 
+use elephant::config::ServerConfig;
 use elephant::consolidation::{DefaultConsolidator, DefaultOpinionMerger};
 use elephant::embedding::mock::MockEmbeddings;
 use elephant::llm::LlmClient;
@@ -30,10 +31,11 @@ use elephant::recall::temporal::TemporalRetriever;
 use elephant::reflect::DefaultReflectPipeline;
 use elephant::retain::DefaultRetainPipeline;
 use elephant::retain::chunker::SimpleChunker;
-use elephant::retain::extractor::LlmFactExtractor;
+use elephant::retain::extractor::{ExtractionConfig, LlmFactExtractor};
 use elephant::retain::graph_builder::{DefaultGraphBuilder, GraphConfig};
 use elephant::retain::resolver::LayeredEntityResolver;
-use elephant::server::{AppState, router};
+use elephant::runtime::{ElephantRuntime, RuntimeInfo, RuntimePromptHashes, RuntimeTuning};
+use elephant::server::{AppHandle, router};
 use elephant::storage::pg::PgMemoryStore;
 use elephant::types::*;
 
@@ -97,7 +99,10 @@ impl TestHarness {
         let retain_llm_graph: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new());
 
         // Wire the shared MockLlmClient for extraction (where we push responses)
-        let extractor = Box::new(LlmFactExtractor::new(Arc::new(self.llm.as_ref().clone())));
+        let extractor = Box::new(LlmFactExtractor::new(
+            Arc::new(self.llm.as_ref().clone()),
+            ExtractionConfig::default(),
+        ));
         let resolver = Box::new(LayeredEntityResolver::new(
             Box::new(MockEmbeddings::new(EMBED_DIMS)),
             retain_llm_resolver,
@@ -156,6 +161,7 @@ impl TestHarness {
             Box::new(EstimateTokenizer),
             60.0,
             50,
+            4_096,
         ));
 
         // Reflect pipeline
@@ -179,12 +185,14 @@ impl TestHarness {
             self.llm.clone() as Arc<dyn elephant::LlmClient>,
             self.embeddings.clone() as Arc<dyn elephant::EmbeddingClient>,
         ));
-        let state = AppState {
-            info: elephant::server::ServerInfo {
+        let runtime = ElephantRuntime {
+            info: RuntimeInfo {
                 retain_model: "test".into(),
                 reflect_model: "test".into(),
                 embedding_model: "test".into(),
                 reranker_model: "none".into(),
+                tuning: RuntimeTuning::default(),
+                prompt_hashes: RuntimePromptHashes::default(),
             },
             retain,
             recall,
@@ -194,8 +202,10 @@ impl TestHarness {
             store: self.store.clone(),
             embeddings: self.embeddings.clone(),
         };
+        let app = AppHandle::new(&runtime, &ServerConfig::from_env().expect("server config"))
+            .expect("app handle");
 
-        router(state)
+        router(app)
     }
 }
 

@@ -13,53 +13,9 @@ pub use crate::app::{
     AppModelsInfo as ServerModelsInfo, AppReflectInfo as ServerReflectInfo,
     AppRetrievalInfo as ServerRetrievalInfo,
 };
-use crate::config::ServerConfig;
-use crate::runtime::ElephantRuntime;
-
-/// Shared application state holding all pipeline instances.
-#[derive(Clone)]
-pub struct AppState {
-    pub(crate) app: AppHandle,
-}
-
-impl TryFrom<&ElephantRuntime> for AppState {
-    type Error = crate::error::Error;
-
-    fn try_from(runtime: &ElephantRuntime) -> std::result::Result<Self, Self::Error> {
-        let server_config = ServerConfig::from_env()?;
-        Self::new(runtime, &server_config)
-    }
-}
-
-impl AppState {
-    /// Build application state from a fully constructed runtime.
-    ///
-    /// This is the main server entry point because it can wrap the retain
-    /// pipeline with server-only behaviors such as background consolidation
-    /// without changing the shared runtime used by benchmarks.
-    pub fn new(
-        runtime: &ElephantRuntime,
-        server_config: &ServerConfig,
-    ) -> crate::error::Result<Self> {
-        Ok(Self {
-            app: AppHandle::new(runtime, server_config)?,
-        })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn from_parts(app: AppHandle) -> Self {
-        Self { app }
-    }
-}
-
-impl From<AppState> for AppHandle {
-    fn from(state: AppState) -> Self {
-        state.app
-    }
-}
 
 /// Build the Axum router with all routes.
-pub fn router(state: AppState) -> Router {
+pub fn router(app: AppHandle) -> Router {
     Router::new()
         .route("/v1/info", get(handlers::server_info))
         .route(
@@ -81,7 +37,7 @@ pub fn router(state: AppState) -> Router {
             post(handlers::merge_opinions),
         )
         .layer(CorsLayer::permissive())
-        .with_state(state)
+        .with_state(app)
 }
 
 #[cfg(test)]
@@ -236,7 +192,7 @@ mod tests {
 
     fn test_app() -> (Router, Arc<MockMemoryStore>) {
         let store = Arc::new(MockMemoryStore::new());
-        let state = AppState::from_parts(AppHandle::from_parts(
+        let app = AppHandle::from_parts(
             test_server_info(),
             Arc::new(MockRetainPipeline {
                 store: store.clone(),
@@ -247,8 +203,8 @@ mod tests {
             Arc::new(MockOpinionMerger),
             store.clone(),
             Arc::new(MockEmbeddings::new(384)),
-        ));
-        (router(state), store)
+        );
+        (router(app), store)
     }
 
     fn test_app_with_recall_capture() -> (
@@ -258,7 +214,7 @@ mod tests {
     ) {
         let store = Arc::new(MockMemoryStore::new());
         let captured = Arc::new(Mutex::new(None));
-        let state = AppState::from_parts(AppHandle::from_parts(
+        let app = AppHandle::from_parts(
             test_server_info(),
             Arc::new(MockRetainPipeline {
                 store: store.clone(),
@@ -271,8 +227,8 @@ mod tests {
             Arc::new(MockOpinionMerger),
             store.clone(),
             Arc::new(MockEmbeddings::new(384)),
-        ));
-        (router(state), store, captured)
+        );
+        (router(app), store, captured)
     }
 
     async fn json_body(resp: axum::response::Response) -> Value {
@@ -365,7 +321,7 @@ mod tests {
             }),
         );
 
-        let app2 = router(AppState::from_parts(AppHandle::from_parts(
+        let app2 = router(AppHandle::from_parts(
             test_server_info(),
             Arc::new(MockRetainPipeline {
                 store: store.clone(),
@@ -376,7 +332,7 @@ mod tests {
             Arc::new(MockOpinionMerger),
             store.clone(),
             Arc::new(MockEmbeddings::new(384)),
-        )));
+        ));
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -602,7 +558,7 @@ mod tests {
 
         // Build a fresh app since oneshot consumes the router
         let make_app = || {
-            router(AppState::from_parts(AppHandle::from_parts(
+            router(AppHandle::from_parts(
                 test_server_info(),
                 Arc::new(MockRetainPipeline {
                     store: store.clone(),
@@ -613,7 +569,7 @@ mod tests {
                 Arc::new(MockOpinionMerger),
                 store.clone(),
                 Arc::new(MockEmbeddings::new(384)),
-            )))
+            ))
         };
 
         // Consolidate

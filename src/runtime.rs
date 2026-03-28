@@ -199,37 +199,6 @@ pub struct ElephantRuntime {
     pub embeddings: Arc<dyn EmbeddingClient>,
 }
 
-/// Build options for runtime construction.
-#[derive(Default)]
-pub struct BuildRuntimeOptions {
-    /// Optional metrics collector for stage-aware metering.
-    pub metrics: Option<Arc<MetricsCollector>>,
-    /// Maximum Postgres pool connections. Defaults to 10 if not set.
-    pub max_pool_connections: Option<u32>,
-    /// Optional benchmark determinism requirement.
-    pub determinism_requirement: Option<DeterminismRequirement>,
-}
-
-impl BuildRuntimeOptions {
-    fn apply_to_builder(self, builder: RuntimeBuilder) -> RuntimeBuilder {
-        let builder = if let Some(metrics) = self.metrics {
-            builder.metrics(metrics)
-        } else {
-            builder
-        };
-        let builder = if let Some(max_pool_connections) = self.max_pool_connections {
-            builder.max_pool_connections(max_pool_connections)
-        } else {
-            builder
-        };
-        if let Some(requirement) = self.determinism_requirement {
-            builder.determinism_requirement(requirement)
-        } else {
-            builder
-        }
-    }
-}
-
 /// Builder for a fully constructed Elephant runtime.
 pub struct RuntimeBuilder {
     config: RuntimeConfig,
@@ -716,15 +685,6 @@ fn runtime_prompt_hashes() -> RuntimePromptHashes {
         consolidate: fnv1a64_hex(observation::CONSOLIDATE_PROMPT),
         opinion_merge: fnv1a64_hex(opinion_merger::MERGE_PROMPT),
     }
-}
-
-/// Build the full Elephant runtime from environment variables.
-pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<ElephantRuntime> {
-    let config = RuntimeConfig::from_env()?;
-    options
-        .apply_to_builder(RuntimeBuilder::new(config))
-        .build()
-        .await
 }
 
 #[cfg(test)]

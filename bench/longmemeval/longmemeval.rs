@@ -26,11 +26,12 @@ use common::io::{append_jsonl, atomic_write_json, sidecar_path};
 use dataset::load_dataset;
 use ingest::{ConsolidationMode, IngestConfig, IngestFormat};
 
+use elephant::bench_support::BenchHarnessBuilder;
 use elephant::consolidation::ConsolidationProgress;
 use elephant::metrics::{LlmStage, MetricsCollector, StageUsage, with_scoped_collector};
 use elephant::runtime::{
-    BuildRuntimeOptions, ElephantRuntime, RuntimePromptHashes as ElephantPromptHashes,
-    RuntimeTuning as ElephantRuntimeTuning, build_runtime_from_env,
+    ElephantRuntime, RuntimePromptHashes as ElephantPromptHashes,
+    RuntimeTuning as ElephantRuntimeTuning,
 };
 use elephant::types::{NetworkType, ReflectQuery};
 
@@ -1922,23 +1923,21 @@ async fn main() {
 
     // Build runtime with MetricsCollector
     let metrics = Arc::new(MetricsCollector::new());
-    let determinism_requirement = common::benchmark_determinism_requirement_from_env()
-        .unwrap_or_else(|message| {
-            eprintln!("{message}");
+    let harness = BenchHarnessBuilder::from_env()
+        .unwrap_or_else(|err| {
+            eprintln!("failed to load benchmark runtime config: {err}");
+            std::process::exit(1);
+        })
+        .metrics(metrics.clone())
+        .max_pool_connections(std::cmp::min(config.instance_jobs as u32 * 8, 80))
+        .build()
+        .await
+        .unwrap_or_else(|err| {
+            eprintln!("failed to build runtime: {err}");
             std::process::exit(1);
         });
-    let runtime = Arc::new(
-        build_runtime_from_env(BuildRuntimeOptions {
-            metrics: Some(metrics.clone()),
-            max_pool_connections: Some(std::cmp::min(config.instance_jobs as u32 * 8, 80)),
-            determinism_requirement,
-        })
-        .await
-        .unwrap_or_else(|e| {
-            eprintln!("failed to build runtime: {e}");
-            std::process::exit(1);
-        }),
-    );
+    let determinism_requirement = harness.determinism_requirement();
+    let runtime = Arc::new(harness.into_runtime());
 
     // Print config summary
     eprintln!("longmemeval-bench {}", command.as_str());

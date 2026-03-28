@@ -2,10 +2,10 @@
 
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
-use elephant::config::{LogFormat, ServerConfig};
+use elephant::config::{LogFormat, RuntimeConfig, ServerConfig};
 use elephant::mcp::ElephantMcp;
-use elephant::runtime::{BuildRuntimeOptions, build_runtime_from_env};
-use elephant::server::{self, AppState};
+use elephant::runtime::RuntimeBuilder;
+use elephant::server::{self, AppHandle};
 use rmcp::transport::StreamableHttpService;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 
@@ -27,17 +27,19 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             .init();
     }
 
-    let runtime = build_runtime_from_env(BuildRuntimeOptions::default()).await?;
-    let state = AppState::new(&runtime, &server_config)?;
+    let runtime = RuntimeBuilder::new(RuntimeConfig::from_env()?)
+        .build()
+        .await?;
+    let app = AppHandle::new(&runtime, &server_config)?;
 
-    let mcp_state = state.clone();
+    let mcp_app = app.clone();
     let mcp_service = StreamableHttpService::new(
-        move || Ok(ElephantMcp::new(mcp_state.clone())),
+        move || Ok(ElephantMcp::new(mcp_app.clone())),
         LocalSessionManager::default().into(),
         Default::default(),
     );
 
-    let app = server::router(state).nest_service("/mcp", mcp_service);
+    let app = server::router(app).nest_service("/mcp", mcp_service);
     let listener = tokio::net::TcpListener::bind(server_config.listen_addr()).await?;
     println!("Listening on {}", server_config.listen_addr());
     println!("  REST API: http://{}/v1/", server_config.listen_addr());

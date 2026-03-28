@@ -430,8 +430,8 @@ mod tests {
     use crate::reflect::ReflectPipeline;
     use crate::retain::RetainPipeline;
     use crate::server::{
-        AppHandle, AppState, ServerBackgroundConsolidationInfo, ServerConsolidationRuntimeInfo,
-        ServerInfo, ServerModelsInfo, ServerReflectInfo, ServerRetrievalInfo,
+        AppHandle, ServerBackgroundConsolidationInfo, ServerConsolidationRuntimeInfo, ServerInfo,
+        ServerModelsInfo, ServerReflectInfo, ServerRetrievalInfo,
     };
     use crate::storage::{MemoryStore, mock::MockMemoryStore};
     use crate::types::{
@@ -586,8 +586,8 @@ mod tests {
         recall_query: Arc<Mutex<Option<RecallQuery>>>,
         reflect_query: Arc<Mutex<Option<ReflectQuery>>>,
         store: Arc<MockMemoryStore>,
-    ) -> AppState {
-        AppState::from_parts(AppHandle::from_parts(
+    ) -> AppHandle {
+        AppHandle::from_parts(
             ServerInfo {
                 version: env!("CARGO_PKG_VERSION").into(),
                 models: ServerModelsInfo {
@@ -630,7 +630,7 @@ mod tests {
             Arc::new(NoOpOpinionMerger),
             store,
             Arc::new(MockEmbeddings::new(384)),
-        ))
+        )
     }
 
     #[tokio::test]

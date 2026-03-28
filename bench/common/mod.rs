@@ -3,8 +3,6 @@ pub mod fingerprint;
 pub mod io;
 pub mod judge;
 
-use std::env;
-
 use elephant::config::BenchConfig;
 use elephant::llm::DeterminismRequirement;
 use elephant::llm::ReasoningEffort;
@@ -57,6 +55,7 @@ pub fn format_determinism_requirement(requirement: DeterminismRequirement) -> &'
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
     use std::sync::{Mutex, OnceLock};
 
     fn env_lock() -> &'static Mutex<()> {
