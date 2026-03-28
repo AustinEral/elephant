@@ -16,7 +16,6 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::ImageExt;
 use tower::util::ServiceExt;
 
-use elephant::config::ServerConfig;
 use elephant::consolidation::{DefaultConsolidator, DefaultOpinionMerger};
 use elephant::embedding::mock::MockEmbeddings;
 use elephant::llm::LlmClient;
@@ -34,10 +33,12 @@ use elephant::retain::chunker::SimpleChunker;
 use elephant::retain::extractor::{ExtractionConfig, LlmFactExtractor};
 use elephant::retain::graph_builder::{DefaultGraphBuilder, GraphConfig};
 use elephant::retain::resolver::LayeredEntityResolver;
-use elephant::runtime::{ElephantRuntime, RuntimeInfo, RuntimePromptHashes, RuntimeTuning};
-use elephant::server::{AppHandle, router};
 use elephant::storage::pg::PgMemoryStore;
 use elephant::types::*;
+use elephant::{
+    AppHandle, ElephantRuntime, RuntimeInfo, RuntimePromptHashes, RuntimeTuning, ServerConfig,
+    router,
+};
 
 const EMBED_DIMS: usize = 384;
 

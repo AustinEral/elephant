@@ -26,18 +26,16 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio::task::JoinSet;
 
-use elephant::MemoryStore;
-use elephant::bench_support::BenchHarnessBuilder;
 use elephant::consolidation::ConsolidationProgress;
 use elephant::llm::LlmClient;
 use elephant::metrics::{LlmStage, MetricsCollector, StageUsage, with_scoped_collector};
-use elephant::runtime::{
-    ElephantRuntime, RuntimePromptHashes as ElephantPromptHashes,
-    RuntimeTuning as ElephantRuntimeTuning,
-};
 use elephant::types::{
     BankId, Disposition, MemoryBank, NetworkType, ReflectDoneTrace, ReflectQuery, RetainInput,
     RetrievalSource, TurnId,
+};
+use elephant::{
+    BenchHarnessBuilder, ElephantRuntime, MemoryStore, RuntimePromptHashes as ElephantPromptHashes,
+    RuntimeTuning as ElephantRuntimeTuning,
 };
 
 // --- LoCoMo dataset types ---

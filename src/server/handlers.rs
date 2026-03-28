@@ -42,10 +42,6 @@ pub struct DispositionInput {
     pub bias_strength: f32,
 }
 
-/// Request body for the consolidate endpoint (empty — consolidates all unconsolidated facts).
-#[derive(Debug, Deserialize)]
-pub struct ConsolidateRequest {}
-
 // --- Helpers ---
 
 fn parse_bank_id(id: &str) -> Result<BankId> {

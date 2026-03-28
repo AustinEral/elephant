@@ -2,10 +2,9 @@
 
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
-use elephant::config::{LogFormat, RuntimeConfig, ServerConfig};
-use elephant::mcp::ElephantMcp;
-use elephant::runtime::RuntimeBuilder;
-use elephant::server::{self, AppHandle};
+use elephant::{
+    AppHandle, ElephantMcp, LogFormat, RuntimeBuilder, RuntimeConfig, ServerConfig, router,
+};
 use rmcp::transport::StreamableHttpService;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 
@@ -39,7 +38,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         Default::default(),
     );
 
-    let app = server::router(app).nest_service("/mcp", mcp_service);
+    let app = router(app).nest_service("/mcp", mcp_service);
     let listener = tokio::net::TcpListener::bind(server_config.listen_addr()).await?;
     println!("Listening on {}", server_config.listen_addr());
     println!("  REST API: http://{}/v1/", server_config.listen_addr());

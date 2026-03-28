@@ -26,14 +26,13 @@ use common::io::{append_jsonl, atomic_write_json, sidecar_path};
 use dataset::load_dataset;
 use ingest::{ConsolidationMode, IngestConfig, IngestFormat};
 
-use elephant::bench_support::BenchHarnessBuilder;
 use elephant::consolidation::ConsolidationProgress;
 use elephant::metrics::{LlmStage, MetricsCollector, StageUsage, with_scoped_collector};
-use elephant::runtime::{
-    ElephantRuntime, RuntimePromptHashes as ElephantPromptHashes,
+use elephant::types::{NetworkType, ReflectQuery};
+use elephant::{
+    BenchHarnessBuilder, ElephantRuntime, RuntimePromptHashes as ElephantPromptHashes,
     RuntimeTuning as ElephantRuntimeTuning,
 };
-use elephant::types::{NetworkType, ReflectQuery};
 
 // --- Judge prompts ---
 

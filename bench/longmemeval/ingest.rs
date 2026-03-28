@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tracing::warn;
 
+use elephant::ElephantRuntime;
 use elephant::error::Result;
 use elephant::metrics::{LlmStage, StageUsage};
-use elephant::runtime::ElephantRuntime;
 use elephant::types::id::BankId;
 use elephant::types::network::NetworkType;
 use elephant::types::{Disposition, FactFilter, MemoryBank, RetainInput};
