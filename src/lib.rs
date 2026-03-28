@@ -2,7 +2,6 @@
 //! Elephant — a Rust implementation of the Hindsight memory architecture.
 
 mod app;
-mod bench_support;
 mod config;
 pub mod consolidation;
 pub mod embedding;
@@ -37,10 +36,3 @@ pub use server::{
 };
 pub use storage::MemoryStore;
 pub use types::*;
-
-/// Hidden transitional bench-only exports kept for in-repo binaries during the seam migration.
-#[doc(hidden)]
-pub mod __bench {
-    pub use crate::bench_support::{BenchHarness, BenchHarnessBuilder};
-    pub use crate::config::{BenchConfig, BenchJudgeConfig};
-}

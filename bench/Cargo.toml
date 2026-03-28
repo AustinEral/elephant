@@ -1,0 +1,44 @@
+[package]
+name = "elephant-bench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Internal benchmark harnesses and support for Elephant."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/AustinEral/elephant"
+
+[dependencies]
+elephant = { path = ".." }
+chrono = { version = "0.4.44", features = ["serde"] }
+dotenvy = "0.15"
+flate2 = "1.1.2"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+sqlx = { version = "0.8.6", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate"] }
+tabled = { version = "0.20.0", features = ["ansi"] }
+thiserror = "2.0.18"
+tokio = { version = "1.49.0", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+ulid = { version = "1.2.1", features = ["serde", "uuid"] }
+uuid = { version = "1.21.0", features = ["v4"] }
+
+[[bin]]
+name = "locomo-bench"
+path = "locomo/locomo.rs"
+
+[[bin]]
+name = "view"
+path = "view.rs"
+
+[[bin]]
+name = "longmemeval-bench"
+path = "longmemeval/longmemeval.rs"
+
+[[bin]]
+name = "longmemeval-view"
+path = "longmemeval/view.rs"
+
+[[bin]]
+name = "reset-consolidation"
+path = "reset_consolidation.rs"
