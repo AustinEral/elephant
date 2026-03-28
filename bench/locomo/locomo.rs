@@ -27,12 +27,13 @@ use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio::task::JoinSet;
 
 use elephant::MemoryStore;
+use elephant::bench_support::BenchHarnessBuilder;
 use elephant::consolidation::ConsolidationProgress;
 use elephant::llm::LlmClient;
 use elephant::metrics::{LlmStage, MetricsCollector, StageUsage, with_scoped_collector};
 use elephant::runtime::{
-    BuildRuntimeOptions, ElephantRuntime, RuntimePromptHashes as ElephantPromptHashes,
-    RuntimeTuning as ElephantRuntimeTuning, build_runtime_from_env,
+    ElephantRuntime, RuntimePromptHashes as ElephantPromptHashes,
+    RuntimeTuning as ElephantRuntimeTuning,
 };
 use elephant::types::{
     BankId, Disposition, MemoryBank, NetworkType, ReflectDoneTrace, ReflectQuery, RetainInput,
@@ -3824,20 +3825,20 @@ async fn main() {
 
     let metrics = Arc::new(MetricsCollector::new());
     metrics.extend_snapshot(&existing_stage_metrics);
-    let determinism_requirement = common::benchmark_determinism_requirement_from_env()
-        .unwrap_or_else(|message| {
-            eprintln!("{message}");
+    let harness = BenchHarnessBuilder::from_env()
+        .unwrap_or_else(|err| {
+            eprintln!("failed to load benchmark runtime config: {err}");
+            std::process::exit(1);
+        })
+        .metrics(metrics.clone())
+        .build()
+        .await
+        .unwrap_or_else(|err| {
+            eprintln!("failed to build Elephant runtime: {err}");
             std::process::exit(1);
         });
-    let runtime = Arc::new(
-        build_runtime_from_env(BuildRuntimeOptions {
-            metrics: Some(metrics.clone()),
-            max_pool_connections: None,
-            determinism_requirement,
-        })
-        .await
-        .expect("failed to build Elephant runtime"),
-    );
+    let determinism_requirement = harness.determinism_requirement();
+    let runtime = Arc::new(harness.into_runtime());
 
     let judge = build_judge_client(metrics.clone(), config.judge_model.clone());
     let judge_label = judge_label(&config.judge_model);

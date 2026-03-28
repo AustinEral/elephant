@@ -3,6 +3,8 @@
 
 mod app;
 #[doc(hidden)]
+pub mod bench_support;
+#[doc(hidden)]
 pub mod config;
 pub mod consolidation;
 pub mod embedding;
