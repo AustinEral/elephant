@@ -1,167 +1,60 @@
 //! Axum HTTP server exposing the memory engine API.
 
-mod consolidation;
 pub mod error;
 pub mod handlers;
-
-use std::sync::Arc;
 
 use axum::Router;
 use axum::routing::{get, post};
 use tower_http::cors::CorsLayer;
 
-use crate::consolidation::{Consolidator, OpinionMerger};
-use crate::embedding::EmbeddingClient;
-use crate::recall::RecallPipeline;
-use crate::reflect::ReflectPipeline;
-use crate::retain::RetainPipeline;
+pub use crate::app::{
+    AppBackgroundConsolidationInfo as ServerBackgroundConsolidationInfo,
+    AppConsolidationInfo as ServerConsolidationRuntimeInfo, AppHandle, AppInfo as ServerInfo,
+    AppModelsInfo as ServerModelsInfo, AppReflectInfo as ServerReflectInfo,
+    AppRetrievalInfo as ServerRetrievalInfo,
+};
+use crate::config::ServerConfig;
 use crate::runtime::ElephantRuntime;
-use crate::storage::MemoryStore;
-
-/// Server configuration exposed via `/v1/info`.
-#[derive(Clone, serde::Serialize)]
-pub struct ServerInfo {
-    /// Server binary version.
-    pub version: String,
-    /// Active model configuration.
-    pub models: ServerModelsInfo,
-    /// Active retrieval tuning.
-    pub retrieval: ServerRetrievalInfo,
-    /// Active reflect tuning.
-    pub reflect: ServerReflectInfo,
-    /// Active consolidation tuning.
-    pub consolidation: ServerConsolidationRuntimeInfo,
-    /// Active server-side background consolidation policy.
-    pub server_consolidation: ServerBackgroundConsolidationInfo,
-}
-
-/// Model labels exposed by `/v1/info`.
-#[derive(Clone, serde::Serialize)]
-pub struct ServerModelsInfo {
-    /// The LLM model used for retain (fact extraction).
-    pub retain: String,
-    /// The LLM model used for reflect (synthesis).
-    pub reflect: String,
-    /// The embedding model name.
-    pub embedding: String,
-    /// The reranker model (e.g. "local/ms-marco-MiniLM-L-6-v2", "api/rerank-english-v3.0", or "none").
-    pub reranker: String,
-}
-
-/// Retrieval tuning exposed by `/v1/info`.
-#[derive(Clone, serde::Serialize)]
-pub struct ServerRetrievalInfo {
-    /// Retriever candidate limit per retrieval strategy.
-    pub retriever_limit: usize,
-    /// Maximum number of facts kept before token budgeting.
-    pub max_facts: usize,
-}
-
-/// Reflect tuning exposed by `/v1/info`.
-#[derive(Clone, serde::Serialize)]
-pub struct ServerReflectInfo {
-    /// Reflect iteration cap.
-    pub max_iterations: usize,
-    /// Optional reflect completion cap.
-    pub max_tokens: Option<usize>,
-    /// Whether source lookup is enabled.
-    pub source_lookup_enabled: bool,
-}
-
-/// Consolidation runtime tuning exposed by `/v1/info`.
-#[derive(Clone, serde::Serialize)]
-pub struct ServerConsolidationRuntimeInfo {
-    /// Consolidation batch size.
-    pub batch_size: usize,
-    /// Consolidation completion cap.
-    pub max_tokens: usize,
-    /// Consolidation recall budget.
-    pub recall_budget: usize,
-}
-
-/// Server-side background consolidation policy exposed by `/v1/info`.
-#[derive(Clone, serde::Serialize)]
-pub struct ServerBackgroundConsolidationInfo {
-    /// Whether automatic background consolidation is enabled.
-    pub enabled: bool,
-    /// Minimum unconsolidated world/experience facts before scheduling.
-    pub min_facts: usize,
-    /// Minimum delay between attempts per bank.
-    pub cooldown_secs: u64,
-    /// Whether opinion merge runs after consolidation.
-    pub merge_opinions_after: bool,
-}
 
 /// Shared application state holding all pipeline instances.
 #[derive(Clone)]
 pub struct AppState {
-    /// Server info for the `/v1/info` endpoint.
-    pub info: ServerInfo,
-    /// The retain pipeline.
-    pub retain: Arc<dyn RetainPipeline>,
-    /// The recall pipeline.
-    pub recall: Arc<dyn RecallPipeline>,
-    /// The reflect pipeline.
-    pub reflect: Arc<dyn ReflectPipeline>,
-    /// The observation consolidator.
-    pub consolidator: Arc<dyn Consolidator>,
-    /// The opinion merger.
-    pub opinion_merger: Arc<dyn OpinionMerger>,
-    /// The backing memory store.
-    pub store: Arc<dyn MemoryStore>,
-    /// The embedding client (for reading model info at bank creation).
-    pub embeddings: Arc<dyn EmbeddingClient>,
+    pub(crate) app: AppHandle,
 }
 
 impl TryFrom<&ElephantRuntime> for AppState {
     type Error = crate::error::Error;
 
+    fn try_from(runtime: &ElephantRuntime) -> std::result::Result<Self, Self::Error> {
+        let server_config = ServerConfig::from_env()?;
+        Self::new(runtime, &server_config)
+    }
+}
+
+impl AppState {
     /// Build application state from a fully constructed runtime.
     ///
     /// This is the main server entry point because it can wrap the retain
     /// pipeline with server-only behaviors such as background consolidation
     /// without changing the shared runtime used by benchmarks.
-    fn try_from(runtime: &ElephantRuntime) -> std::result::Result<Self, Self::Error> {
-        let server_consolidation_policy = consolidation::ConsolidationPolicy::from_env()?;
+    pub fn new(
+        runtime: &ElephantRuntime,
+        server_config: &ServerConfig,
+    ) -> crate::error::Result<Self> {
         Ok(Self {
-            info: ServerInfo {
-                version: env!("CARGO_PKG_VERSION").into(),
-                models: ServerModelsInfo {
-                    retain: runtime.info.retain_model.clone(),
-                    reflect: runtime.info.reflect_model.clone(),
-                    embedding: runtime.info.embedding_model.clone(),
-                    reranker: runtime.info.reranker_model.clone(),
-                },
-                retrieval: ServerRetrievalInfo {
-                    retriever_limit: runtime.info.tuning.retriever_limit,
-                    max_facts: runtime.info.tuning.max_facts,
-                },
-                reflect: ServerReflectInfo {
-                    max_iterations: runtime.info.tuning.reflect_max_iterations,
-                    max_tokens: runtime.info.tuning.reflect_max_tokens,
-                    source_lookup_enabled: runtime.info.tuning.reflect_enable_source_lookup,
-                },
-                consolidation: ServerConsolidationRuntimeInfo {
-                    batch_size: runtime.info.tuning.consolidation_batch_size,
-                    max_tokens: runtime.info.tuning.consolidation_max_tokens,
-                    recall_budget: runtime.info.tuning.consolidation_recall_budget,
-                },
-                server_consolidation: server_consolidation_policy.to_info(),
-            },
-            retain: consolidation::wrap_retain_pipeline_with_consolidation(
-                runtime.retain.clone(),
-                runtime.store.clone(),
-                runtime.consolidator.clone(),
-                runtime.opinion_merger.clone(),
-                server_consolidation_policy,
-            )?,
-            recall: runtime.recall.clone(),
-            reflect: runtime.reflect.clone(),
-            consolidator: runtime.consolidator.clone(),
-            opinion_merger: runtime.opinion_merger.clone(),
-            store: runtime.store.clone(),
-            embeddings: runtime.embeddings.clone(),
+            app: AppHandle::new(runtime, server_config)?,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_parts(app: AppHandle) -> Self {
+        Self { app }
+    }
+}
+
+impl From<AppState> for AppHandle {
+    fn from(state: AppState) -> Self {
+        state.app
     }
 }
 
@@ -200,9 +93,9 @@ mod tests {
     use crate::recall::RecallPipeline;
     use crate::reflect::ReflectPipeline;
     use crate::retain::RetainPipeline;
-    use crate::storage::mock::MockMemoryStore;
+    use crate::storage::{MemoryStore, mock::MockMemoryStore};
     use crate::types::*;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
     use axum::body::Body;
@@ -343,18 +236,18 @@ mod tests {
 
     fn test_app() -> (Router, Arc<MockMemoryStore>) {
         let store = Arc::new(MockMemoryStore::new());
-        let state = AppState {
-            info: test_server_info(),
-            retain: Arc::new(MockRetainPipeline {
+        let state = AppState::from_parts(AppHandle::from_parts(
+            test_server_info(),
+            Arc::new(MockRetainPipeline {
                 store: store.clone(),
             }),
-            recall: Arc::new(MockRecallPipeline { captured: None }),
-            reflect: Arc::new(MockReflectPipeline),
-            consolidator: Arc::new(MockConsolidator),
-            opinion_merger: Arc::new(MockOpinionMerger),
-            store: store.clone(),
-            embeddings: Arc::new(MockEmbeddings::new(384)),
-        };
+            Arc::new(MockRecallPipeline { captured: None }),
+            Arc::new(MockReflectPipeline),
+            Arc::new(MockConsolidator),
+            Arc::new(MockOpinionMerger),
+            store.clone(),
+            Arc::new(MockEmbeddings::new(384)),
+        ));
         (router(state), store)
     }
 
@@ -365,20 +258,20 @@ mod tests {
     ) {
         let store = Arc::new(MockMemoryStore::new());
         let captured = Arc::new(Mutex::new(None));
-        let state = AppState {
-            info: test_server_info(),
-            retain: Arc::new(MockRetainPipeline {
+        let state = AppState::from_parts(AppHandle::from_parts(
+            test_server_info(),
+            Arc::new(MockRetainPipeline {
                 store: store.clone(),
             }),
-            recall: Arc::new(MockRecallPipeline {
+            Arc::new(MockRecallPipeline {
                 captured: Some(captured.clone()),
             }),
-            reflect: Arc::new(MockReflectPipeline),
-            consolidator: Arc::new(MockConsolidator),
-            opinion_merger: Arc::new(MockOpinionMerger),
-            store: store.clone(),
-            embeddings: Arc::new(MockEmbeddings::new(384)),
-        };
+            Arc::new(MockReflectPipeline),
+            Arc::new(MockConsolidator),
+            Arc::new(MockOpinionMerger),
+            store.clone(),
+            Arc::new(MockEmbeddings::new(384)),
+        ));
         (router(state), store, captured)
     }
 
@@ -472,18 +365,18 @@ mod tests {
             }),
         );
 
-        let app2 = router(AppState {
-            info: test_server_info(),
-            retain: Arc::new(MockRetainPipeline {
+        let app2 = router(AppState::from_parts(AppHandle::from_parts(
+            test_server_info(),
+            Arc::new(MockRetainPipeline {
                 store: store.clone(),
             }),
-            recall: Arc::new(MockRecallPipeline { captured: None }),
-            reflect: Arc::new(MockReflectPipeline),
-            consolidator: Arc::new(MockConsolidator),
-            opinion_merger: Arc::new(MockOpinionMerger),
-            store: store.clone(),
-            embeddings: Arc::new(MockEmbeddings::new(384)),
-        });
+            Arc::new(MockRecallPipeline { captured: None }),
+            Arc::new(MockReflectPipeline),
+            Arc::new(MockConsolidator),
+            Arc::new(MockOpinionMerger),
+            store.clone(),
+            Arc::new(MockEmbeddings::new(384)),
+        )));
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -709,18 +602,18 @@ mod tests {
 
         // Build a fresh app since oneshot consumes the router
         let make_app = || {
-            router(AppState {
-                info: test_server_info(),
-                retain: Arc::new(MockRetainPipeline {
+            router(AppState::from_parts(AppHandle::from_parts(
+                test_server_info(),
+                Arc::new(MockRetainPipeline {
                     store: store.clone(),
                 }),
-                recall: Arc::new(MockRecallPipeline { captured: None }),
-                reflect: Arc::new(MockReflectPipeline),
-                consolidator: Arc::new(MockConsolidator),
-                opinion_merger: Arc::new(MockOpinionMerger),
-                store: store.clone(),
-                embeddings: Arc::new(MockEmbeddings::new(384)),
-            })
+                Arc::new(MockRecallPipeline { captured: None }),
+                Arc::new(MockReflectPipeline),
+                Arc::new(MockConsolidator),
+                Arc::new(MockOpinionMerger),
+                store.clone(),
+                Arc::new(MockEmbeddings::new(384)),
+            )))
         };
 
         // Consolidate

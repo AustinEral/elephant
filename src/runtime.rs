@@ -1,10 +1,10 @@
 //! Shared runtime builder for the API server and in-process benchmarks.
 
-use std::env;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::RuntimeConfig;
 use crate::consolidation::observation;
 use crate::consolidation::opinion_merger;
 use crate::consolidation::{ConsolidationConfig, DefaultConsolidator, DefaultOpinionMerger};
@@ -210,8 +210,403 @@ pub struct BuildRuntimeOptions {
     pub determinism_requirement: Option<DeterminismRequirement>,
 }
 
-fn env_required(name: &str) -> Result<String> {
-    env::var(name).map_err(|e| Error::Configuration(format!("{name} must be set: {e}")))
+impl BuildRuntimeOptions {
+    fn apply_to_builder(self, builder: RuntimeBuilder) -> RuntimeBuilder {
+        let builder = if let Some(metrics) = self.metrics {
+            builder.metrics(metrics)
+        } else {
+            builder
+        };
+        let builder = if let Some(max_pool_connections) = self.max_pool_connections {
+            builder.max_pool_connections(max_pool_connections)
+        } else {
+            builder
+        };
+        if let Some(requirement) = self.determinism_requirement {
+            builder.determinism_requirement(requirement)
+        } else {
+            builder
+        }
+    }
+}
+
+/// Builder for a fully constructed Elephant runtime.
+pub struct RuntimeBuilder {
+    config: RuntimeConfig,
+    metrics: Option<Arc<MetricsCollector>>,
+    max_pool_connections: Option<u32>,
+    determinism_requirement: Option<DeterminismRequirement>,
+}
+
+impl RuntimeBuilder {
+    /// Create a new runtime builder from validated config.
+    pub fn new(config: RuntimeConfig) -> Self {
+        Self {
+            config,
+            metrics: None,
+            max_pool_connections: None,
+            determinism_requirement: None,
+        }
+    }
+
+    /// Install a stage-aware metrics collector.
+    pub fn metrics(mut self, metrics: Arc<MetricsCollector>) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
+
+    /// Override the maximum Postgres pool connection count.
+    pub fn max_pool_connections(mut self, max_pool_connections: u32) -> Self {
+        self.max_pool_connections = Some(max_pool_connections);
+        self
+    }
+
+    /// Require a minimum determinism level for benchmark-sensitive stages.
+    pub fn determinism_requirement(mut self, requirement: DeterminismRequirement) -> Self {
+        self.determinism_requirement = Some(requirement);
+        self
+    }
+
+    /// Build the full runtime.
+    pub async fn build(self) -> Result<ElephantRuntime> {
+        let runtime_config = self.config;
+        let llm_configs = runtime_config.llm();
+        let emb_config = runtime_config.embedding();
+        let reranker_config = runtime_config.reranker();
+        let reflect_config = runtime_config.reflect();
+        let retrieval_config = runtime_config.retrieval();
+        let dedup_threshold = runtime_config.dedup_threshold();
+        let chunk_config = ChunkConfig {
+            max_tokens: 512,
+            overlap_tokens: 64,
+            preserve_turns: true,
+        };
+        let mut graph_config = GraphConfig::default();
+        graph_config.causal_temperature = graph_builder::causal_temperature_from_env()?;
+        let reasoning_effort = *ReasoningEffortConfig::current()?;
+        let extract_temperature_override = llm::temperature_from_env("RETAIN_EXTRACT_TEMPERATURE")?;
+        let extraction_config = extractor::config_from_env()?;
+        let extract_temperature_resolution = llm::resolve_temperature(
+            llm_configs.retain(),
+            Some(extraction_config.temperature),
+            reasoning_effort.retain_extract,
+        );
+        let extract_determinism = llm::assess_determinism(
+            llm_configs.retain(),
+            Some(extraction_config.temperature),
+            reasoning_effort.retain_extract,
+        );
+        validate_explicit_temperature_override(
+            "retain extraction",
+            "RETAIN_EXTRACT_TEMPERATURE",
+            extract_temperature_override,
+            &extract_temperature_resolution,
+        )?;
+        let resolve_temperature_override = llm::temperature_from_env("RETAIN_RESOLVE_TEMPERATURE")?;
+        let resolve_temperature = resolver::resolve_temperature_from_env()?;
+        let resolve_temperature_resolution = llm::resolve_temperature(
+            llm_configs.retain(),
+            Some(resolve_temperature),
+            reasoning_effort.retain_resolve,
+        );
+        let resolve_determinism = llm::assess_determinism(
+            llm_configs.retain(),
+            Some(resolve_temperature),
+            reasoning_effort.retain_resolve,
+        );
+        validate_explicit_temperature_override(
+            "retain entity resolution",
+            "RETAIN_RESOLVE_TEMPERATURE",
+            resolve_temperature_override,
+            &resolve_temperature_resolution,
+        )?;
+        let graph_temperature_override = llm::temperature_from_env("RETAIN_GRAPH_TEMPERATURE")?;
+        let graph_temperature_resolution = llm::resolve_temperature(
+            llm_configs.retain(),
+            Some(graph_config.causal_temperature),
+            reasoning_effort.retain_graph,
+        );
+        let graph_determinism = llm::assess_determinism(
+            llm_configs.retain(),
+            Some(graph_config.causal_temperature),
+            reasoning_effort.retain_graph,
+        );
+        validate_explicit_temperature_override(
+            "retain graph building",
+            "RETAIN_GRAPH_TEMPERATURE",
+            graph_temperature_override,
+            &graph_temperature_resolution,
+        )?;
+        let consolidate_temperature_override =
+            llm::temperature_from_env("CONSOLIDATE_TEMPERATURE")?;
+        let consolidation_config: ConsolidationConfig = observation::config_from_env()?;
+        let consolidate_temperature_resolution = llm::resolve_temperature(
+            llm_configs.reflect(),
+            Some(consolidation_config.temperature),
+            reasoning_effort.consolidate,
+        );
+        let consolidate_determinism = llm::assess_determinism(
+            llm_configs.reflect(),
+            Some(consolidation_config.temperature),
+            reasoning_effort.consolidate,
+        );
+        validate_explicit_temperature_override(
+            "consolidation",
+            "CONSOLIDATE_TEMPERATURE",
+            consolidate_temperature_override,
+            &consolidate_temperature_resolution,
+        )?;
+        let opinion_merge_temperature_override =
+            llm::temperature_from_env("OPINION_MERGE_TEMPERATURE")?;
+        let opinion_merge_config = opinion_merger::config_from_env()?;
+        let opinion_merge_temperature_resolution = llm::resolve_temperature(
+            llm_configs.reflect(),
+            Some(opinion_merge_config.temperature),
+            reasoning_effort.opinion_merge,
+        );
+        let opinion_merge_determinism = llm::assess_determinism(
+            llm_configs.reflect(),
+            Some(opinion_merge_config.temperature),
+            reasoning_effort.opinion_merge,
+        );
+        validate_explicit_temperature_override(
+            "opinion merge",
+            "OPINION_MERGE_TEMPERATURE",
+            opinion_merge_temperature_override,
+            &opinion_merge_temperature_resolution,
+        )?;
+        let reflect_temperature_override = llm::temperature_from_env("REFLECT_TEMPERATURE")?;
+        let reflect_temperature = crate::reflect::reflect_temperature_from_env()?;
+        let reflect_temperature_resolution = llm::resolve_temperature(
+            llm_configs.reflect(),
+            Some(reflect_temperature),
+            reasoning_effort.reflect,
+        );
+        let reflect_determinism = llm::assess_determinism(
+            llm_configs.reflect(),
+            Some(reflect_temperature),
+            reasoning_effort.reflect,
+        );
+        validate_explicit_temperature_override(
+            "reflect",
+            "REFLECT_TEMPERATURE",
+            reflect_temperature_override,
+            &reflect_temperature_resolution,
+        )?;
+        if let Some(requirement) = self.determinism_requirement {
+            validate_determinism_requirement(
+                "retain extraction",
+                requirement,
+                &extract_determinism,
+            )?;
+            validate_determinism_requirement(
+                "retain entity resolution",
+                requirement,
+                &resolve_determinism,
+            )?;
+            validate_determinism_requirement(
+                "retain graph building",
+                requirement,
+                &graph_determinism,
+            )?;
+            validate_determinism_requirement("reflect", requirement, &reflect_determinism)?;
+            validate_determinism_requirement(
+                "consolidation",
+                requirement,
+                &consolidate_determinism,
+            )?;
+            validate_determinism_requirement(
+                "opinion merge",
+                requirement,
+                &opinion_merge_determinism,
+            )?;
+        }
+
+        let max_conns = self.max_pool_connections.unwrap_or(10);
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(max_conns)
+            .connect(runtime_config.database_url())
+            .await?;
+        let store = Arc::new(PgMemoryStore::new(pool.clone()));
+        store.migrate().await?;
+        let embeddings: Arc<dyn EmbeddingClient> = Arc::from(embedding::build_client(emb_config)?);
+
+        let retain = Arc::new(DefaultRetainPipeline::new(
+            Box::new(SimpleChunker),
+            Box::new(LlmFactExtractor::new(
+                stage_llm(
+                    llm_configs.retain(),
+                    LlmStage::RetainExtract,
+                    self.metrics.as_ref(),
+                )?,
+                extraction_config,
+            )),
+            Box::new(LayeredEntityResolver::new_with_temperature(
+                embedding::build_client(emb_config)?,
+                stage_llm(
+                    llm_configs.retain(),
+                    LlmStage::RetainResolve,
+                    self.metrics.as_ref(),
+                )?,
+                resolve_temperature,
+            )),
+            Box::new(DefaultGraphBuilder::new(
+                stage_llm(
+                    llm_configs.retain(),
+                    LlmStage::RetainGraph,
+                    self.metrics.as_ref(),
+                )?,
+                graph_config.clone(),
+            )),
+            Box::new(PgMemoryStore::new(pool.clone())),
+            embedding::build_client(emb_config)?,
+            stage_llm(
+                llm_configs.retain(),
+                LlmStage::RetainOpinion,
+                self.metrics.as_ref(),
+            )?,
+            chunk_config.clone(),
+            dedup_threshold,
+        ));
+
+        let reranker = reranker::build_reranker(reranker_config)?;
+        let retriever_limit = retrieval_config.retriever_limit();
+        let recall_rrf_k = 60.0;
+        let max_facts = retrieval_config.max_facts();
+        let recall = Arc::new(DefaultRecallPipeline::new(
+            Box::new(SemanticRetriever::new(
+                store.clone(),
+                embeddings.clone(),
+                retriever_limit,
+            )),
+            Box::new(KeywordRetriever::new(store.clone(), retriever_limit)),
+            Box::new(GraphRetriever::new(
+                store.clone(),
+                embeddings.clone(),
+                GraphRetrieverConfig::default(),
+            )),
+            Box::new(TemporalRetriever::new(store.clone())),
+            reranker,
+            Box::new(EstimateTokenizer),
+            recall_rrf_k,
+            max_facts,
+            4096,
+        ));
+        let reflect = Arc::new(DefaultReflectPipeline::new_with_limits(
+            recall.clone(),
+            stage_llm(
+                llm_configs.reflect(),
+                LlmStage::Reflect,
+                self.metrics.as_ref(),
+            )?,
+            store.clone(),
+            reflect_config.max_iterations(),
+            reflect_config.max_tokens(),
+            reflect_config.source_limit(),
+            reflect_config.source_max_chars(),
+            reflect_config.enable_source_lookup(),
+            reflect_temperature,
+        ));
+
+        let consolidator = Arc::new(DefaultConsolidator::new(
+            store.clone(),
+            stage_llm(
+                llm_configs.reflect(),
+                LlmStage::Consolidate,
+                self.metrics.as_ref(),
+            )?,
+            embeddings.clone(),
+            recall.clone(),
+            consolidation_config,
+        ));
+        let opinion_merger = Arc::new(DefaultOpinionMerger::new_with_config(
+            store.clone(),
+            stage_llm(
+                llm_configs.reflect(),
+                LlmStage::OpinionMerge,
+                self.metrics.as_ref(),
+            )?,
+            embeddings.clone(),
+            opinion_merge_config,
+        ));
+
+        Ok(ElephantRuntime {
+            info: RuntimeInfo {
+                retain_model: format!(
+                    "{}/{}",
+                    llm_configs.retain().provider().as_str(),
+                    llm_configs.retain().model()
+                ),
+                reflect_model: format!(
+                    "{}/{}",
+                    llm_configs.reflect().provider().as_str(),
+                    llm_configs.reflect().model()
+                ),
+                embedding_model: embedding_label(emb_config),
+                reranker_model: reranker_label(reranker_config),
+                tuning: RuntimeTuning {
+                    chunk_max_tokens: chunk_config.max_tokens,
+                    chunk_overlap_tokens: chunk_config.overlap_tokens,
+                    dedup_threshold,
+                    retriever_limit,
+                    recall_rrf_k,
+                    max_facts,
+                    reflect_max_iterations: reflect_config.max_iterations(),
+                    reflect_max_tokens: reflect_config.max_tokens(),
+                    retain_extract_reasoning_effort: reasoning_effort.retain_extract,
+                    retain_extract_temperature: extraction_config.temperature,
+                    retain_extract_effective_temperature: extract_temperature_resolution
+                        .effective(),
+                    retain_extract_structured_output_max_attempts: extraction_config
+                        .structured_output_max_attempts,
+                    retain_resolve_reasoning_effort: reasoning_effort.retain_resolve,
+                    retain_resolve_temperature: resolve_temperature,
+                    retain_resolve_effective_temperature: resolve_temperature_resolution
+                        .effective(),
+                    retain_graph_reasoning_effort: reasoning_effort.retain_graph,
+                    retain_graph_temperature: graph_config.causal_temperature,
+                    retain_graph_effective_temperature: graph_temperature_resolution.effective(),
+                    reflect_enable_source_lookup: reflect_config.enable_source_lookup(),
+                    reflect_reasoning_effort: reasoning_effort.reflect,
+                    reflect_temperature,
+                    reflect_effective_temperature: reflect_temperature_resolution.effective(),
+                    graph_semantic_threshold: graph_config.semantic_threshold,
+                    graph_temporal_max_days: graph_config.temporal_max_days,
+                    graph_enable_causal: graph_config.enable_causal,
+                    graph_max_causal_checks: graph_builder::MAX_CAUSAL_CHECKS,
+                    consolidation_batch_size: consolidation_config.batch_size,
+                    consolidation_max_tokens: consolidation_config.max_tokens,
+                    consolidation_recall_budget: consolidation_config.recall_budget,
+                    consolidation_structured_output_max_attempts: consolidation_config
+                        .structured_output_max_attempts,
+                    consolidate_temperature: consolidation_config.temperature,
+                    consolidate_effective_temperature: consolidate_temperature_resolution
+                        .effective(),
+                    consolidate_reasoning_effort: reasoning_effort.consolidate,
+                    opinion_merge_temperature: opinion_merge_config.temperature,
+                    opinion_merge_effective_temperature: opinion_merge_temperature_resolution
+                        .effective(),
+                    opinion_merge_reasoning_effort: reasoning_effort.opinion_merge,
+                    determinism: RuntimeDeterminism {
+                        retain_extract: extract_determinism,
+                        retain_resolve: resolve_determinism,
+                        retain_graph: graph_determinism,
+                        reflect: reflect_determinism,
+                        consolidate: consolidate_determinism,
+                        opinion_merge: opinion_merge_determinism,
+                    },
+                },
+                prompt_hashes: runtime_prompt_hashes(),
+            },
+            retain,
+            recall,
+            reflect,
+            consolidator,
+            opinion_merger,
+            store,
+            embeddings,
+        })
+    }
 }
 
 fn validate_explicit_temperature_override(
@@ -325,362 +720,11 @@ fn runtime_prompt_hashes() -> RuntimePromptHashes {
 
 /// Build the full Elephant runtime from environment variables.
 pub async fn build_runtime_from_env(options: BuildRuntimeOptions) -> Result<ElephantRuntime> {
-    let database_url = env_required("DATABASE_URL")?;
-    let llm_configs = llm::runtime_config_from_env()?;
-
-    let dedup_threshold: Option<f32> = match env::var("DEDUP_THRESHOLD").as_deref() {
-        Ok("none") => None,
-        Ok(s) => Some(s.parse().map_err(|_| {
-            Error::Internal(format!(
-                "DEDUP_THRESHOLD must be a float or 'none', got: {s}"
-            ))
-        })?),
-        Err(_) => Some(0.95),
-    };
-    let chunk_config = ChunkConfig {
-        max_tokens: 512,
-        overlap_tokens: 64,
-        preserve_turns: true,
-    };
-    let mut graph_config = GraphConfig::default();
-    graph_config.causal_temperature = graph_builder::causal_temperature_from_env()?;
-    let reasoning_effort = *ReasoningEffortConfig::current()?;
-    let extract_temperature_override = llm::temperature_from_env("RETAIN_EXTRACT_TEMPERATURE")?;
-    let extraction_config = extractor::config_from_env()?;
-    let extract_temperature_resolution = llm::resolve_temperature(
-        llm_configs.retain(),
-        Some(extraction_config.temperature),
-        reasoning_effort.retain_extract,
-    );
-    let extract_determinism = llm::assess_determinism(
-        llm_configs.retain(),
-        Some(extraction_config.temperature),
-        reasoning_effort.retain_extract,
-    );
-    validate_explicit_temperature_override(
-        "retain extraction",
-        "RETAIN_EXTRACT_TEMPERATURE",
-        extract_temperature_override,
-        &extract_temperature_resolution,
-    )?;
-    let resolve_temperature_override = llm::temperature_from_env("RETAIN_RESOLVE_TEMPERATURE")?;
-    let resolve_temperature = resolver::resolve_temperature_from_env()?;
-    let resolve_temperature_resolution = llm::resolve_temperature(
-        llm_configs.retain(),
-        Some(resolve_temperature),
-        reasoning_effort.retain_resolve,
-    );
-    let resolve_determinism = llm::assess_determinism(
-        llm_configs.retain(),
-        Some(resolve_temperature),
-        reasoning_effort.retain_resolve,
-    );
-    validate_explicit_temperature_override(
-        "retain entity resolution",
-        "RETAIN_RESOLVE_TEMPERATURE",
-        resolve_temperature_override,
-        &resolve_temperature_resolution,
-    )?;
-    let graph_temperature_override = llm::temperature_from_env("RETAIN_GRAPH_TEMPERATURE")?;
-    let graph_temperature_resolution = llm::resolve_temperature(
-        llm_configs.retain(),
-        Some(graph_config.causal_temperature),
-        reasoning_effort.retain_graph,
-    );
-    let graph_determinism = llm::assess_determinism(
-        llm_configs.retain(),
-        Some(graph_config.causal_temperature),
-        reasoning_effort.retain_graph,
-    );
-    validate_explicit_temperature_override(
-        "retain graph building",
-        "RETAIN_GRAPH_TEMPERATURE",
-        graph_temperature_override,
-        &graph_temperature_resolution,
-    )?;
-    let consolidate_temperature_override = llm::temperature_from_env("CONSOLIDATE_TEMPERATURE")?;
-    let consolidation_config: ConsolidationConfig = observation::config_from_env()?;
-    let consolidate_temperature_resolution = llm::resolve_temperature(
-        llm_configs.reflect(),
-        Some(consolidation_config.temperature),
-        reasoning_effort.consolidate,
-    );
-    let consolidate_determinism = llm::assess_determinism(
-        llm_configs.reflect(),
-        Some(consolidation_config.temperature),
-        reasoning_effort.consolidate,
-    );
-    validate_explicit_temperature_override(
-        "consolidation",
-        "CONSOLIDATE_TEMPERATURE",
-        consolidate_temperature_override,
-        &consolidate_temperature_resolution,
-    )?;
-    let opinion_merge_temperature_override =
-        llm::temperature_from_env("OPINION_MERGE_TEMPERATURE")?;
-    let opinion_merge_config = opinion_merger::config_from_env()?;
-    let opinion_merge_temperature_resolution = llm::resolve_temperature(
-        llm_configs.reflect(),
-        Some(opinion_merge_config.temperature),
-        reasoning_effort.opinion_merge,
-    );
-    let opinion_merge_determinism = llm::assess_determinism(
-        llm_configs.reflect(),
-        Some(opinion_merge_config.temperature),
-        reasoning_effort.opinion_merge,
-    );
-    validate_explicit_temperature_override(
-        "opinion merge",
-        "OPINION_MERGE_TEMPERATURE",
-        opinion_merge_temperature_override,
-        &opinion_merge_temperature_resolution,
-    )?;
-    let reflect_max_iter: usize = env::var("REFLECT_MAX_ITERATIONS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(8);
-    let reflect_max_tokens = env::var("REFLECT_MAX_TOKENS")
-        .ok()
-        .and_then(|s| s.parse().ok());
-    let reflect_source_limit: usize = env::var("REFLECT_SOURCE_LIMIT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(crate::reflect::DEFAULT_SOURCE_LOOKUP_LIMIT);
-    let reflect_source_max_chars = env::var("REFLECT_SOURCE_MAX_CHARS")
-        .ok()
-        .and_then(|s| s.parse().ok());
-    let reflect_enable_source_lookup = match env::var("REFLECT_ENABLE_SOURCE_LOOKUP") {
-        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
-            "1" | "true" | "yes" | "on" => true,
-            "0" | "false" | "no" | "off" => false,
-            other => {
-                return Err(Error::Internal(format!(
-                    "REFLECT_ENABLE_SOURCE_LOOKUP must be a boolean, got: {other}"
-                )));
-            }
-        },
-        Err(_) => crate::reflect::DEFAULT_ENABLE_SOURCE_LOOKUP,
-    };
-    let reflect_temperature_override = llm::temperature_from_env("REFLECT_TEMPERATURE")?;
-    let reflect_temperature = crate::reflect::reflect_temperature_from_env()?;
-    let reflect_temperature_resolution = llm::resolve_temperature(
-        llm_configs.reflect(),
-        Some(reflect_temperature),
-        reasoning_effort.reflect,
-    );
-    let reflect_determinism = llm::assess_determinism(
-        llm_configs.reflect(),
-        Some(reflect_temperature),
-        reasoning_effort.reflect,
-    );
-    validate_explicit_temperature_override(
-        "reflect",
-        "REFLECT_TEMPERATURE",
-        reflect_temperature_override,
-        &reflect_temperature_resolution,
-    )?;
-    if let Some(requirement) = options.determinism_requirement {
-        validate_determinism_requirement("retain extraction", requirement, &extract_determinism)?;
-        validate_determinism_requirement(
-            "retain entity resolution",
-            requirement,
-            &resolve_determinism,
-        )?;
-        validate_determinism_requirement("retain graph building", requirement, &graph_determinism)?;
-        validate_determinism_requirement("reflect", requirement, &reflect_determinism)?;
-        validate_determinism_requirement("consolidation", requirement, &consolidate_determinism)?;
-        validate_determinism_requirement("opinion merge", requirement, &opinion_merge_determinism)?;
-    }
-
-    let emb_config = embedding::config_from_env()?;
-    let max_conns = options.max_pool_connections.unwrap_or(10);
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(max_conns)
-        .connect(&database_url)
-        .await?;
-    let store = Arc::new(PgMemoryStore::new(pool.clone()));
-    store.migrate().await?;
-    let embeddings: Arc<dyn EmbeddingClient> = Arc::from(embedding::build_client(&emb_config)?);
-
-    let retain = Arc::new(DefaultRetainPipeline::new(
-        Box::new(SimpleChunker),
-        Box::new(LlmFactExtractor::new(
-            stage_llm(
-                llm_configs.retain(),
-                LlmStage::RetainExtract,
-                options.metrics.as_ref(),
-            )?,
-            extraction_config,
-        )),
-        Box::new(LayeredEntityResolver::new_with_temperature(
-            embedding::build_client(&emb_config)?,
-            stage_llm(
-                llm_configs.retain(),
-                LlmStage::RetainResolve,
-                options.metrics.as_ref(),
-            )?,
-            resolve_temperature,
-        )),
-        Box::new(DefaultGraphBuilder::new(
-            stage_llm(
-                llm_configs.retain(),
-                LlmStage::RetainGraph,
-                options.metrics.as_ref(),
-            )?,
-            graph_config.clone(),
-        )),
-        Box::new(PgMemoryStore::new(pool.clone())),
-        embedding::build_client(&emb_config)?,
-        stage_llm(
-            llm_configs.retain(),
-            LlmStage::RetainOpinion,
-            options.metrics.as_ref(),
-        )?,
-        chunk_config.clone(),
-        dedup_threshold,
-    ));
-
-    let reranker_config = reranker::config_from_env()?;
-    let reranker = reranker::build_reranker(&reranker_config)?;
-    let retriever_limit: usize = env::var("RETRIEVER_LIMIT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(40);
-    let recall_rrf_k = 60.0;
-    let max_facts: usize = env::var("MAX_FACTS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(50);
-    let recall = Arc::new(DefaultRecallPipeline::new(
-        Box::new(SemanticRetriever::new(
-            store.clone(),
-            embeddings.clone(),
-            retriever_limit,
-        )),
-        Box::new(KeywordRetriever::new(store.clone(), retriever_limit)),
-        Box::new(GraphRetriever::new(
-            store.clone(),
-            embeddings.clone(),
-            GraphRetrieverConfig::default(),
-        )),
-        Box::new(TemporalRetriever::new(store.clone())),
-        reranker,
-        Box::new(EstimateTokenizer),
-        recall_rrf_k,
-        max_facts,
-        4096,
-    ));
-    let reflect = Arc::new(DefaultReflectPipeline::new_with_limits(
-        recall.clone(),
-        stage_llm(
-            llm_configs.reflect(),
-            LlmStage::Reflect,
-            options.metrics.as_ref(),
-        )?,
-        store.clone(),
-        reflect_max_iter,
-        reflect_max_tokens,
-        reflect_source_limit,
-        reflect_source_max_chars,
-        reflect_enable_source_lookup,
-        reflect_temperature,
-    ));
-
-    let consolidator = Arc::new(DefaultConsolidator::new(
-        store.clone(),
-        stage_llm(
-            llm_configs.reflect(),
-            LlmStage::Consolidate,
-            options.metrics.as_ref(),
-        )?,
-        embeddings.clone(),
-        recall.clone(),
-        consolidation_config,
-    ));
-    let opinion_merger = Arc::new(DefaultOpinionMerger::new_with_config(
-        store.clone(),
-        stage_llm(
-            llm_configs.reflect(),
-            LlmStage::OpinionMerge,
-            options.metrics.as_ref(),
-        )?,
-        embeddings.clone(),
-        opinion_merge_config,
-    ));
-
-    Ok(ElephantRuntime {
-        info: RuntimeInfo {
-            retain_model: format!(
-                "{}/{}",
-                llm_configs.retain().provider().as_str(),
-                llm_configs.retain().model()
-            ),
-            reflect_model: format!(
-                "{}/{}",
-                llm_configs.reflect().provider().as_str(),
-                llm_configs.reflect().model()
-            ),
-            embedding_model: embedding_label(&emb_config),
-            reranker_model: reranker_label(&reranker_config),
-            tuning: RuntimeTuning {
-                chunk_max_tokens: chunk_config.max_tokens,
-                chunk_overlap_tokens: chunk_config.overlap_tokens,
-                dedup_threshold,
-                retriever_limit,
-                recall_rrf_k,
-                max_facts,
-                reflect_max_iterations: reflect_max_iter,
-                reflect_max_tokens,
-                retain_extract_reasoning_effort: reasoning_effort.retain_extract,
-                retain_extract_temperature: extraction_config.temperature,
-                retain_extract_effective_temperature: extract_temperature_resolution.effective(),
-                retain_extract_structured_output_max_attempts: extraction_config
-                    .structured_output_max_attempts,
-                retain_resolve_reasoning_effort: reasoning_effort.retain_resolve,
-                retain_resolve_temperature: resolve_temperature,
-                retain_resolve_effective_temperature: resolve_temperature_resolution.effective(),
-                retain_graph_reasoning_effort: reasoning_effort.retain_graph,
-                retain_graph_temperature: graph_config.causal_temperature,
-                retain_graph_effective_temperature: graph_temperature_resolution.effective(),
-                reflect_enable_source_lookup,
-                reflect_reasoning_effort: reasoning_effort.reflect,
-                reflect_temperature,
-                reflect_effective_temperature: reflect_temperature_resolution.effective(),
-                graph_semantic_threshold: graph_config.semantic_threshold,
-                graph_temporal_max_days: graph_config.temporal_max_days,
-                graph_enable_causal: graph_config.enable_causal,
-                graph_max_causal_checks: graph_builder::MAX_CAUSAL_CHECKS,
-                consolidation_batch_size: consolidation_config.batch_size,
-                consolidation_max_tokens: consolidation_config.max_tokens,
-                consolidation_recall_budget: consolidation_config.recall_budget,
-                consolidation_structured_output_max_attempts: consolidation_config
-                    .structured_output_max_attempts,
-                consolidate_temperature: consolidation_config.temperature,
-                consolidate_effective_temperature: consolidate_temperature_resolution.effective(),
-                consolidate_reasoning_effort: reasoning_effort.consolidate,
-                opinion_merge_temperature: opinion_merge_config.temperature,
-                opinion_merge_effective_temperature: opinion_merge_temperature_resolution
-                    .effective(),
-                opinion_merge_reasoning_effort: reasoning_effort.opinion_merge,
-                determinism: RuntimeDeterminism {
-                    retain_extract: extract_determinism,
-                    retain_resolve: resolve_determinism,
-                    retain_graph: graph_determinism,
-                    reflect: reflect_determinism,
-                    consolidate: consolidate_determinism,
-                    opinion_merge: opinion_merge_determinism,
-                },
-            },
-            prompt_hashes: runtime_prompt_hashes(),
-        },
-        retain,
-        recall,
-        reflect,
-        consolidator,
-        opinion_merger,
-        store,
-        embeddings,
-    })
+    let config = RuntimeConfig::from_env()?;
+    options
+        .apply_to_builder(RuntimeBuilder::new(config))
+        .build()
+        .await
 }
 
 #[cfg(test)]

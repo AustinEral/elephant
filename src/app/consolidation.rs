@@ -1,14 +1,14 @@
-//! Server-side consolidation policy and scheduling.
+//! App-layer consolidation policy and retain wrapping.
 
 use std::collections::HashMap;
-use std::env;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use tracing::{debug, info, warn};
 
-use super::ServerBackgroundConsolidationInfo;
+use super::AppBackgroundConsolidationInfo;
+use crate::config::BackgroundConsolidationConfig;
 use crate::consolidation::{Consolidator, OpinionMerger};
 use crate::error::{Error, Result};
 use crate::retain::RetainPipeline;
@@ -16,7 +16,7 @@ use crate::storage::MemoryStore;
 use crate::types::{BankId, FactFilter, NetworkType, RetainInput, RetainOutput};
 
 #[derive(Debug, Clone)]
-pub(super) struct ConsolidationPolicy {
+pub(crate) struct ConsolidationPolicy {
     enabled: bool,
     min_unconsolidated_facts: usize,
     cooldown: Duration,
@@ -44,19 +44,12 @@ impl ConsolidationPolicy {
         })
     }
 
-    pub(super) fn from_env() -> Result<Self> {
-        let enabled = parse_bool_env("SERVER_AUTO_CONSOLIDATION")?.unwrap_or(true);
-        let min_unconsolidated_facts =
-            parse_usize_env("SERVER_AUTO_CONSOLIDATION_MIN_FACTS")?.unwrap_or(32);
-        let cooldown_secs = parse_u64_env("SERVER_AUTO_CONSOLIDATION_COOLDOWN_SECS")?.unwrap_or(30);
-        let merge_opinions_after =
-            parse_bool_env("SERVER_AUTO_CONSOLIDATION_MERGE_OPINIONS")?.unwrap_or(false);
-
+    pub(crate) fn from_config(config: &BackgroundConsolidationConfig) -> Result<Self> {
         Self::new(
-            enabled,
-            min_unconsolidated_facts,
-            Duration::from_secs(cooldown_secs),
-            merge_opinions_after,
+            config.enabled(),
+            config.min_unconsolidated_facts(),
+            Duration::from_secs(config.cooldown_secs()),
+            config.merge_opinions_after(),
         )
     }
 
@@ -64,8 +57,8 @@ impl ConsolidationPolicy {
         self.enabled
     }
 
-    pub(super) fn to_info(&self) -> ServerBackgroundConsolidationInfo {
-        ServerBackgroundConsolidationInfo {
+    pub(crate) fn to_info(&self) -> AppBackgroundConsolidationInfo {
+        AppBackgroundConsolidationInfo {
             enabled: self.enabled,
             min_facts: self.min_unconsolidated_facts,
             cooldown_secs: self.cooldown.as_secs(),
@@ -75,7 +68,7 @@ impl ConsolidationPolicy {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ConsolidationDecision {
+enum ConsolidationDecision {
     Disabled,
     NoNewFacts,
     Cooldown,
@@ -102,7 +95,7 @@ struct BankConsolidationState {
     last_evaluated_at: Option<Instant>,
 }
 
-pub(super) struct ConsolidationCoordinator {
+struct ConsolidationCoordinator {
     store: Arc<dyn MemoryStore>,
     consolidator: Arc<dyn Consolidator>,
     opinion_merger: Arc<dyn OpinionMerger>,
@@ -123,7 +116,7 @@ impl ConsolidationCoordinator {
         }
     }
 
-    pub(super) fn new(
+    fn new(
         store: Arc<dyn MemoryStore>,
         consolidator: Arc<dyn Consolidator>,
         opinion_merger: Arc<dyn OpinionMerger>,
@@ -138,7 +131,7 @@ impl ConsolidationCoordinator {
         }
     }
 
-    pub(super) fn maybe_schedule(
+    fn maybe_schedule(
         self: &Arc<Self>,
         bank_id: BankId,
         facts_stored: usize,
@@ -248,7 +241,7 @@ impl ConsolidationCoordinator {
     }
 }
 
-pub(super) fn wrap_retain_pipeline_with_consolidation(
+pub(crate) fn wrap_retain_pipeline_with_consolidation(
     retain: Arc<dyn RetainPipeline>,
     store: Arc<dyn MemoryStore>,
     consolidator: Arc<dyn Consolidator>,
@@ -285,40 +278,6 @@ impl RetainPipeline for ConsolidatingRetainPipeline {
             .maybe_schedule(input.bank_id, output.facts_stored);
         debug!(%input.bank_id, ?decision, "evaluated server consolidation after retain");
         Ok(output)
-    }
-}
-
-fn parse_bool_env(name: &str) -> Result<Option<bool>> {
-    match env::var(name) {
-        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
-            "1" | "true" | "yes" | "on" => Ok(Some(true)),
-            "0" | "false" | "no" | "off" => Ok(Some(false)),
-            other => Err(Error::Configuration(format!(
-                "{name} must be a boolean, got: {other}"
-            ))),
-        },
-        Err(env::VarError::NotPresent) => Ok(None),
-        Err(err) => Err(Error::Configuration(format!("{name} must be set: {err}"))),
-    }
-}
-
-fn parse_usize_env(name: &str) -> Result<Option<usize>> {
-    match env::var(name) {
-        Ok(value) => value.parse::<usize>().map(Some).map_err(|_| {
-            Error::Configuration(format!("{name} must be an unsigned integer, got: {value}"))
-        }),
-        Err(env::VarError::NotPresent) => Ok(None),
-        Err(err) => Err(Error::Configuration(format!("{name} must be set: {err}"))),
-    }
-}
-
-fn parse_u64_env(name: &str) -> Result<Option<u64>> {
-    match env::var(name) {
-        Ok(value) => value.parse::<u64>().map(Some).map_err(|_| {
-            Error::Configuration(format!("{name} must be an unsigned integer, got: {value}"))
-        }),
-        Err(env::VarError::NotPresent) => Ok(None),
-        Err(err) => Err(Error::Configuration(format!("{name} must be set: {err}"))),
     }
 }
 
@@ -462,11 +421,11 @@ mod tests {
         let bank_id = make_bank(&store).await;
         insert_unconsolidated_fact(&store, bank_id).await;
 
-        let calls = Arc::new(AtomicUsize::new(0));
         let started = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
+        let calls = Arc::new(AtomicUsize::new(0));
         let coordinator = Arc::new(ConsolidationCoordinator::new(
-            store,
+            store.clone(),
             Arc::new(CountingConsolidator {
                 calls: calls.clone(),
                 started: started.clone(),
@@ -483,9 +442,7 @@ mod tests {
             coordinator.maybe_schedule(bank_id, 1),
             ConsolidationDecision::Enqueued
         );
-        timeout(TokioDuration::from_secs(1), started.notified())
-            .await
-            .expect("consolidation should start");
+        started.notified().await;
         assert_eq!(
             coordinator.maybe_schedule(bank_id, 1),
             ConsolidationDecision::AlreadyRunning
@@ -494,14 +451,26 @@ mod tests {
         release.notify_waiters();
         timeout(TokioDuration::from_secs(1), async {
             loop {
-                if coordinator.maybe_schedule(bank_id, 1) == ConsolidationDecision::Cooldown {
-                    break;
+                if calls.load(Ordering::SeqCst) == 1 {
+                    let states = coordinator.lock_states();
+                    if states
+                        .get(&bank_id)
+                        .and_then(|state| state.last_evaluated_at)
+                        .is_some()
+                    {
+                        break;
+                    }
                 }
                 tokio::task::yield_now().await;
             }
         })
         .await
-        .expect("consolidation should finish and cooldown should apply");
+        .expect("consolidation should finish");
+
+        assert_eq!(
+            coordinator.maybe_schedule(bank_id, 1),
+            ConsolidationDecision::Cooldown
+        );
     }
 
     #[tokio::test]
@@ -511,39 +480,54 @@ mod tests {
 
         let started = Arc::new(Notify::new());
         let calls = Arc::new(AtomicUsize::new(0));
-        let wrapped: Arc<dyn RetainPipeline> = Arc::new(ConsolidatingRetainPipeline {
-            retain: Arc::new(InsertingRetainPipeline {
+        let opinion_calls = Arc::new(AtomicUsize::new(0));
+
+        let wrapped = wrap_retain_pipeline_with_consolidation(
+            Arc::new(InsertingRetainPipeline {
                 store: store.clone(),
             }),
-            coordinator: Arc::new(ConsolidationCoordinator::new(
-                store,
-                Arc::new(CountingConsolidator {
-                    calls: calls.clone(),
-                    started: started.clone(),
-                    release: None,
-                }),
-                Arc::new(CountingOpinionMerger {
-                    calls: Arc::new(AtomicUsize::new(0)),
-                }),
-                ConsolidationPolicy::new(true, 1, Duration::from_secs(60), false)
-                    .expect("policy should be valid"),
-            )),
-        });
+            store.clone(),
+            Arc::new(CountingConsolidator {
+                calls: calls.clone(),
+                started: started.clone(),
+                release: None,
+            }),
+            Arc::new(CountingOpinionMerger {
+                calls: opinion_calls.clone(),
+            }),
+            ConsolidationPolicy::new(true, 1, Duration::from_secs(60), false)
+                .expect("policy should be valid"),
+        )
+        .expect("wrapper should be created");
 
-        let input = RetainInput {
-            bank_id,
-            content: "hello".into(),
-            timestamp: Utc::now(),
-            turn_id: None,
-            context: None,
-            custom_instructions: None,
-            speaker: None,
-        };
-        let _ = wrapped.retain(&input).await.expect("retain should succeed");
+        let output = wrapped
+            .retain(&RetainInput {
+                bank_id,
+                content: "new fact".into(),
+                timestamp: Utc::now(),
+                turn_id: None,
+                context: None,
+                custom_instructions: None,
+                speaker: None,
+            })
+            .await
+            .expect("retain should succeed");
 
+        assert_eq!(output.facts_stored, 1);
         timeout(TokioDuration::from_secs(1), started.notified())
             .await
-            .expect("server consolidation should be scheduled");
+            .expect("consolidation should have been scheduled");
+        timeout(TokioDuration::from_secs(1), async {
+            loop {
+                if calls.load(Ordering::SeqCst) > 0 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("consolidation call should be observed");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(opinion_calls.load(Ordering::SeqCst), 0);
     }
 }

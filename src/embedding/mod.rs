@@ -6,7 +6,8 @@ pub mod openai;
 
 use async_trait::async_trait;
 
-use crate::error::{Error, Result};
+use crate::config::ConfigError;
+use crate::error::Result;
 
 /// Trait abstraction over embedding providers.
 ///
@@ -51,34 +52,41 @@ pub struct EmbeddingConfig {
     pub dimensions: Option<usize>,
 }
 
+impl EmbeddingConfig {
+    /// Read embedding configuration from environment.
+    pub fn from_env() -> std::result::Result<Self, ConfigError> {
+        let provider = match std::env::var("EMBEDDING_PROVIDER")
+            .map_err(|e| ConfigError::internal(format!("EMBEDDING_PROVIDER must be set: {e}")))?
+            .as_str()
+        {
+            "openai" => EmbeddingProvider::OpenAi,
+            "local" => EmbeddingProvider::Local,
+            other => {
+                return Err(ConfigError::internal(format!(
+                    "unknown EMBEDDING_PROVIDER: {other}"
+                )));
+            }
+        };
+
+        Ok(Self {
+            provider,
+            model_path: std::env::var("EMBEDDING_MODEL_PATH").ok(),
+            max_seq_len: std::env::var("EMBEDDING_MAX_SEQ_LEN")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(512),
+            api_key: std::env::var("EMBEDDING_API_KEY").ok(),
+            model: std::env::var("EMBEDDING_API_MODEL").ok(),
+            dimensions: std::env::var("EMBEDDING_API_DIMS")
+                .ok()
+                .and_then(|s| s.parse().ok()),
+        })
+    }
+}
+
 /// Read embedding configuration from environment.
 pub fn config_from_env() -> Result<EmbeddingConfig> {
-    let provider = match std::env::var("EMBEDDING_PROVIDER")
-        .map_err(|e| Error::Internal(format!("EMBEDDING_PROVIDER must be set: {e}")))?
-        .as_str()
-    {
-        "openai" => EmbeddingProvider::OpenAi,
-        "local" => EmbeddingProvider::Local,
-        other => {
-            return Err(Error::Internal(format!(
-                "unknown EMBEDDING_PROVIDER: {other}"
-            )));
-        }
-    };
-
-    Ok(EmbeddingConfig {
-        provider,
-        model_path: std::env::var("EMBEDDING_MODEL_PATH").ok(),
-        max_seq_len: std::env::var("EMBEDDING_MAX_SEQ_LEN")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(512),
-        api_key: std::env::var("EMBEDDING_API_KEY").ok(),
-        model: std::env::var("EMBEDDING_API_MODEL").ok(),
-        dimensions: std::env::var("EMBEDDING_API_DIMS")
-            .ok()
-            .and_then(|s| s.parse().ok()),
-    })
+    EmbeddingConfig::from_env().map_err(Into::into)
 }
 
 /// Build an embedding client from a configuration.

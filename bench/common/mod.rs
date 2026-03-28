@@ -5,6 +5,7 @@ pub mod judge;
 
 use std::env;
 
+use elephant::config::BenchConfig;
 use elephant::llm::DeterminismRequirement;
 use elephant::llm::ReasoningEffort;
 use elephant::runtime::RuntimeTuning as ElephantRuntimeTuning;
@@ -43,20 +44,9 @@ pub fn format_reasoning_effort_summary(tuning: &ElephantRuntimeTuning) -> String
 #[allow(dead_code)]
 pub fn benchmark_determinism_requirement_from_env() -> Result<Option<DeterminismRequirement>, String>
 {
-    let Some(raw) = env::var("BENCH_DETERMINISM_REQUIREMENT").ok() else {
-        return Ok(None);
-    };
-
-    let value = raw.trim().to_ascii_lowercase();
-    match value.as_str() {
-        "best_effort" | "best-effort" | "1" | "true" | "yes" | "on" => {
-            Ok(Some(DeterminismRequirement::BestEffort))
-        }
-        "strong" => Ok(Some(DeterminismRequirement::Strong)),
-        _ => Err(format!(
-            "BENCH_DETERMINISM_REQUIREMENT must be one of: best_effort, strong; got: {raw}"
-        )),
-    }
+    BenchConfig::from_env()
+        .map(|config| config.determinism_requirement())
+        .map_err(|err| err.to_string())
 }
 
 #[allow(dead_code)]

@@ -1,6 +1,9 @@
 #![warn(missing_docs)]
 //! Elephant — a Rust implementation of the Hindsight memory architecture.
 
+mod app;
+#[doc(hidden)]
+pub mod config;
 pub mod consolidation;
 pub mod embedding;
 pub mod error;

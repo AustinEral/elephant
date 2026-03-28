@@ -62,12 +62,12 @@ fn parse_entity_id(id: &str) -> Result<crate::types::EntityId> {
 
 /// GET /v1/info
 pub async fn server_info(State(state): State<AppState>) -> Json<super::ServerInfo> {
-    Json(state.info.clone())
+    Json(state.app.info().clone())
 }
 
 /// GET /v1/banks
 pub async fn list_banks(State(state): State<AppState>) -> Result<Json<Vec<MemoryBank>>> {
-    let banks = state.store.list_banks().await?;
+    let banks = state.app.list_banks().await?;
     Ok(Json(banks))
 }
 
@@ -81,17 +81,10 @@ pub async fn create_bank(
         None => Disposition::default(),
     };
 
-    let bank = MemoryBank {
-        id: BankId::new(),
-        name: body.name,
-        mission: body.mission,
-        directives: body.directives,
-        disposition,
-        embedding_model: state.embeddings.model_name().to_string(),
-        embedding_dimensions: state.embeddings.dimensions() as u16,
-    };
-
-    state.store.create_bank(&bank).await?;
+    let bank = state
+        .app
+        .new_bank(body.name, body.mission, body.directives, disposition);
+    state.app.create_bank(&bank).await?;
     Ok(Json(bank))
 }
 
@@ -101,7 +94,7 @@ pub async fn get_bank(
     Path(id): Path<String>,
 ) -> Result<Json<MemoryBank>> {
     let bank_id = parse_bank_id(&id)?;
-    let bank = state.store.get_bank(bank_id).await?;
+    let bank = state.app.get_bank(bank_id).await?;
     Ok(Json(bank))
 }
 
@@ -112,7 +105,7 @@ pub async fn retain(
     Json(mut body): Json<RetainInput>,
 ) -> Result<Json<RetainOutput>> {
     body.bank_id = parse_bank_id(&id)?;
-    let output = state.retain.retain(&body).await?;
+    let output = state.app.retain(&body).await?;
     Ok(Json(output))
 }
 
@@ -123,7 +116,7 @@ pub async fn recall(
     Json(mut body): Json<RecallQuery>,
 ) -> Result<Json<RecallResult>> {
     body.bank_id = parse_bank_id(&id)?;
-    let result = state.recall.recall(&body).await?;
+    let result = state.app.recall(&body).await?;
     Ok(Json(result))
 }
 
@@ -134,7 +127,7 @@ pub async fn reflect(
     Json(mut body): Json<ReflectQuery>,
 ) -> Result<Json<ReflectResult>> {
     body.bank_id = parse_bank_id(&id)?;
-    let result = state.reflect.reflect(&body).await?;
+    let result = state.app.reflect(&body).await?;
     Ok(Json(result))
 }
 
@@ -144,7 +137,7 @@ pub async fn list_entities(
     Path(id): Path<String>,
 ) -> Result<Json<Vec<Entity>>> {
     let bank_id = parse_bank_id(&id)?;
-    let entities = state.store.list_entities(bank_id).await?;
+    let entities = state.app.list_entities(bank_id).await?;
     Ok(Json(entities))
 }
 
@@ -155,7 +148,7 @@ pub async fn entity_facts(
 ) -> Result<Json<Vec<Fact>>> {
     let _bank_id = parse_bank_id(&id)?;
     let entity_id = parse_entity_id(&eid)?;
-    let facts = state.store.get_entity_facts(entity_id).await?;
+    let facts = state.app.entity_facts(entity_id).await?;
     Ok(Json(facts))
 }
 
@@ -165,7 +158,7 @@ pub async fn consolidate(
     Path(id): Path<String>,
 ) -> Result<Json<ConsolidationReport>> {
     let bank_id = parse_bank_id(&id)?;
-    let report = state.consolidator.consolidate(bank_id).await?;
+    let report = state.app.consolidate(bank_id).await?;
     Ok(Json(report))
 }
 
@@ -175,6 +168,6 @@ pub async fn merge_opinions(
     Path(id): Path<String>,
 ) -> Result<Json<OpinionMergeReport>> {
     let bank_id = parse_bank_id(&id)?;
-    let report = state.opinion_merger.merge(bank_id).await?;
+    let report = state.app.merge_opinions(bank_id).await?;
     Ok(Json(report))
 }
