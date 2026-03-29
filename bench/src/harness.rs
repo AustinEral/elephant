@@ -6,7 +6,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use elephant::consolidation::ConsolidationProgress;
-use elephant::llm::DeterminismRequirement;
+use elephant::llm::{DeterminismRequirement, ReasoningEffort};
 use elephant::metrics::MetricsCollector;
 use elephant::{
     BankId, ConsolidationReport, Disposition, ElephantRuntime, Entity, Fact, FactFilter,
@@ -21,13 +21,6 @@ use crate::config::BenchConfig;
 #[serde(transparent)]
 pub struct BenchRuntimePromptHashes(RuntimePromptHashes);
 
-impl BenchRuntimePromptHashes {
-    /// Borrow the underlying Elephant prompt-hash snapshot.
-    pub fn as_elephant(&self) -> &RuntimePromptHashes {
-        &self.0
-    }
-}
-
 impl From<RuntimePromptHashes> for BenchRuntimePromptHashes {
     fn from(value: RuntimePromptHashes) -> Self {
         Self(value)
@@ -40,14 +33,39 @@ impl From<RuntimePromptHashes> for BenchRuntimePromptHashes {
 pub struct BenchRuntimeTuning(RuntimeTuning);
 
 impl BenchRuntimeTuning {
-    /// Borrow the underlying Elephant runtime tuning snapshot.
-    pub fn as_elephant(&self) -> &RuntimeTuning {
-        &self.0
-    }
-
     /// Return the consolidation batch size from the wrapped tuning snapshot.
     pub fn consolidation_batch_size(&self) -> usize {
         self.0.consolidation_batch_size
+    }
+
+    /// Return the retain extraction reasoning effort.
+    pub fn retain_extract_reasoning_effort(&self) -> Option<ReasoningEffort> {
+        self.0.retain_extract_reasoning_effort
+    }
+
+    /// Return the retain entity-resolution reasoning effort.
+    pub fn retain_resolve_reasoning_effort(&self) -> Option<ReasoningEffort> {
+        self.0.retain_resolve_reasoning_effort
+    }
+
+    /// Return the retain graph-builder reasoning effort.
+    pub fn retain_graph_reasoning_effort(&self) -> Option<ReasoningEffort> {
+        self.0.retain_graph_reasoning_effort
+    }
+
+    /// Return the reflect reasoning effort.
+    pub fn reflect_reasoning_effort(&self) -> Option<ReasoningEffort> {
+        self.0.reflect_reasoning_effort
+    }
+
+    /// Return the consolidation reasoning effort.
+    pub fn consolidate_reasoning_effort(&self) -> Option<ReasoningEffort> {
+        self.0.consolidate_reasoning_effort
+    }
+
+    /// Return the opinion-merge reasoning effort.
+    pub fn opinion_merge_reasoning_effort(&self) -> Option<ReasoningEffort> {
+        self.0.opinion_merge_reasoning_effort
     }
 }
 
@@ -63,7 +81,7 @@ pub struct BenchRuntimeMetadata {
     retain_model: String,
     reflect_model: String,
     embedding_model: String,
-    embedding_dimensions: u16,
+    embedding_dimensions: usize,
     reranker_model: String,
     prompt_hashes: BenchRuntimePromptHashes,
     tuning: BenchRuntimeTuning,
@@ -76,7 +94,7 @@ impl BenchRuntimeMetadata {
             retain_model: info.retain_model.clone(),
             reflect_model: info.reflect_model.clone(),
             embedding_model: info.embedding_model.clone(),
-            embedding_dimensions: runtime.embeddings().dimensions() as u16,
+            embedding_dimensions: runtime.embeddings().dimensions(),
             reranker_model: info.reranker_model.clone(),
             prompt_hashes: info.prompt_hashes.clone().into(),
             tuning: info.tuning.clone().into(),
@@ -99,7 +117,7 @@ impl BenchRuntimeMetadata {
     }
 
     /// Return the embedding dimensionality used by the runtime.
-    pub fn embedding_dimensions(&self) -> u16 {
+    pub fn embedding_dimensions(&self) -> usize {
         self.embedding_dimensions
     }
 
@@ -150,7 +168,14 @@ impl BenchRuntime {
             directives: vec![],
             disposition: Disposition::default(),
             embedding_model: self.metadata.embedding_model().to_string(),
-            embedding_dimensions: self.metadata.embedding_dimensions(),
+            embedding_dimensions: u16::try_from(self.metadata.embedding_dimensions()).map_err(
+                |_| {
+                    elephant::Error::Configuration(format!(
+                        "benchmark embedding dimensions {} exceed u16::MAX",
+                        self.metadata.embedding_dimensions()
+                    ))
+                },
+            )?,
         };
         self.runtime.store().create_bank(&bank).await?;
         Ok(bank)
