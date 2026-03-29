@@ -27,15 +27,14 @@ fn format_reasoning_effort(effort: Option<ReasoningEffort>) -> &'static str {
 
 #[allow(dead_code)]
 pub fn format_reasoning_effort_summary(tuning: &BenchRuntimeTuning) -> String {
-    let tuning = tuning.as_elephant();
     format!(
         "extract={} resolve={} graph={} reflect={} consolidate={} opinion_merge={}",
-        format_reasoning_effort(tuning.retain_extract_reasoning_effort),
-        format_reasoning_effort(tuning.retain_resolve_reasoning_effort),
-        format_reasoning_effort(tuning.retain_graph_reasoning_effort),
-        format_reasoning_effort(tuning.reflect_reasoning_effort),
-        format_reasoning_effort(tuning.consolidate_reasoning_effort),
-        format_reasoning_effort(tuning.opinion_merge_reasoning_effort),
+        format_reasoning_effort(tuning.retain_extract_reasoning_effort()),
+        format_reasoning_effort(tuning.retain_resolve_reasoning_effort()),
+        format_reasoning_effort(tuning.retain_graph_reasoning_effort()),
+        format_reasoning_effort(tuning.reflect_reasoning_effort()),
+        format_reasoning_effort(tuning.consolidate_reasoning_effort()),
+        format_reasoning_effort(tuning.opinion_merge_reasoning_effort()),
     )
 }
 
