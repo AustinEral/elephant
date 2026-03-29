@@ -33,11 +33,11 @@ use elephant::types::{
     BankId, Disposition, MemoryBank, NetworkType, ReflectDoneTrace, ReflectQuery, RetainInput,
     RetrievalSource, TurnId,
 };
-use elephant::{
-    ElephantRuntime, MemoryStore, RuntimePromptHashes as ElephantPromptHashes,
-    RuntimeTuning as ElephantRuntimeTuning,
+use elephant::{ElephantRuntime, MemoryStore};
+use elephant_bench::{
+    BenchHarnessBuilder, BenchJudgeConfig, BenchRuntimeMetadata, BenchRuntimePromptHashes,
+    BenchRuntimeTuning,
 };
-use elephant_bench::{BenchHarnessBuilder, BenchJudgeConfig};
 
 // --- LoCoMo dataset types ---
 
@@ -194,13 +194,13 @@ struct BenchmarkPromptHashes {
     #[serde(default)]
     judge: String,
     #[serde(flatten)]
-    elephant: ElephantPromptHashes,
+    elephant: BenchRuntimePromptHashes,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct BenchmarkRuntimeConfig {
     #[serde(flatten)]
-    elephant: ElephantRuntimeTuning,
+    elephant: BenchRuntimeTuning,
     #[serde(default)]
     reflect_budget_tokens: usize,
     #[serde(default)]
@@ -627,16 +627,16 @@ fn fmt_elapsed(seconds: f64) -> String {
     format!("{m}:{s:02}")
 }
 
-fn benchmark_prompt_hashes(runtime: &ElephantRuntime) -> BenchmarkPromptHashes {
+fn benchmark_prompt_hashes(runtime_metadata: &BenchRuntimeMetadata) -> BenchmarkPromptHashes {
     BenchmarkPromptHashes {
         judge: fnv1a64_hex(JUDGE_PROMPT),
-        elephant: runtime.info().prompt_hashes.clone(),
+        elephant: runtime_metadata.prompt_hashes().clone(),
     }
 }
 
-fn benchmark_runtime_config(runtime: &ElephantRuntime) -> BenchmarkRuntimeConfig {
+fn benchmark_runtime_config(runtime_metadata: &BenchRuntimeMetadata) -> BenchmarkRuntimeConfig {
     BenchmarkRuntimeConfig {
-        elephant: runtime.info().tuning.clone(),
+        elephant: runtime_metadata.tuning().clone(),
         reflect_budget_tokens: reflect_budget_tokens(),
         judge_temperature: common::judge::JUDGE_TEMPERATURE,
         judge_max_tokens: common::judge::JUDGE_MAX_TOKENS,
@@ -2730,6 +2730,7 @@ struct ConversationRunOptions {
     question_concurrency: usize,
     ingest_mode: IngestMode,
     consolidation: ConsolidationMode,
+    consolidation_batch_size: usize,
     seed_stage_metrics: BTreeMap<LlmStage, StageUsage>,
     seed_timings: ConversationPhaseTimings,
     seed_bank_stats: ConversationBankStats,
@@ -2774,13 +2775,14 @@ async fn consolidate_with_bench_progress(
     tag: &str,
     runtime: Arc<ElephantRuntime>,
     bank_id: BankId,
+    consolidation_batch_size: usize,
     conversation_metrics: Arc<MetricsCollector>,
 ) -> Result<elephant::types::ConsolidationReport, String> {
     let total_facts = count_unconsolidated_facts(runtime.as_ref(), bank_id).await?;
     let total_batches = if total_facts == 0 {
         0
     } else {
-        total_facts.div_ceil(runtime.info().tuning.consolidation_batch_size)
+        total_facts.div_ceil(consolidation_batch_size)
     };
     println!(
         "[{tag}] Consolidating {total_facts} fact{} in {total_batches} batch{}...",
@@ -3019,6 +3021,7 @@ async fn run_conversation(
                     &tag,
                     runtime.clone(),
                     bank.id,
+                    options.consolidation_batch_size,
                     conversation_metrics.clone(),
                 )
                 .await
@@ -3058,6 +3061,7 @@ async fn run_conversation(
             &tag,
             runtime.clone(),
             bank_id,
+            options.consolidation_batch_size,
             conversation_metrics.clone(),
         )
         .await
@@ -3819,6 +3823,7 @@ async fn main() {
             eprintln!("failed to build Elephant runtime: {err}");
             std::process::exit(1);
         });
+    let runtime_metadata = harness.metadata().clone();
     let determinism_requirement = harness.determinism_requirement();
     let runtime = Arc::new(harness.into_runtime());
 
@@ -3830,13 +3835,13 @@ async fn main() {
         });
     let judge_label = common::judge::judge_label(&judge_config);
 
-    println!("retain_model: {}", runtime.info().retain_model);
-    println!("reflect_model: {}", runtime.info().reflect_model);
-    println!("reranker_model: {}", runtime.info().reranker_model);
-    println!("embedding_model: {}", runtime.info().embedding_model);
+    println!("retain_model: {}", runtime_metadata.retain_model());
+    println!("reflect_model: {}", runtime_metadata.reflect_model());
+    println!("reranker_model: {}", runtime_metadata.reranker_model());
+    println!("embedding_model: {}", runtime_metadata.embedding_model());
     println!(
         "Reasoning effort: {}",
-        common::format_reasoning_effort_summary(&runtime.info().tuning)
+        common::format_reasoning_effort_summary(runtime_metadata.tuning())
     );
     if let Some(requirement) = determinism_requirement {
         println!(
@@ -3898,8 +3903,8 @@ async fn main() {
         question_limit: config.question_limit,
         raw_json: config.ingest.raw_json(),
         dirty_worktree: git_dirty_worktree(),
-        prompt_hashes: benchmark_prompt_hashes(&runtime),
-        runtime_config: benchmark_runtime_config(&runtime),
+        prompt_hashes: benchmark_prompt_hashes(&runtime_metadata),
+        runtime_config: benchmark_runtime_config(&runtime_metadata),
         source_artifact,
         source_artifacts: Vec::new(),
     };
@@ -3916,10 +3921,10 @@ async fn main() {
         debug_path: debug_path.clone(),
         judge_label: judge_label.clone(),
         tag: config.tag.clone(),
-        retain_model: runtime.info().retain_model.clone(),
-        reflect_model: runtime.info().reflect_model.clone(),
-        embedding_model: runtime.info().embedding_model.clone(),
-        reranker_model: runtime.info().reranker_model.clone(),
+        retain_model: runtime_metadata.retain_model().to_string(),
+        reflect_model: runtime_metadata.reflect_model().to_string(),
+        embedding_model: runtime_metadata.embedding_model().to_string(),
+        reranker_model: runtime_metadata.reranker_model().to_string(),
         consolidation_strategy: consolidation_strategy.into(),
         manifest,
         metrics: metrics.clone(),
@@ -3941,6 +3946,7 @@ async fn main() {
             question_concurrency: config.question_jobs,
             ingest_mode: config.ingest,
             consolidation: config.consolidation,
+            consolidation_batch_size: runtime_metadata.consolidation_batch_size(),
             seed_stage_metrics: existing_conversation_metrics
                 .get(&entry.sample_id)
                 .cloned()

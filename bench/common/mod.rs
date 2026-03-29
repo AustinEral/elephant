@@ -3,10 +3,9 @@ pub mod fingerprint;
 pub mod io;
 pub mod judge;
 
-use elephant::RuntimeTuning as ElephantRuntimeTuning;
 use elephant::llm::DeterminismRequirement;
 use elephant::llm::ReasoningEffort;
-use elephant_bench::BenchConfig;
+use elephant_bench::{BenchConfig, BenchRuntimeTuning};
 
 #[allow(unused_imports)]
 pub use fingerprint::{fnv1a64, fnv1a64_hex};
@@ -27,7 +26,8 @@ fn format_reasoning_effort(effort: Option<ReasoningEffort>) -> &'static str {
 }
 
 #[allow(dead_code)]
-pub fn format_reasoning_effort_summary(tuning: &ElephantRuntimeTuning) -> String {
+pub fn format_reasoning_effort_summary(tuning: &BenchRuntimeTuning) -> String {
+    let tuning = tuning.as_elephant();
     format!(
         "extract={} resolve={} graph={} reflect={} consolidate={} opinion_merge={}",
         format_reasoning_effort(tuning.retain_extract_reasoning_effort),

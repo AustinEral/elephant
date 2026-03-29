@@ -25,7 +25,7 @@ pub struct BenchConfig {
 
 impl BenchConfig {
     /// Create benchmark configuration from validated values.
-    pub fn new(determinism_requirement: Option<DeterminismRequirement>) -> Self {
+    pub(crate) fn new(determinism_requirement: Option<DeterminismRequirement>) -> Self {
         Self {
             determinism_requirement,
         }

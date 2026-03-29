@@ -215,6 +215,7 @@ pub fn format_session_json(turns: &[Turn]) -> String {
 pub async fn ingest_instance(
     instance: &LongMemEvalInstance,
     runtime: &ElephantRuntime,
+    consolidation_batch_size: usize,
     config: &IngestConfig,
     existing_bank_id: Option<BankId>,
 ) -> Result<IngestResult> {
@@ -353,7 +354,7 @@ pub async fn ingest_instance(
         let total_batches = if total_facts == 0 {
             0
         } else {
-            total_facts.div_ceil(runtime.info().tuning.consolidation_batch_size)
+            total_facts.div_ceil(consolidation_batch_size)
         };
         eprintln!(
             "  {} consolidating {} facts in {} batches...",

@@ -5,4 +5,7 @@ mod config;
 mod harness;
 
 pub use config::{BenchConfig, BenchJudgeConfig};
-pub use harness::{BenchHarness, BenchHarnessBuilder};
+pub use harness::{
+    BenchHarness, BenchHarnessBuilder, BenchRuntimeMetadata, BenchRuntimePromptHashes,
+    BenchRuntimeTuning,
+};
