@@ -30,13 +30,11 @@ use elephant::consolidation::ConsolidationProgress;
 use elephant::llm::LlmClient;
 use elephant::metrics::{LlmStage, MetricsCollector, StageUsage, with_scoped_collector};
 use elephant::types::{
-    BankId, Disposition, MemoryBank, NetworkType, ReflectDoneTrace, ReflectQuery, RetainInput,
-    RetrievalSource, TurnId,
+    BankId, NetworkType, ReflectDoneTrace, ReflectQuery, RetainInput, RetrievalSource, TurnId,
 };
-use elephant::{ElephantRuntime, MemoryStore};
 use elephant_bench::{
-    BenchHarnessBuilder, BenchJudgeConfig, BenchRuntimeMetadata, BenchRuntimePromptHashes,
-    BenchRuntimeTuning,
+    BenchHarnessBuilder, BenchJudgeConfig, BenchRuntime, BenchRuntimeMetadata,
+    BenchRuntimePromptHashes, BenchRuntimeTuning,
 };
 
 // --- LoCoMo dataset types ---
@@ -646,11 +644,11 @@ fn benchmark_runtime_config(runtime_metadata: &BenchRuntimeMetadata) -> Benchmar
 }
 
 async fn finalize_bank_stats(
-    store: Arc<dyn MemoryStore>,
+    runtime: &BenchRuntime,
     bank_id: BankId,
     stats: &mut ConversationBankStats,
 ) -> Result<(), String> {
-    let all_facts = store
+    let all_facts = runtime
         .get_facts_by_bank(bank_id, Default::default())
         .await
         .map_err(|e| format!("failed to read final bank facts: {e}"))?;
@@ -663,7 +661,7 @@ async fn finalize_bank_stats(
         .iter()
         .filter(|fact| fact.network == NetworkType::Opinion)
         .count();
-    stats.final_entity_count = store
+    stats.final_entity_count = runtime
         .list_entities(bank_id)
         .await
         .map_err(|e| format!("failed to read final bank entities: {e}"))?
@@ -2746,25 +2744,6 @@ fn question_id_for(sample_id: &str, question: &str) -> String {
     format!("{:06x}", h.finish() & 0xFFFFFF)
 }
 
-async fn count_unconsolidated_facts(
-    runtime: &ElephantRuntime,
-    bank_id: BankId,
-) -> Result<usize, String> {
-    runtime
-        .store()
-        .get_facts_by_bank(
-            bank_id,
-            elephant::types::FactFilter {
-                network: Some(vec![NetworkType::World, NetworkType::Experience]),
-                unconsolidated_only: true,
-                ..Default::default()
-            },
-        )
-        .await
-        .map(|facts| facts.len())
-        .map_err(|e| format!("failed to count unconsolidated facts: {e}"))
-}
-
 fn should_log_consolidation_progress(progress: &ConsolidationProgress) -> bool {
     progress.batch_index == 1
         || progress.batch_index == progress.total_batches
@@ -2773,12 +2752,15 @@ fn should_log_consolidation_progress(progress: &ConsolidationProgress) -> bool {
 
 async fn consolidate_with_bench_progress(
     tag: &str,
-    runtime: Arc<ElephantRuntime>,
+    runtime: Arc<BenchRuntime>,
     bank_id: BankId,
     consolidation_batch_size: usize,
     conversation_metrics: Arc<MetricsCollector>,
 ) -> Result<elephant::types::ConsolidationReport, String> {
-    let total_facts = count_unconsolidated_facts(runtime.as_ref(), bank_id).await?;
+    let total_facts = runtime
+        .count_unconsolidated_facts(bank_id)
+        .await
+        .map_err(|e| format!("failed to count unconsolidated facts: {e}"))?;
     let total_batches = if total_facts == 0 {
         0
     } else {
@@ -2792,11 +2774,10 @@ async fn consolidate_with_bench_progress(
 
     let started = Instant::now();
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let consolidator = runtime.consolidator().clone();
     let task = tokio::spawn(async move {
         with_scoped_collector(
             conversation_metrics,
-            consolidator.consolidate_with_progress(bank_id, Some(tx)),
+            runtime.consolidate_with_progress(bank_id, Some(tx)),
         )
         .await
     });
@@ -2822,7 +2803,7 @@ async fn consolidate_with_bench_progress(
 
 async fn run_conversation(
     tag: String,
-    runtime: Arc<ElephantRuntime>,
+    runtime: Arc<BenchRuntime>,
     entry: LocomoEntry,
     judge: Arc<dyn LlmClient>,
     options: ConversationRunOptions,
@@ -2854,18 +2835,11 @@ async fn run_conversation(
             ));
         }
 
-        let bank = MemoryBank {
-            id: BankId::new(),
-            name: format!("locomo-{sample_id}"),
-            mission: "Long-term conversational memory benchmark".into(),
-            directives: vec![],
-            disposition: Disposition::default(),
-            embedding_model: runtime.embeddings().model_name().to_string(),
-            embedding_dimensions: runtime.embeddings().dimensions() as u16,
-        };
-        runtime
-            .store()
-            .create_bank(&bank)
+        let bank = runtime
+            .create_benchmark_bank(
+                format!("locomo-{sample_id}"),
+                "Long-term conversational memory benchmark",
+            )
             .await
             .map_err(|e| format!("[{tag}] failed to create bank: {e}"))?;
 
@@ -2906,7 +2880,7 @@ async fn run_conversation(
                 };
                 match with_scoped_collector(
                     conversation_metrics.clone(),
-                    runtime.retain_pipeline().retain(&RetainInput {
+                    runtime.retain(&RetainInput {
                         bank_id: bank.id,
                         content,
                         timestamp,
@@ -2945,7 +2919,7 @@ async fn run_conversation(
 
                     let resp = with_scoped_collector(
                         conversation_metrics.clone(),
-                        runtime.retain_pipeline().retain(&RetainInput {
+                        runtime.retain(&RetainInput {
                             bank_id: bank.id,
                             content: turn_text.clone(),
                             timestamp,
@@ -3088,7 +3062,7 @@ async fn run_conversation(
         .lock()
         .await
         .record_conversation_metrics(sample_id.clone(), conversation_metrics.snapshot());
-    finalize_bank_stats(runtime.store(), bank_id, &mut bank_stats).await?;
+    finalize_bank_stats(runtime.as_ref(), bank_id, &mut bank_stats).await?;
     shared
         .lock()
         .await
@@ -3180,7 +3154,6 @@ async fn run_conversation(
                 with_scoped_collector(question_metrics_for_scope, async {
                     let t0 = Instant::now();
                     let reflect_result = runtime
-                        .reflect_pipeline()
                         .reflect(&ReflectQuery {
                             bank_id,
                             question: question.clone(),
