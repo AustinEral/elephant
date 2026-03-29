@@ -386,18 +386,16 @@ impl ElephantMcp {
     ) -> Result<String, String> {
         use crate::types::Disposition;
 
-        let id = BankId::new();
         let name = require_text(params.name, "name").map_err(|e| e.message.to_string())?;
-
-        let bank = MemoryBank {
-            id,
-            name,
-            mission: normalize_optional_text(params.mission).unwrap_or_default(),
-            directives: vec![],
-            disposition: Disposition::default(),
-            embedding_model: self.app.embedding_model_name().to_string(),
-            embedding_dimensions: self.app.embedding_dimensions(),
-        };
+        let bank = self
+            .app
+            .new_bank(
+                name,
+                normalize_optional_text(params.mission).unwrap_or_default(),
+                vec![],
+                Disposition::default(),
+            )
+            .map_err(|e| e.to_string())?;
 
         self.app
             .create_bank(&bank)
