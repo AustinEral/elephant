@@ -215,36 +215,64 @@ impl ElephantRuntime {
     }
 
     /// Return the retain pipeline.
+    ///
+    /// This is an advanced composition hook for in-process adapters such as
+    /// [`AppHandle`](crate::app::AppHandle) and `elephant-bench`.
+    /// Most callers should prefer the higher-level application facades.
     pub fn retain_pipeline(&self) -> Arc<dyn RetainPipeline> {
         self.retain.clone()
     }
 
     /// Return the recall pipeline.
+    ///
+    /// This is an advanced composition hook for in-process adapters such as
+    /// [`AppHandle`](crate::app::AppHandle) and `elephant-bench`.
+    /// Most callers should prefer the higher-level application facades.
     pub fn recall_pipeline(&self) -> Arc<dyn RecallPipeline> {
         self.recall.clone()
     }
 
     /// Return the reflect pipeline.
+    ///
+    /// This is an advanced composition hook for in-process adapters such as
+    /// [`AppHandle`](crate::app::AppHandle) and `elephant-bench`.
+    /// Most callers should prefer the higher-level application facades.
     pub fn reflect_pipeline(&self) -> Arc<dyn ReflectPipeline> {
         self.reflect.clone()
     }
 
     /// Return the consolidator.
+    ///
+    /// This is an advanced composition hook for in-process adapters such as
+    /// [`AppHandle`](crate::app::AppHandle) and `elephant-bench`.
+    /// Most callers should prefer the higher-level application facades.
     pub fn consolidator(&self) -> Arc<dyn Consolidator> {
         self.consolidator.clone()
     }
 
     /// Return the opinion merger.
+    ///
+    /// This is an advanced composition hook for in-process adapters such as
+    /// [`AppHandle`](crate::app::AppHandle) and `elephant-bench`.
+    /// Most callers should prefer the higher-level application facades.
     pub fn opinion_merger(&self) -> Arc<dyn OpinionMerger> {
         self.opinion_merger.clone()
     }
 
     /// Return the shared storage backend.
+    ///
+    /// This is an advanced composition hook for in-process adapters such as
+    /// [`AppHandle`](crate::app::AppHandle) and `elephant-bench`.
+    /// Most callers should prefer the higher-level application facades.
     pub fn store(&self) -> Arc<dyn MemoryStore> {
         self.store.clone()
     }
 
     /// Return the shared embedding client.
+    ///
+    /// This is an advanced composition hook for in-process adapters such as
+    /// [`AppHandle`](crate::app::AppHandle) and `elephant-bench`.
+    /// Most callers should prefer the higher-level application facades.
     pub fn embeddings(&self) -> Arc<dyn EmbeddingClient> {
         self.embeddings.clone()
     }

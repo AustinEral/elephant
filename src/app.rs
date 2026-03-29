@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::config::ServerConfig;
 use crate::consolidation::{Consolidator, OpinionMerger};
 use crate::embedding::EmbeddingClient;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::recall::RecallPipeline;
 use crate::reflect::ReflectPipeline;
 use crate::retain::RetainPipeline;
@@ -221,8 +221,13 @@ impl AppHandle {
     }
 
     /// Return the embedding dimensionality used for new banks.
-    pub fn embedding_dimensions(&self) -> u16 {
-        self.embeddings.dimensions() as u16
+    pub fn embedding_dimensions(&self) -> Result<u16> {
+        u16::try_from(self.embeddings.dimensions()).map_err(|_| {
+            Error::Configuration(format!(
+                "embedding dimensions {} exceed u16::MAX",
+                self.embeddings.dimensions()
+            ))
+        })
     }
 
     /// List all banks.
@@ -282,15 +287,15 @@ impl AppHandle {
         mission: String,
         directives: Vec<String>,
         disposition: Disposition,
-    ) -> MemoryBank {
-        MemoryBank {
+    ) -> Result<MemoryBank> {
+        Ok(MemoryBank {
             id: BankId::new(),
             name,
             mission,
             directives,
             disposition,
             embedding_model: self.embedding_model_name().to_string(),
-            embedding_dimensions: self.embedding_dimensions(),
-        }
+            embedding_dimensions: self.embedding_dimensions()?,
+        })
     }
 }

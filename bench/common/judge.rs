@@ -6,9 +6,8 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use crate::common::failure;
-use elephant::llm::retry::{RetryPolicy, RetryingLlmClient};
 use elephant::llm::{self, CompletionRequest, LlmClient, Message};
-use elephant::metrics::{LlmStage, MeteredLlmClient, MetricsCollector};
+use elephant::metrics::MetricsCollector;
 use elephant_bench::BenchJudgeConfig;
 
 /// Parsed judge LLM response.
@@ -106,11 +105,8 @@ pub async fn llm_judge(
 pub fn build_judge_client(
     metrics: Arc<MetricsCollector>,
     judge_config: &BenchJudgeConfig,
-) -> Arc<dyn LlmClient> {
-    let inner: Arc<dyn LlmClient> = Arc::from(llm::build_client(judge_config.client()).unwrap());
-    let metered: Arc<dyn LlmClient> =
-        Arc::new(MeteredLlmClient::new(inner, metrics, LlmStage::Judge));
-    Arc::new(RetryingLlmClient::new(metered, RetryPolicy::default()))
+) -> elephant::Result<Arc<dyn LlmClient>> {
+    judge_config.build_client(metrics)
 }
 
 /// Returns "provider/model" string identifying the judge configuration.

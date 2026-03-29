@@ -77,7 +77,7 @@ pub async fn create_bank(
         None => Disposition::default(),
     };
 
-    let bank = app.new_bank(body.name, body.mission, body.directives, disposition);
+    let bank = app.new_bank(body.name, body.mission, body.directives, disposition)?;
     app.create_bank(&bank).await?;
     Ok(Json(bank))
 }
