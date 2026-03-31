@@ -104,7 +104,7 @@ struct BenchmarkRuntimeConfig {
     #[serde(default)]
     reflect_budget_tokens: usize,
     #[serde(default)]
-    judge_temperature: f32,
+    judge_temperature: Option<f32>,
     #[serde(default)]
     judge_max_tokens: usize,
     #[serde(default)]

@@ -6,9 +6,8 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use crate::common::failure;
-use elephant::llm::retry::{RetryPolicy, RetryingLlmClient};
 use elephant::llm::{self, CompletionRequest, LlmClient, Message};
-use elephant::metrics::{LlmStage, MeteredLlmClient, MetricsCollector};
+use elephant::metrics::MetricsCollector;
 use elephant_bench::BenchJudgeConfig;
 
 /// Parsed judge LLM response.
@@ -18,7 +17,7 @@ pub struct JudgeResponse {
     pub label: String,
 }
 
-pub const JUDGE_TEMPERATURE: f32 = 0.0;
+pub const JUDGE_TEMPERATURE: Option<f32> = None;
 pub const JUDGE_MAX_TOKENS: usize = 200;
 pub const JUDGE_MAX_ATTEMPTS: usize = 3;
 
@@ -63,11 +62,13 @@ pub async fn llm_judge(
     judge: &dyn LlmClient,
     rendered_prompt: &str,
 ) -> Result<(bool, String), JudgeError> {
-    let request = CompletionRequest::builder()
+    let mut request = CompletionRequest::builder()
         .message(Message::user(rendered_prompt))
-        .max_tokens(JUDGE_MAX_TOKENS)
-        .temperature(JUDGE_TEMPERATURE)
-        .build();
+        .max_tokens(JUDGE_MAX_TOKENS);
+    if let Some(temperature) = JUDGE_TEMPERATURE {
+        request = request.temperature(temperature);
+    }
+    let request = request.build();
 
     for attempt in 0..JUDGE_MAX_ATTEMPTS {
         let result = judge.complete(request.clone()).await;
@@ -106,11 +107,8 @@ pub async fn llm_judge(
 pub fn build_judge_client(
     metrics: Arc<MetricsCollector>,
     judge_config: &BenchJudgeConfig,
-) -> Arc<dyn LlmClient> {
-    let inner: Arc<dyn LlmClient> = Arc::from(llm::build_client(judge_config.client()).unwrap());
-    let metered: Arc<dyn LlmClient> =
-        Arc::new(MeteredLlmClient::new(inner, metrics, LlmStage::Judge));
-    Arc::new(RetryingLlmClient::new(metered, RetryPolicy::default()))
+) -> elephant::Result<Arc<dyn LlmClient>> {
+    judge_config.build_client(metrics)
 }
 
 /// Returns "provider/model" string identifying the judge configuration.

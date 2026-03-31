@@ -20,9 +20,9 @@ use loaders::{
     parse_optional_temperature, reranker_config_from_env, runtime_llm_config_from_env,
 };
 use validation::{
-    validate_embedding_config, validate_nonblank_field, validate_nonnegative_float,
-    validate_optional_nonnegative_float, validate_optional_unit_interval_float,
-    validate_positive_usize_field, validate_reranker_config, validate_unit_interval_float,
+    validate_embedding_config, validate_nonblank_field, validate_optional_nonnegative_float,
+    validate_optional_unit_interval_float, validate_positive_usize_field, validate_reranker_config,
+    validate_unit_interval_float,
 };
 
 /// Validated startup configuration for the shared Elephant runtime.
@@ -35,18 +35,12 @@ pub struct RuntimeConfig {
     dedup_threshold: Option<f32>,
     reasoning_effort: ReasoningEffortConfig,
     extraction: extractor::ExtractionConfig,
-    extract_temperature_override: Option<f32>,
-    resolve_temperature: f32,
-    resolve_temperature_override: Option<f32>,
+    resolve_temperature: Option<f32>,
     graph: graph_builder::GraphConfig,
-    graph_temperature_override: Option<f32>,
     consolidation: ConsolidationConfig,
-    consolidate_temperature_override: Option<f32>,
     opinion_merge: opinion_merger::OpinionMergeConfig,
-    opinion_merge_temperature_override: Option<f32>,
     reflect: ReflectConfig,
-    reflect_temperature: f32,
-    reflect_temperature_override: Option<f32>,
+    reflect_temperature: Option<f32>,
     retrieval: RetrievalConfig,
 }
 
@@ -60,36 +54,12 @@ impl fmt::Debug for RuntimeConfig {
             .field("dedup_threshold", &self.dedup_threshold)
             .field("reasoning_effort", &self.reasoning_effort)
             .field("extraction", &self.extraction)
-            .field(
-                "extract_temperature_override",
-                &self.extract_temperature_override,
-            )
             .field("resolve_temperature", &self.resolve_temperature)
-            .field(
-                "resolve_temperature_override",
-                &self.resolve_temperature_override,
-            )
             .field("graph", &self.graph)
-            .field(
-                "graph_temperature_override",
-                &self.graph_temperature_override,
-            )
             .field("consolidation", &self.consolidation)
-            .field(
-                "consolidate_temperature_override",
-                &self.consolidate_temperature_override,
-            )
             .field("opinion_merge", &self.opinion_merge)
-            .field(
-                "opinion_merge_temperature_override",
-                &self.opinion_merge_temperature_override,
-            )
             .field("reflect", &self.reflect)
             .field("reflect_temperature", &self.reflect_temperature)
-            .field(
-                "reflect_temperature_override",
-                &self.reflect_temperature_override,
-            )
             .field("retrieval", &self.retrieval)
             .finish()
     }
@@ -111,18 +81,12 @@ impl RuntimeConfig {
             dedup_threshold: Some(0.95),
             reasoning_effort: ReasoningEffortConfig::default(),
             extraction: extractor::ExtractionConfig::default(),
-            extract_temperature_override: None,
-            resolve_temperature: crate::retain::resolver::ENTITY_RESOLUTION_TEMPERATURE,
-            resolve_temperature_override: None,
+            resolve_temperature: None,
             graph: graph_builder::GraphConfig::default(),
-            graph_temperature_override: None,
             consolidation: ConsolidationConfig::default(),
-            consolidate_temperature_override: None,
             opinion_merge: opinion_merger::OpinionMergeConfig::default(),
-            opinion_merge_temperature_override: None,
             reflect: ReflectConfig::default(),
-            reflect_temperature: crate::reflect::REFLECT_TEMPERATURE,
-            reflect_temperature_override: None,
+            reflect_temperature: None,
             retrieval: RetrievalConfig::default(),
         };
         config.validate()?;
@@ -160,23 +124,15 @@ impl RuntimeConfig {
                 "RETAIN_EXTRACT_STRUCTURED_OUTPUT_MAX_ATTEMPTS",
             )?
             .unwrap_or(extractor::ExtractionConfig::default().structured_output_max_attempts),
-            temperature: parse_optional_temperature("RETAIN_EXTRACT_TEMPERATURE")?
-                .unwrap_or(extractor::ExtractionConfig::default().temperature),
+            temperature: parse_optional_temperature("RETAIN_EXTRACT_TEMPERATURE")?,
             reasoning_effort: reasoning_effort.retain_extract,
         };
-        let extract_temperature_override =
-            parse_optional_temperature("RETAIN_EXTRACT_TEMPERATURE")?;
-        let resolve_temperature = parse_optional_temperature("RETAIN_RESOLVE_TEMPERATURE")?
-            .unwrap_or(crate::retain::resolver::ENTITY_RESOLUTION_TEMPERATURE);
-        let resolve_temperature_override =
-            parse_optional_temperature("RETAIN_RESOLVE_TEMPERATURE")?;
+        let resolve_temperature = parse_optional_temperature("RETAIN_RESOLVE_TEMPERATURE")?;
         let graph = graph_builder::GraphConfig {
-            causal_temperature: parse_optional_temperature("RETAIN_GRAPH_TEMPERATURE")?
-                .unwrap_or(graph_builder::CAUSAL_LINK_TEMPERATURE),
+            causal_temperature: parse_optional_temperature("RETAIN_GRAPH_TEMPERATURE")?,
             causal_reasoning_effort: reasoning_effort.retain_graph,
             ..graph_builder::GraphConfig::default()
         };
-        let graph_temperature_override = parse_optional_temperature("RETAIN_GRAPH_TEMPERATURE")?;
         let consolidation = ConsolidationConfig {
             batch_size: parse_optional_positive_usize("CONSOLIDATION_BATCH_SIZE")?
                 .unwrap_or(ConsolidationConfig::default().batch_size),
@@ -188,41 +144,27 @@ impl RuntimeConfig {
                 "CONSOLIDATION_STRUCTURED_OUTPUT_MAX_ATTEMPTS",
             )?
             .unwrap_or(ConsolidationConfig::default().structured_output_max_attempts),
-            temperature: parse_optional_temperature("CONSOLIDATE_TEMPERATURE")?
-                .unwrap_or(ConsolidationConfig::default().temperature),
+            temperature: parse_optional_temperature("CONSOLIDATE_TEMPERATURE")?,
             reasoning_effort: reasoning_effort.consolidate,
         };
-        let consolidate_temperature_override =
-            parse_optional_temperature("CONSOLIDATE_TEMPERATURE")?;
         let opinion_merge = opinion_merger::OpinionMergeConfig {
-            temperature: parse_optional_temperature("OPINION_MERGE_TEMPERATURE")?
-                .unwrap_or(opinion_merger::OpinionMergeConfig::default().temperature),
+            temperature: parse_optional_temperature("OPINION_MERGE_TEMPERATURE")?,
             reasoning_effort: reasoning_effort.opinion_merge,
         };
-        let opinion_merge_temperature_override =
-            parse_optional_temperature("OPINION_MERGE_TEMPERATURE")?;
         let reflect = ReflectConfig::from_env()?;
-        let reflect_temperature = parse_optional_temperature("REFLECT_TEMPERATURE")?
-            .unwrap_or(crate::reflect::REFLECT_TEMPERATURE);
-        let reflect_temperature_override = parse_optional_temperature("REFLECT_TEMPERATURE")?;
+        let reflect_temperature = parse_optional_temperature("REFLECT_TEMPERATURE")?;
         let retrieval = RetrievalConfig::from_env()?;
 
         Self::new(database_url, llm, embedding, reranker)?
             .with_dedup_threshold(dedup_threshold)?
             .with_reasoning_effort(reasoning_effort)?
             .with_extraction(extraction)?
-            .with_extract_temperature_override(extract_temperature_override)?
             .with_resolve_temperature(resolve_temperature)?
-            .with_resolve_temperature_override(resolve_temperature_override)?
             .with_graph(graph)?
-            .with_graph_temperature_override(graph_temperature_override)?
             .with_consolidation(consolidation)?
-            .with_consolidate_temperature_override(consolidate_temperature_override)?
             .with_opinion_merge(opinion_merge)?
-            .with_opinion_merge_temperature_override(opinion_merge_temperature_override)?
             .with_reflect(reflect)?
             .with_reflect_temperature(reflect_temperature)?
-            .with_reflect_temperature_override(reflect_temperature_override)?
             .with_retrieval(retrieval)
     }
 
@@ -250,29 +192,9 @@ impl RuntimeConfig {
         Ok(self)
     }
 
-    /// Set the explicit retain extraction temperature override, if any.
-    pub fn with_extract_temperature_override(
-        mut self,
-        extract_temperature_override: Option<f32>,
-    ) -> Result<Self> {
-        self.extract_temperature_override = extract_temperature_override;
-        self.validate()?;
-        Ok(self)
-    }
-
-    /// Override the retain entity-resolution temperature.
-    pub fn with_resolve_temperature(mut self, resolve_temperature: f32) -> Result<Self> {
+    /// Override the retain entity-resolution temperature, if configured.
+    pub fn with_resolve_temperature(mut self, resolve_temperature: Option<f32>) -> Result<Self> {
         self.resolve_temperature = resolve_temperature;
-        self.validate()?;
-        Ok(self)
-    }
-
-    /// Set the explicit retain entity-resolution temperature override, if any.
-    pub fn with_resolve_temperature_override(
-        mut self,
-        resolve_temperature_override: Option<f32>,
-    ) -> Result<Self> {
-        self.resolve_temperature_override = resolve_temperature_override;
         self.validate()?;
         Ok(self)
     }
@@ -284,29 +206,9 @@ impl RuntimeConfig {
         Ok(self)
     }
 
-    /// Set the explicit retain graph temperature override, if any.
-    pub fn with_graph_temperature_override(
-        mut self,
-        graph_temperature_override: Option<f32>,
-    ) -> Result<Self> {
-        self.graph_temperature_override = graph_temperature_override;
-        self.validate()?;
-        Ok(self)
-    }
-
     /// Override observation-consolidation settings.
     pub fn with_consolidation(mut self, consolidation: ConsolidationConfig) -> Result<Self> {
         self.consolidation = consolidation;
-        self.validate()?;
-        Ok(self)
-    }
-
-    /// Set the explicit consolidation temperature override, if any.
-    pub fn with_consolidate_temperature_override(
-        mut self,
-        consolidate_temperature_override: Option<f32>,
-    ) -> Result<Self> {
-        self.consolidate_temperature_override = consolidate_temperature_override;
         self.validate()?;
         Ok(self)
     }
@@ -321,16 +223,6 @@ impl RuntimeConfig {
         Ok(self)
     }
 
-    /// Set the explicit opinion-merge temperature override, if any.
-    pub fn with_opinion_merge_temperature_override(
-        mut self,
-        opinion_merge_temperature_override: Option<f32>,
-    ) -> Result<Self> {
-        self.opinion_merge_temperature_override = opinion_merge_temperature_override;
-        self.validate()?;
-        Ok(self)
-    }
-
     /// Override reflect-stage settings.
     pub fn with_reflect(mut self, reflect: ReflectConfig) -> Result<Self> {
         self.reflect = reflect;
@@ -338,19 +230,9 @@ impl RuntimeConfig {
         Ok(self)
     }
 
-    /// Override the reflect temperature.
-    pub fn with_reflect_temperature(mut self, reflect_temperature: f32) -> Result<Self> {
+    /// Override the reflect temperature, if configured.
+    pub fn with_reflect_temperature(mut self, reflect_temperature: Option<f32>) -> Result<Self> {
         self.reflect_temperature = reflect_temperature;
-        self.validate()?;
-        Ok(self)
-    }
-
-    /// Set the explicit reflect temperature override, if any.
-    pub fn with_reflect_temperature_override(
-        mut self,
-        reflect_temperature_override: Option<f32>,
-    ) -> Result<Self> {
-        self.reflect_temperature_override = reflect_temperature_override;
         self.validate()?;
         Ok(self)
     }
@@ -371,21 +253,12 @@ impl RuntimeConfig {
             "extraction.structured_output_max_attempts",
             self.extraction.structured_output_max_attempts,
         )?;
-        validate_nonnegative_float("extraction.temperature", self.extraction.temperature)?;
-        validate_optional_nonnegative_float(
-            "extract_temperature_override",
-            self.extract_temperature_override,
-        )?;
-        validate_nonnegative_float("resolve_temperature", self.resolve_temperature)?;
-        validate_optional_nonnegative_float(
-            "resolve_temperature_override",
-            self.resolve_temperature_override,
-        )?;
+        validate_optional_nonnegative_float("extraction.temperature", self.extraction.temperature)?;
+        validate_optional_nonnegative_float("resolve_temperature", self.resolve_temperature)?;
         validate_unit_interval_float("graph.semantic_threshold", self.graph.semantic_threshold)?;
-        validate_nonnegative_float("graph.causal_temperature", self.graph.causal_temperature)?;
         validate_optional_nonnegative_float(
-            "graph_temperature_override",
-            self.graph_temperature_override,
+            "graph.causal_temperature",
+            self.graph.causal_temperature,
         )?;
         validate_positive_usize_field("consolidation.batch_size", self.consolidation.batch_size)?;
         validate_positive_usize_field("consolidation.max_tokens", self.consolidation.max_tokens)?;
@@ -397,21 +270,15 @@ impl RuntimeConfig {
             "consolidation.structured_output_max_attempts",
             self.consolidation.structured_output_max_attempts,
         )?;
-        validate_nonnegative_float("consolidation.temperature", self.consolidation.temperature)?;
         validate_optional_nonnegative_float(
-            "consolidate_temperature_override",
-            self.consolidate_temperature_override,
+            "consolidation.temperature",
+            self.consolidation.temperature,
         )?;
-        validate_nonnegative_float("opinion_merge.temperature", self.opinion_merge.temperature)?;
         validate_optional_nonnegative_float(
-            "opinion_merge_temperature_override",
-            self.opinion_merge_temperature_override,
+            "opinion_merge.temperature",
+            self.opinion_merge.temperature,
         )?;
-        validate_nonnegative_float("reflect_temperature", self.reflect_temperature)?;
-        validate_optional_nonnegative_float(
-            "reflect_temperature_override",
-            self.reflect_temperature_override,
-        )?;
+        validate_optional_nonnegative_float("reflect_temperature", self.reflect_temperature)?;
         Ok(())
     }
 
@@ -450,19 +317,9 @@ impl RuntimeConfig {
         self.extraction
     }
 
-    /// Return the explicit retain extraction temperature override, if any.
-    pub(crate) fn extract_temperature_override(&self) -> Option<f32> {
-        self.extract_temperature_override
-    }
-
-    /// Return the retain entity-resolution temperature.
-    pub(crate) fn resolve_temperature(&self) -> f32 {
+    /// Return the configured retain entity-resolution temperature override, if any.
+    pub(crate) fn resolve_temperature(&self) -> Option<f32> {
         self.resolve_temperature
-    }
-
-    /// Return the explicit retain entity-resolution temperature override, if any.
-    pub(crate) fn resolve_temperature_override(&self) -> Option<f32> {
-        self.resolve_temperature_override
     }
 
     /// Return the retain graph-building config.
@@ -470,19 +327,9 @@ impl RuntimeConfig {
         self.graph.clone()
     }
 
-    /// Return the explicit retain graph temperature override, if any.
-    pub(crate) fn graph_temperature_override(&self) -> Option<f32> {
-        self.graph_temperature_override
-    }
-
     /// Return the observation consolidation config.
     pub(crate) fn consolidation(&self) -> ConsolidationConfig {
         self.consolidation
-    }
-
-    /// Return the explicit consolidation temperature override, if any.
-    pub(crate) fn consolidate_temperature_override(&self) -> Option<f32> {
-        self.consolidate_temperature_override
     }
 
     /// Return the opinion-merge config.
@@ -490,24 +337,14 @@ impl RuntimeConfig {
         self.opinion_merge
     }
 
-    /// Return the explicit opinion-merge temperature override, if any.
-    pub(crate) fn opinion_merge_temperature_override(&self) -> Option<f32> {
-        self.opinion_merge_temperature_override
-    }
-
     /// Return the reflect-stage runtime config.
     pub(crate) fn reflect(&self) -> &ReflectConfig {
         &self.reflect
     }
 
-    /// Return the reflect temperature.
-    pub(crate) fn reflect_temperature(&self) -> f32 {
+    /// Return the configured reflect temperature override, if any.
+    pub(crate) fn reflect_temperature(&self) -> Option<f32> {
         self.reflect_temperature
-    }
-
-    /// Return the explicit reflect temperature override, if any.
-    pub(crate) fn reflect_temperature_override(&self) -> Option<f32> {
-        self.reflect_temperature_override
     }
 
     /// Return the retrieval-stage runtime config.
@@ -751,10 +588,12 @@ mod tests {
         assert_eq!(config.retrieval().retriever_limit(), 40);
         assert_eq!(config.retrieval().max_facts(), 50);
         assert_eq!(config.reflect().max_iterations(), 8);
-        assert_eq!(
-            config.resolve_temperature(),
-            crate::retain::resolver::ENTITY_RESOLUTION_TEMPERATURE
-        );
+        assert_eq!(config.extraction().temperature, None);
+        assert_eq!(config.resolve_temperature(), None);
+        assert_eq!(config.graph().causal_temperature, None);
+        assert_eq!(config.consolidation().temperature, None);
+        assert_eq!(config.opinion_merge().temperature, None);
+        assert_eq!(config.reflect_temperature(), None);
     }
 
     #[test]

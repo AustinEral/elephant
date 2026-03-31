@@ -40,7 +40,7 @@ pub struct LayeredEntityResolver {
     embeddings: Box<dyn EmbeddingClient>,
     llm: Arc<dyn LlmClient>,
     similarity_threshold: f32,
-    temperature: f32,
+    temperature: Option<f32>,
     reasoning_effort: Option<ReasoningEffort>,
 }
 
@@ -49,15 +49,13 @@ pub const ENTITY_RESOLUTION_SYSTEM_PROMPT: &str =
     "You are an entity resolution assistant. Answer only 'yes' or 'no'.";
 /// Entity resolver user prompt template.
 pub const ENTITY_RESOLUTION_USER_PROMPT_TEMPLATE: &str = "Is the mention \"{mention}\" referring to the same entity as \"{canonical_name}\" (aliases: {aliases})?\nAnswer with just \"yes\" or \"no\".";
-/// Entity resolver temperature.
-pub const ENTITY_RESOLUTION_TEMPERATURE: f32 = 0.0;
 /// Entity resolver output cap.
 pub const ENTITY_RESOLUTION_MAX_TOKENS: usize = 32;
 
 impl LayeredEntityResolver {
     /// Create a new resolver.
     pub fn new(embeddings: Box<dyn EmbeddingClient>, llm: Arc<dyn LlmClient>) -> Self {
-        Self::new_with_options(embeddings, llm, ENTITY_RESOLUTION_TEMPERATURE, None)
+        Self::new_with_options(embeddings, llm, None, None)
     }
 
     /// Create a new resolver with an explicit temperature override.
@@ -66,14 +64,14 @@ impl LayeredEntityResolver {
         llm: Arc<dyn LlmClient>,
         temperature: f32,
     ) -> Self {
-        Self::new_with_options(embeddings, llm, temperature, None)
+        Self::new_with_options(embeddings, llm, Some(temperature), None)
     }
 
     /// Create a new resolver with explicit runtime options.
     pub fn new_with_options(
         embeddings: Box<dyn EmbeddingClient>,
         llm: Arc<dyn LlmClient>,
-        temperature: f32,
+        temperature: Option<f32>,
         reasoning_effort: Option<ReasoningEffort>,
     ) -> Self {
         Self {
@@ -153,13 +151,15 @@ impl LayeredEntityResolver {
             .replace("{canonical_name}", &candidate.canonical_name)
             .replace("{aliases}", &format!("{:?}", candidate.aliases));
 
-        let request = CompletionRequest::builder()
+        let mut request = CompletionRequest::builder()
             .system(ENTITY_RESOLUTION_SYSTEM_PROMPT)
             .message(Message::user(prompt))
-            .temperature(self.temperature)
             .reasoning_effort_opt(self.reasoning_effort)
-            .max_tokens(ENTITY_RESOLUTION_MAX_TOKENS)
-            .build();
+            .max_tokens(ENTITY_RESOLUTION_MAX_TOKENS);
+        if let Some(temperature) = self.temperature {
+            request = request.temperature(temperature);
+        }
+        let request = request.build();
 
         let response = self.llm.complete(request).await?;
         Ok(response.content.trim().to_lowercase().starts_with("yes"))

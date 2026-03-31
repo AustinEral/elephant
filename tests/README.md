@@ -72,11 +72,11 @@ curl -Lo models/ms-marco-MiniLM-L-6-v2/tokenizer.json https://huggingface.co/cro
 
 ```bash
 # Local embeddings
-cargo test --test real_integration_tests local -- --ignored --nocapture
+cargo test testing::real_integration::local -- --ignored --nocapture
 
 # OpenAI embeddings
-cargo test --test real_integration_tests openai -- --ignored --nocapture
+cargo test testing::real_integration::openai -- --ignored --nocapture
 
 # All
-cargo test --test real_integration_tests -- --ignored --nocapture
+cargo test testing::real_integration -- --ignored --nocapture
 ```

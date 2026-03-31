@@ -7,12 +7,11 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tracing::warn;
 
-use elephant::ElephantRuntime;
 use elephant::error::Result;
 use elephant::metrics::{LlmStage, StageUsage};
+use elephant::types::RetainInput;
 use elephant::types::id::BankId;
-use elephant::types::network::NetworkType;
-use elephant::types::{Disposition, FactFilter, MemoryBank, RetainInput};
+use elephant_bench::BenchRuntime;
 
 use super::dataset::{LongMemEvalInstance, Turn};
 
@@ -214,7 +213,8 @@ pub fn format_session_json(turns: &[Turn]) -> String {
 /// This function assumes sequential invocation.
 pub async fn ingest_instance(
     instance: &LongMemEvalInstance,
-    runtime: &ElephantRuntime,
+    runtime: &BenchRuntime,
+    consolidation_batch_size: usize,
     config: &IngestConfig,
     existing_bank_id: Option<BankId>,
 ) -> Result<IngestResult> {
@@ -225,16 +225,12 @@ pub async fn ingest_instance(
     let bank_id = if let Some(id) = existing_bank_id {
         id
     } else {
-        let bank = MemoryBank {
-            id: BankId::new(),
-            name: format!("longmemeval-{}", instance.question_id),
-            mission: "Long-term conversational memory benchmark".into(),
-            directives: vec![],
-            disposition: Disposition::default(),
-            embedding_model: runtime.embeddings().model_name().to_string(),
-            embedding_dimensions: runtime.embeddings().dimensions() as u16,
-        };
-        runtime.store().create_bank(&bank).await?;
+        let bank = runtime
+            .create_benchmark_bank(
+                format!("longmemeval-{}", instance.question_id),
+                "Long-term conversational memory benchmark",
+            )
+            .await?;
         bank.id
     };
 
@@ -273,7 +269,6 @@ pub async fn ingest_instance(
         let timestamp = parse_haystack_date(date_str);
 
         match runtime
-            .retain_pipeline()
             .retain(&RetainInput {
                 bank_id,
                 content,
@@ -315,7 +310,7 @@ pub async fn ingest_instance(
 
         // Per-session consolidation
         if config.consolidation.per_session() {
-            match runtime.consolidator().consolidate(bank_id).await {
+            match runtime.consolidate(bank_id).await {
                 Ok(cr) => {
                     stats.observations_created += cr.observations_created;
                     stats.observations_updated += cr.observations_updated;
@@ -338,22 +333,13 @@ pub async fn ingest_instance(
     let mut consolidation_time_s = 0.0;
     if config.consolidation.enabled() && !config.consolidation.per_session() {
         let total_facts = runtime
-            .store()
-            .get_facts_by_bank(
-                bank_id,
-                FactFilter {
-                    network: Some(vec![NetworkType::World, NetworkType::Experience]),
-                    unconsolidated_only: true,
-                    ..Default::default()
-                },
-            )
+            .count_unconsolidated_facts(bank_id)
             .await
-            .map(|f| f.len())
             .unwrap_or(0);
         let total_batches = if total_facts == 0 {
             0
         } else {
-            total_facts.div_ceil(runtime.info().tuning.consolidation_batch_size)
+            total_facts.div_ceil(consolidation_batch_size)
         };
         eprintln!(
             "  {} consolidating {} facts in {} batches...",
@@ -361,10 +347,10 @@ pub async fn ingest_instance(
         );
         let t0 = Instant::now();
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let consolidator = runtime.consolidator().clone();
+        let runtime = runtime.clone();
         let consolidate_bank_id = bank_id;
         let task = tokio::spawn(async move {
-            consolidator
+            runtime
                 .consolidate_with_progress(consolidate_bank_id, Some(tx))
                 .await
         });

@@ -35,8 +35,8 @@ pub struct GraphConfig {
     pub temporal_max_days: i64,
     /// Whether to check for causal links via LLM.
     pub enable_causal: bool,
-    /// Sampling temperature for causal link checks.
-    pub causal_temperature: f32,
+    /// Explicit sampling-temperature override for causal link checks.
+    pub causal_temperature: Option<f32>,
     /// Reasoning effort override for causal-link checks, if supported.
     pub causal_reasoning_effort: Option<ReasoningEffort>,
 }
@@ -47,7 +47,7 @@ impl Default for GraphConfig {
             semantic_threshold: 0.7,
             temporal_max_days: 30,
             enable_causal: true,
-            causal_temperature: CAUSAL_LINK_TEMPERATURE,
+            causal_temperature: None,
             causal_reasoning_effort: None,
         }
     }
@@ -64,8 +64,6 @@ pub const CAUSAL_LINK_SYSTEM_PROMPT: &str =
     "You are a causal relationship detector. Answer only 'yes' or 'no'.";
 /// Causal-link user prompt template.
 pub const CAUSAL_LINK_USER_PROMPT_TEMPLATE: &str = "Given these two facts, is there a causal relationship between them?\n\nFact A: {fact_a}\nFact B: {fact_b}\n\nAnswer 'yes' if one fact caused or led to the other, otherwise 'no'.";
-/// Causal-link temperature.
-pub const CAUSAL_LINK_TEMPERATURE: f32 = 0.0;
 /// Causal-link output cap.
 pub const CAUSAL_LINK_MAX_TOKENS: usize = 32;
 /// Max causal pairs checked per retain batch.
@@ -251,13 +249,15 @@ impl DefaultGraphBuilder {
                 .replace("{fact_a}", &new_fact.content)
                 .replace("{fact_b}", &existing.content);
 
-            let request = CompletionRequest::builder()
+            let mut request = CompletionRequest::builder()
                 .system(CAUSAL_LINK_SYSTEM_PROMPT)
                 .message(Message::user(prompt))
-                .temperature(self.config.causal_temperature)
                 .reasoning_effort_opt(self.config.causal_reasoning_effort)
-                .max_tokens(CAUSAL_LINK_MAX_TOKENS)
-                .build();
+                .max_tokens(CAUSAL_LINK_MAX_TOKENS);
+            if let Some(temperature) = self.config.causal_temperature {
+                request = request.temperature(temperature);
+            }
+            let request = request.build();
 
             let response = self.llm.complete(request).await?;
             if response.content.trim().to_lowercase().starts_with("yes") {

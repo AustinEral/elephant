@@ -18,6 +18,9 @@ pub mod storage;
 pub mod types;
 pub mod util;
 
+#[cfg(test)]
+mod testing;
+
 pub use config::{
     BackgroundConsolidationConfig, ConfigError, ConfigResult, LogFormat, ReflectConfig,
     RetrievalConfig, RuntimeConfig, ServerConfig,

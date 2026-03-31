@@ -16,26 +16,26 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::ImageExt;
 use tower::util::ServiceExt;
 
-use elephant::consolidation::{DefaultConsolidator, DefaultOpinionMerger};
-use elephant::embedding::mock::MockEmbeddings;
-use elephant::llm::mock::MockLlmClient;
-use elephant::llm::{CompletionResponse, LlmClient, ToolCall};
-use elephant::recall::DefaultRecallPipeline;
-use elephant::recall::budget::EstimateTokenizer;
-use elephant::recall::graph::{GraphRetriever, GraphRetrieverConfig};
-use elephant::recall::keyword::KeywordRetriever;
-use elephant::recall::reranker::{self, RerankerConfig};
-use elephant::recall::semantic::SemanticRetriever;
-use elephant::recall::temporal::TemporalRetriever;
-use elephant::reflect::DefaultReflectPipeline;
-use elephant::retain::DefaultRetainPipeline;
-use elephant::retain::chunker::SimpleChunker;
-use elephant::retain::extractor::{ExtractionConfig, LlmFactExtractor};
-use elephant::retain::graph_builder::{DefaultGraphBuilder, GraphConfig};
-use elephant::retain::resolver::LayeredEntityResolver;
-use elephant::storage::pg::PgMemoryStore;
-use elephant::types::*;
-use elephant::{
+use crate::consolidation::{DefaultConsolidator, DefaultOpinionMerger};
+use crate::embedding::mock::MockEmbeddings;
+use crate::llm::mock::MockLlmClient;
+use crate::llm::{CompletionResponse, LlmClient, ToolCall};
+use crate::recall::DefaultRecallPipeline;
+use crate::recall::budget::EstimateTokenizer;
+use crate::recall::graph::{GraphRetriever, GraphRetrieverConfig};
+use crate::recall::keyword::KeywordRetriever;
+use crate::recall::reranker::{self, RerankerConfig};
+use crate::recall::semantic::SemanticRetriever;
+use crate::recall::temporal::TemporalRetriever;
+use crate::reflect::DefaultReflectPipeline;
+use crate::retain::DefaultRetainPipeline;
+use crate::retain::chunker::SimpleChunker;
+use crate::retain::extractor::{ExtractionConfig, LlmFactExtractor};
+use crate::retain::graph_builder::{DefaultGraphBuilder, GraphConfig};
+use crate::retain::resolver::LayeredEntityResolver;
+use crate::storage::pg::PgMemoryStore;
+use crate::types::*;
+use crate::{
     AppHandle, ServerBackgroundConsolidationInfo, ServerConsolidationRuntimeInfo, ServerInfo,
     ServerModelsInfo, ServerReflectInfo, ServerRetrievalInfo, router,
 };
@@ -165,9 +165,9 @@ impl TestHarness {
         ));
 
         // Recall pipeline
-        let store_arc: Arc<dyn elephant::MemoryStore> =
+        let store_arc: Arc<dyn crate::MemoryStore> =
             Arc::new(PgMemoryStore::new(self.pool.clone()));
-        let embed_arc: Arc<dyn elephant::EmbeddingClient> = self.embeddings.clone();
+        let embed_arc: Arc<dyn crate::EmbeddingClient> = self.embeddings.clone();
 
         let recall = Arc::new(DefaultRecallPipeline::new(
             Box::new(SemanticRetriever::new(
@@ -192,7 +192,7 @@ impl TestHarness {
         // Reflect pipeline
         let reflect = Arc::new(DefaultReflectPipeline::new(
             recall.clone(),
-            self.llm.clone() as Arc<dyn elephant::LlmClient>,
+            self.llm.clone() as Arc<dyn crate::LlmClient>,
             store_arc.clone(),
             8,
         ));
@@ -200,15 +200,15 @@ impl TestHarness {
         // Consolidation
         let consolidator = Arc::new(DefaultConsolidator::new(
             store_arc.clone(),
-            self.llm.clone() as Arc<dyn elephant::LlmClient>,
-            self.embeddings.clone() as Arc<dyn elephant::EmbeddingClient>,
+            self.llm.clone() as Arc<dyn crate::LlmClient>,
+            self.embeddings.clone() as Arc<dyn crate::EmbeddingClient>,
             recall.clone(),
-            elephant::consolidation::ConsolidationConfig::default(),
+            crate::consolidation::ConsolidationConfig::default(),
         ));
         let opinion_merger = Arc::new(DefaultOpinionMerger::new(
             store_arc.clone(),
-            self.llm.clone() as Arc<dyn elephant::LlmClient>,
-            self.embeddings.clone() as Arc<dyn elephant::EmbeddingClient>,
+            self.llm.clone() as Arc<dyn crate::LlmClient>,
+            self.embeddings.clone() as Arc<dyn crate::EmbeddingClient>,
         ));
         let app = AppHandle::from_parts_for_testing(
             test_server_info(),

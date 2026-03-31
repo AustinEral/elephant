@@ -29,12 +29,11 @@ use ingest::{ConsolidationMode, IngestConfig, IngestFormat};
 
 use elephant::consolidation::ConsolidationProgress;
 use elephant::metrics::{LlmStage, MetricsCollector, StageUsage, with_scoped_collector};
-use elephant::types::{NetworkType, ReflectQuery};
-use elephant::{
-    ElephantRuntime, RuntimePromptHashes as ElephantPromptHashes,
-    RuntimeTuning as ElephantRuntimeTuning,
+use elephant::types::ReflectQuery;
+use elephant_bench::{
+    BenchHarnessBuilder, BenchRuntime, BenchRuntimeMetadata, BenchRuntimePromptHashes,
+    BenchRuntimeTuning,
 };
-use elephant_bench::BenchHarnessBuilder;
 
 // --- Judge prompts ---
 
@@ -927,13 +926,13 @@ struct BenchmarkPromptHashes {
     #[serde(default)]
     judge: String,
     #[serde(flatten)]
-    elephant: ElephantPromptHashes,
+    elephant: BenchRuntimePromptHashes,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct BenchmarkRuntimeConfig {
     #[serde(flatten)]
-    elephant: ElephantRuntimeTuning,
+    elephant: BenchRuntimeTuning,
     reflect_budget_tokens: usize,
 }
 
@@ -1166,41 +1165,22 @@ fn run_config_from_artifact(artifact: &BenchmarkOutput) -> Result<RunConfig, Str
     })
 }
 
-fn benchmark_prompt_hashes(runtime: &ElephantRuntime) -> BenchmarkPromptHashes {
+fn benchmark_prompt_hashes(runtime_metadata: &BenchRuntimeMetadata) -> BenchmarkPromptHashes {
     BenchmarkPromptHashes {
         judge: judge_prompt_hash(),
-        elephant: runtime.info().prompt_hashes.clone(),
+        elephant: runtime_metadata.prompt_hashes().clone(),
     }
 }
 
-fn benchmark_runtime_config(runtime: &ElephantRuntime) -> BenchmarkRuntimeConfig {
+fn benchmark_runtime_config(runtime_metadata: &BenchRuntimeMetadata) -> BenchmarkRuntimeConfig {
     BenchmarkRuntimeConfig {
-        elephant: runtime.info().tuning.clone(),
+        elephant: runtime_metadata.tuning().clone(),
         reflect_budget_tokens: reflect_budget_tokens(),
     }
 }
 
 fn should_resume_run(config: &RunConfig) -> bool {
     config.resume
-}
-
-async fn count_unconsolidated_facts(
-    runtime: &ElephantRuntime,
-    bank_id: elephant::types::BankId,
-) -> Result<usize, String> {
-    runtime
-        .store()
-        .get_facts_by_bank(
-            bank_id,
-            elephant::types::FactFilter {
-                network: Some(vec![NetworkType::World, NetworkType::Experience]),
-                unconsolidated_only: true,
-                ..Default::default()
-            },
-        )
-        .await
-        .map(|facts| facts.len())
-        .map_err(|e| format!("failed to count unconsolidated facts: {e}"))
 }
 
 fn should_log_consolidation_progress(progress: &ConsolidationProgress) -> bool {
@@ -1211,15 +1191,19 @@ fn should_log_consolidation_progress(progress: &ConsolidationProgress) -> bool {
 
 async fn consolidate_with_bench_progress(
     qid: &str,
-    runtime: Arc<ElephantRuntime>,
+    runtime: Arc<BenchRuntime>,
     bank_id: elephant::types::BankId,
+    consolidation_batch_size: usize,
     metrics: Arc<MetricsCollector>,
 ) -> Result<elephant::types::ConsolidationReport, String> {
-    let total_facts = count_unconsolidated_facts(runtime.as_ref(), bank_id).await?;
+    let total_facts = runtime
+        .count_unconsolidated_facts(bank_id)
+        .await
+        .map_err(|e| format!("failed to count unconsolidated facts: {e}"))?;
     let total_batches = if total_facts == 0 {
         0
     } else {
-        total_facts.div_ceil(runtime.info().tuning.consolidation_batch_size)
+        total_facts.div_ceil(consolidation_batch_size)
     };
     eprintln!(
         "  {qid} consolidating {total_facts} fact{} in {total_batches} batch{}...",
@@ -1229,11 +1213,10 @@ async fn consolidate_with_bench_progress(
 
     let started = Instant::now();
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let consolidator = runtime.consolidator().clone();
     let task = tokio::spawn(async move {
         with_scoped_collector(
             metrics,
-            consolidator.consolidate_with_progress(bank_id, Some(tx)),
+            runtime.consolidate_with_progress(bank_id, Some(tx)),
         )
         .await
     });
@@ -1936,8 +1919,10 @@ async fn main() {
             eprintln!("failed to build runtime: {err}");
             std::process::exit(1);
         });
+    let runtime_metadata = harness.metadata().clone();
     let determinism_requirement = harness.determinism_requirement();
     let runtime = Arc::new(harness.into_runtime());
+    let consolidation_batch_size = runtime_metadata.consolidation_batch_size();
 
     // Print config summary
     eprintln!("longmemeval-bench {}", command.as_str());
@@ -1962,13 +1947,13 @@ async fn main() {
     if !config.instances.is_empty() {
         eprintln!("  instances:      {:?}", config.instances);
     }
-    eprintln!("  retain_model:   {}", runtime.info().retain_model);
-    eprintln!("  reflect_model:  {}", runtime.info().reflect_model);
-    eprintln!("  embedding_model: {}", runtime.info().embedding_model);
-    eprintln!("  reranker_model: {}", runtime.info().reranker_model);
+    eprintln!("  retain_model:   {}", runtime_metadata.retain_model());
+    eprintln!("  reflect_model:  {}", runtime_metadata.reflect_model());
+    eprintln!("  embedding_model: {}", runtime_metadata.embedding_model());
+    eprintln!("  reranker_model: {}", runtime_metadata.reranker_model());
     eprintln!(
         "  reasoning_effort: {}",
-        common::format_reasoning_effort_summary(&runtime.info().tuning)
+        common::format_reasoning_effort_summary(runtime_metadata.tuning())
     );
     if let Some(requirement) = determinism_requirement {
         eprintln!(
@@ -2133,8 +2118,8 @@ async fn main() {
         session_limit: config.session_limit,
         instance_limit: config.instance_limit,
         dirty_worktree: git_dirty_worktree(),
-        prompt_hashes: benchmark_prompt_hashes(&runtime),
-        runtime_config: benchmark_runtime_config(&runtime),
+        prompt_hashes: benchmark_prompt_hashes(&runtime_metadata),
+        runtime_config: benchmark_runtime_config(&runtime_metadata),
         source_artifact,
         source_artifacts: Vec::new(),
     };
@@ -2148,10 +2133,16 @@ async fn main() {
     };
     let judge: Option<Arc<dyn elephant::llm::LlmClient>> =
         if !matches!(command, BenchCommand::Ingest) {
-            Some(common::judge::build_judge_client(
-                metrics.clone(),
-                judge_config.as_ref().expect("judge config"),
-            ))
+            Some(
+                common::judge::build_judge_client(
+                    metrics.clone(),
+                    judge_config.as_ref().expect("judge config"),
+                )
+                .unwrap_or_else(|err| {
+                    eprintln!("failed to build judge client: {err}");
+                    std::process::exit(1);
+                }),
+            )
         } else {
             None
         };
@@ -2192,10 +2183,10 @@ async fn main() {
         debug_path: debug_path.clone(),
         judge_label: jl.clone(),
         tag: config.tag.clone(),
-        retain_model: runtime.info().retain_model.clone(),
-        reflect_model: runtime.info().reflect_model.clone(),
-        embedding_model: runtime.info().embedding_model.clone(),
-        reranker_model: runtime.info().reranker_model.clone(),
+        retain_model: runtime_metadata.retain_model().to_string(),
+        reflect_model: runtime_metadata.reflect_model().to_string(),
+        embedding_model: runtime_metadata.embedding_model().to_string(),
+        reranker_model: runtime_metadata.reranker_model().to_string(),
         consolidation_strategy: config.consolidation.as_str().into(),
         manifest,
         metrics: metrics.clone(),
@@ -2265,59 +2256,59 @@ async fn main() {
                         .parse()
                         .map_err(|e| format!("bad bank_id: {e}"))?;
                     eprintln!("  {qid} deleting partial bank {}", status.bank_id);
-                    if let Err(e) = runtime.store().delete_bank(bid).await {
+                    if let Err(e) = runtime.delete_bank(bid).await {
                         eprintln!("  {qid} delete_bank failed (continuing): {e}");
                     }
                 }
 
                 // Create bank
-                let bank = elephant::types::MemoryBank {
-                    id: elephant::types::id::BankId::new(),
-                    name: format!("longmemeval-{qid}"),
-                    mission: "Long-term conversational memory benchmark".into(),
-                    directives: vec![],
-                    disposition: elephant::types::Disposition::default(),
-                    embedding_model: runtime.embeddings().model_name().to_string(),
-                    embedding_dimensions: runtime.embeddings().dimensions() as u16,
+                let bank = match runtime
+                    .create_benchmark_bank(
+                        format!("longmemeval-{qid}"),
+                        "Long-term conversational memory benchmark",
+                    )
+                    .await
+                {
+                    Ok(bank) => bank,
+                    Err(e) => {
+                        let err_msg = format!("failed to create bank: {e}");
+                        eprintln!("ERROR {qid}: {err_msg}");
+                        let qr = QuestionResult {
+                            question_id: qid.clone(),
+                            category: instance.reporting_category().to_string(),
+                            judge_correct: false,
+                            judge_reasoning: String::new(),
+                            hypothesis: String::new(),
+                            ground_truth: instance.answer_string(),
+                            bank_id: String::new(),
+                            elapsed_s: instance_start.elapsed().as_secs_f64(),
+                            status: "bank_error".into(),
+                            error: Some(err_msg.clone()),
+                            qa_stage_metrics: BTreeMap::new(),
+                        };
+                        let dr = QuestionDebugRecord {
+                            question_id: qid.clone(),
+                            question: instance.question.clone(),
+                            reflect_trace: vec![],
+                            final_done: None,
+                            retrieved_context: vec![],
+                        };
+                        shared.lock().await.push_and_flush(
+                            qr,
+                            dr,
+                            InstancePhaseTimings {
+                                total_time_s: instance_start.elapsed().as_secs_f64(),
+                                ..Default::default()
+                            },
+                        );
+                        let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                        eprintln!(
+                            "[{done}/{total_instances}] {qid} err bank {:.1}s",
+                            instance_start.elapsed().as_secs_f64(),
+                        );
+                        return Err(err_msg);
+                    }
                 };
-                if let Err(e) = runtime.store().create_bank(&bank).await {
-                    let err_msg = format!("failed to create bank: {e}");
-                    eprintln!("ERROR {qid}: {err_msg}");
-                    let qr = QuestionResult {
-                        question_id: qid.clone(),
-                        category: instance.reporting_category().to_string(),
-                        judge_correct: false,
-                        judge_reasoning: String::new(),
-                        hypothesis: String::new(),
-                        ground_truth: instance.answer_string(),
-                        bank_id: String::new(),
-                        elapsed_s: instance_start.elapsed().as_secs_f64(),
-                        status: "bank_error".into(),
-                        error: Some(err_msg.clone()),
-                        qa_stage_metrics: BTreeMap::new(),
-                    };
-                    let dr = QuestionDebugRecord {
-                        question_id: qid.clone(),
-                        question: instance.question.clone(),
-                        reflect_trace: vec![],
-                        final_done: None,
-                        retrieved_context: vec![],
-                    };
-                    shared.lock().await.push_and_flush(
-                        qr,
-                        dr,
-                        InstancePhaseTimings {
-                            total_time_s: instance_start.elapsed().as_secs_f64(),
-                            ..Default::default()
-                        },
-                    );
-                    let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
-                    eprintln!(
-                        "[{done}/{total_instances}] {qid} err bank {:.1}s",
-                        instance_start.elapsed().as_secs_f64(),
-                    );
-                    return Err(err_msg);
-                }
                 bank_id_str = bank.id.to_string();
 
                 // Record initial status (ingest not yet complete)
@@ -2339,7 +2330,13 @@ async fn main() {
                 };
                 let result = with_scoped_collector(
                     metrics.clone(),
-                    ingest::ingest_instance(&instance, &runtime, &ingest_config, Some(bank.id)),
+                    ingest::ingest_instance(
+                        &instance,
+                        runtime.as_ref(),
+                        consolidation_batch_size,
+                        &ingest_config,
+                        Some(bank.id),
+                    ),
                 )
                 .await;
                 match result {
@@ -2410,8 +2407,14 @@ async fn main() {
                     .parse()
                     .map_err(|e| format!("bad bank_id: {e}"))?;
                 let consolidation_start = Instant::now();
-                match consolidate_with_bench_progress(&qid, runtime.clone(), bid, metrics.clone())
-                    .await
+                match consolidate_with_bench_progress(
+                    &qid,
+                    runtime.clone(),
+                    bid,
+                    consolidation_batch_size,
+                    metrics.clone(),
+                )
+                .await
                 {
                     Ok(cr) => {
                         eprintln!(
@@ -2507,7 +2510,7 @@ async fn main() {
 
             let reflect_result = with_scoped_collector(
                 metrics.clone(),
-                runtime.reflect_pipeline().reflect(&ReflectQuery {
+                runtime.reflect(&ReflectQuery {
                     bank_id: bank_id_str.parse().unwrap(),
                     question: instance.question.clone(),
                     context: None,

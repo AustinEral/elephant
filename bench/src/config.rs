@@ -3,13 +3,17 @@
 #[cfg(test)]
 use std::env;
 use std::fmt;
+use std::sync::Arc;
 
 use elephant::ConfigError;
 use elephant::llm::{
     AnthropicConfig, AnthropicPromptCacheConfig, AnthropicPromptCacheTtl, ClientConfig,
     DEFAULT_TIMEOUT_SECS, DeterminismRequirement, GeminiConfig, OpenAiConfig,
     OpenAiPromptCacheConfig, OpenAiPromptCacheRetention, Provider, VertexConfig,
+    retry::{RetryPolicy, RetryingLlmClient},
 };
+use elephant::llm::{LlmClient, build_client};
+use elephant::metrics::{LlmStage, MeteredLlmClient, MetricsCollector};
 
 type Result<T> = std::result::Result<T, ConfigError>;
 
@@ -21,7 +25,7 @@ pub struct BenchConfig {
 
 impl BenchConfig {
     /// Create benchmark configuration from validated values.
-    pub fn new(determinism_requirement: Option<DeterminismRequirement>) -> Self {
+    pub(crate) fn new(determinism_requirement: Option<DeterminismRequirement>) -> Self {
         Self {
             determinism_requirement,
         }
@@ -33,13 +37,11 @@ impl BenchConfig {
             Ok(raw) => {
                 let value = raw.trim().to_ascii_lowercase();
                 let requirement = match value.as_str() {
-                    "best_effort" | "best-effort" | "1" | "true" | "yes" | "on" => {
-                        DeterminismRequirement::BestEffort
-                    }
+                    "low_variance" => DeterminismRequirement::LowVariance,
                     "strong" => DeterminismRequirement::Strong,
                     _ => {
                         return Err(ConfigError::configuration(format!(
-                            "BENCH_DETERMINISM_REQUIREMENT must be one of: best_effort, strong; got: {raw}"
+                            "BENCH_DETERMINISM_REQUIREMENT must be one of: low_variance, strong; got: {raw}"
                         )));
                     }
                 };
@@ -78,7 +80,7 @@ impl fmt::Debug for BenchJudgeConfig {
 
 impl BenchJudgeConfig {
     /// Create a benchmark judge configuration from a validated client config.
-    pub fn new(client: ClientConfig) -> Self {
+    pub(crate) fn new(client: ClientConfig) -> Self {
         Self { client }
     }
 
@@ -132,19 +134,23 @@ impl BenchJudgeConfig {
         )?))
     }
 
-    /// Return the validated judge client configuration.
-    pub fn client(&self) -> &ClientConfig {
-        &self.client
-    }
-
-    /// Consume the typed config and return the validated judge client configuration.
-    pub fn into_client(self) -> ClientConfig {
-        self.client
-    }
-
     /// Return a stable provider/model label for the judge.
     pub fn label(&self) -> String {
         self.client.label()
+    }
+
+    /// Build a metered, retrying judge client from the validated configuration.
+    pub fn build_client(
+        &self,
+        metrics: Arc<MetricsCollector>,
+    ) -> elephant::Result<Arc<dyn LlmClient>> {
+        let inner: Arc<dyn LlmClient> = Arc::from(build_client(&self.client)?);
+        let metered: Arc<dyn LlmClient> =
+            Arc::new(MeteredLlmClient::new(inner, metrics, LlmStage::Judge));
+        Ok(Arc::new(RetryingLlmClient::new(
+            metered,
+            RetryPolicy::default(),
+        )))
     }
 }
 
@@ -378,16 +384,16 @@ mod tests {
     }
 
     #[test]
-    fn parses_best_effort_requirement() {
+    fn parses_low_variance_requirement() {
         let _guard = env_lock().lock().unwrap();
         unsafe {
-            env::set_var("BENCH_DETERMINISM_REQUIREMENT", "best_effort");
+            env::set_var("BENCH_DETERMINISM_REQUIREMENT", "low_variance");
         }
 
         let config = BenchConfig::from_env().unwrap();
         assert_eq!(
             config.determinism_requirement(),
-            Some(DeterminismRequirement::BestEffort)
+            Some(DeterminismRequirement::LowVariance)
         );
 
         unsafe {

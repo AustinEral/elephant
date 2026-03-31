@@ -3,10 +3,9 @@ pub mod fingerprint;
 pub mod io;
 pub mod judge;
 
-use elephant::RuntimeTuning as ElephantRuntimeTuning;
 use elephant::llm::DeterminismRequirement;
 use elephant::llm::ReasoningEffort;
-use elephant_bench::BenchConfig;
+use elephant_bench::{BenchConfig, BenchRuntimeTuning};
 
 #[allow(unused_imports)]
 pub use fingerprint::{fnv1a64, fnv1a64_hex};
@@ -27,15 +26,15 @@ fn format_reasoning_effort(effort: Option<ReasoningEffort>) -> &'static str {
 }
 
 #[allow(dead_code)]
-pub fn format_reasoning_effort_summary(tuning: &ElephantRuntimeTuning) -> String {
+pub fn format_reasoning_effort_summary(tuning: &BenchRuntimeTuning) -> String {
     format!(
         "extract={} resolve={} graph={} reflect={} consolidate={} opinion_merge={}",
-        format_reasoning_effort(tuning.retain_extract_reasoning_effort),
-        format_reasoning_effort(tuning.retain_resolve_reasoning_effort),
-        format_reasoning_effort(tuning.retain_graph_reasoning_effort),
-        format_reasoning_effort(tuning.reflect_reasoning_effort),
-        format_reasoning_effort(tuning.consolidate_reasoning_effort),
-        format_reasoning_effort(tuning.opinion_merge_reasoning_effort),
+        format_reasoning_effort(tuning.retain_extract_reasoning_effort()),
+        format_reasoning_effort(tuning.retain_resolve_reasoning_effort()),
+        format_reasoning_effort(tuning.retain_graph_reasoning_effort()),
+        format_reasoning_effort(tuning.reflect_reasoning_effort()),
+        format_reasoning_effort(tuning.consolidate_reasoning_effort()),
+        format_reasoning_effort(tuning.opinion_merge_reasoning_effort()),
     )
 }
 
@@ -64,13 +63,13 @@ mod tests {
     }
 
     #[test]
-    fn parses_best_effort_requirement_from_env() {
+    fn parses_low_variance_requirement_from_env() {
         let _guard = env_lock().lock().unwrap();
         unsafe {
-            env::set_var("BENCH_DETERMINISM_REQUIREMENT", "best_effort");
+            env::set_var("BENCH_DETERMINISM_REQUIREMENT", "low_variance");
         }
         let parsed = benchmark_determinism_requirement_from_env().unwrap();
-        assert_eq!(parsed, Some(DeterminismRequirement::BestEffort));
+        assert_eq!(parsed, Some(DeterminismRequirement::LowVariance));
         unsafe {
             env::remove_var("BENCH_DETERMINISM_REQUIREMENT");
         }
