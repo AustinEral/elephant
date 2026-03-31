@@ -140,6 +140,15 @@ impl BenchRuntimeMetadata {
     pub fn consolidation_batch_size(&self) -> usize {
         self.tuning.consolidation_batch_size()
     }
+
+    fn checked_bank_embedding_dimensions(&self) -> Result<u16> {
+        u16::try_from(self.embedding_dimensions).map_err(|_| {
+            elephant::Error::Configuration(format!(
+                "benchmark embedding dimensions {} exceed u16::MAX",
+                self.embedding_dimensions
+            ))
+        })
+    }
 }
 
 /// Concrete benchmark runtime adapter over the Elephant runtime graph.
@@ -168,14 +177,7 @@ impl BenchRuntime {
             directives: vec![],
             disposition: Disposition::default(),
             embedding_model: self.metadata.embedding_model().to_string(),
-            embedding_dimensions: u16::try_from(self.metadata.embedding_dimensions()).map_err(
-                |_| {
-                    elephant::Error::Configuration(format!(
-                        "benchmark embedding dimensions {} exceed u16::MAX",
-                        self.metadata.embedding_dimensions()
-                    ))
-                },
-            )?,
+            embedding_dimensions: self.metadata.checked_bank_embedding_dimensions()?,
         };
         self.runtime.store().create_bank(&bank).await?;
         Ok(bank)
@@ -245,6 +247,30 @@ impl BenchRuntime {
             .consolidator()
             .consolidate_with_progress(bank_id, progress)
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metadata_rejects_embedding_dimensions_over_u16_max() {
+        let metadata = BenchRuntimeMetadata {
+            retain_model: "retain".into(),
+            reflect_model: "reflect".into(),
+            embedding_model: "mock".into(),
+            embedding_dimensions: usize::from(u16::MAX) + 1,
+            reranker_model: "reranker".into(),
+            prompt_hashes: BenchRuntimePromptHashes::default(),
+            tuning: BenchRuntimeTuning::default(),
+        };
+
+        let error = metadata.checked_bank_embedding_dimensions().unwrap_err();
+
+        assert!(
+            matches!(error, elephant::Error::Configuration(message) if message.contains("exceed u16::MAX"))
+        );
     }
 }
 

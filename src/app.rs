@@ -299,3 +299,150 @@ impl AppHandle {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+
+    use super::*;
+    use crate::consolidation::ConsolidationProgress;
+    use crate::embedding::mock::MockEmbeddings;
+    use crate::storage::mock::MockMemoryStore;
+    use crate::types::{
+        ConsolidationReport, OpinionMergeReport, RecallResult, ReflectResult, RetainOutput,
+    };
+
+    struct NoOpRetainPipeline;
+
+    #[async_trait]
+    impl RetainPipeline for NoOpRetainPipeline {
+        async fn retain(&self, _input: &RetainInput) -> Result<RetainOutput> {
+            Ok(RetainOutput {
+                fact_ids: vec![],
+                facts_stored: 0,
+                new_entities: vec![],
+                entities_resolved: 0,
+                links_created: 0,
+                opinions_reinforced: 0,
+                opinions_weakened: 0,
+            })
+        }
+    }
+
+    struct NoOpRecallPipeline;
+
+    #[async_trait]
+    impl RecallPipeline for NoOpRecallPipeline {
+        async fn recall(&self, _query: &RecallQuery) -> Result<RecallResult> {
+            Ok(RecallResult {
+                facts: vec![],
+                total_tokens: 0,
+            })
+        }
+    }
+
+    struct NoOpReflectPipeline;
+
+    #[async_trait]
+    impl ReflectPipeline for NoOpReflectPipeline {
+        async fn reflect(&self, _query: &ReflectQuery) -> Result<ReflectResult> {
+            Ok(ReflectResult {
+                response: String::new(),
+                sources: vec![],
+                new_opinions: vec![],
+                confidence: 0.0,
+                retrieved_context: vec![],
+                retrieved_sources: vec![],
+                trace: vec![],
+                final_done: None,
+            })
+        }
+    }
+
+    struct NoOpConsolidator;
+
+    #[async_trait]
+    impl Consolidator for NoOpConsolidator {
+        async fn consolidate_with_progress(
+            &self,
+            _bank_id: BankId,
+            _progress: Option<tokio::sync::mpsc::UnboundedSender<ConsolidationProgress>>,
+        ) -> Result<ConsolidationReport> {
+            Ok(ConsolidationReport::default())
+        }
+    }
+
+    struct NoOpOpinionMerger;
+
+    #[async_trait]
+    impl OpinionMerger for NoOpOpinionMerger {
+        async fn merge(&self, _bank_id: BankId) -> Result<OpinionMergeReport> {
+            Ok(OpinionMergeReport::default())
+        }
+    }
+
+    fn test_app_info() -> AppInfo {
+        AppInfo {
+            version: "test".into(),
+            models: AppModelsInfo {
+                retain: "test-retain".into(),
+                reflect: "test-reflect".into(),
+                embedding: "test-embedding".into(),
+                reranker: "test-reranker".into(),
+            },
+            retrieval: AppRetrievalInfo {
+                retriever_limit: 20,
+                max_facts: 50,
+            },
+            reflect: AppReflectInfo {
+                max_iterations: 8,
+                max_tokens: None,
+                source_lookup_enabled: true,
+            },
+            consolidation: AppConsolidationInfo {
+                batch_size: 10,
+                max_tokens: 512,
+                recall_budget: 256,
+            },
+            server_consolidation: AppBackgroundConsolidationInfo {
+                enabled: false,
+                min_facts: 0,
+                cooldown_secs: 0,
+                merge_opinions_after: false,
+            },
+        }
+    }
+
+    fn test_app_with_embedding_dimensions(dimensions: usize) -> AppHandle {
+        AppHandle::from_parts(
+            test_app_info(),
+            Arc::new(NoOpRetainPipeline),
+            Arc::new(NoOpRecallPipeline),
+            Arc::new(NoOpReflectPipeline),
+            Arc::new(NoOpConsolidator),
+            Arc::new(NoOpOpinionMerger),
+            Arc::new(MockMemoryStore::new()),
+            Arc::new(MockEmbeddings::new(dimensions)),
+        )
+    }
+
+    #[test]
+    fn new_bank_rejects_embedding_dimensions_over_u16_max() {
+        let app = test_app_with_embedding_dimensions(usize::from(u16::MAX) + 1);
+
+        let error = app
+            .new_bank(
+                "overflow".into(),
+                "test overflow handling".into(),
+                vec![],
+                Disposition::default(),
+            )
+            .unwrap_err();
+
+        assert!(
+            matches!(error, Error::Configuration(message) if message.contains("exceed u16::MAX"))
+        );
+    }
+}
