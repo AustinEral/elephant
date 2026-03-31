@@ -1,12 +1,10 @@
 //! Real integration tests exercising retain→recall→reflect with actual LLM and embedding providers.
 //!
 //! All tests are `#[ignore]` — run with:
-//!   cargo test --test real_integration_tests local -- --ignored
-//!   cargo test --test real_integration_tests openai -- --ignored
+//!   cargo test testing::real_integration::local -- --ignored
+//!   cargo test testing::real_integration::openai -- --ignored
 //!
 //! Keys are loaded from `.env` automatically.
-
-mod support;
 
 use std::sync::Arc;
 
@@ -17,25 +15,25 @@ use testcontainers::core::ContainerPort;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::ImageExt;
 
-use elephant::consolidation::{DefaultConsolidator, DefaultOpinionMerger};
-use elephant::embedding::{self, EmbeddingClient, EmbeddingConfig};
-use elephant::llm::LlmClient;
-use elephant::recall::DefaultRecallPipeline;
-use elephant::recall::budget::EstimateTokenizer;
-use elephant::recall::graph::{GraphRetriever, GraphRetrieverConfig};
-use elephant::recall::keyword::KeywordRetriever;
-use elephant::recall::reranker::{self, RerankerConfig};
-use elephant::recall::semantic::SemanticRetriever;
-use elephant::recall::temporal::TemporalRetriever;
-use elephant::reflect::DefaultReflectPipeline;
-use elephant::retain::DefaultRetainPipeline;
-use elephant::retain::chunker::SimpleChunker;
-use elephant::retain::extractor::{ExtractionConfig, LlmFactExtractor};
-use elephant::retain::graph_builder::{DefaultGraphBuilder, GraphConfig};
-use elephant::retain::resolver::LayeredEntityResolver;
-use elephant::storage::pg::PgMemoryStore;
-use elephant::types::*;
-use elephant::{
+use crate::consolidation::{DefaultConsolidator, DefaultOpinionMerger};
+use crate::embedding::{self, EmbeddingClient, EmbeddingConfig};
+use crate::llm::LlmClient;
+use crate::recall::DefaultRecallPipeline;
+use crate::recall::budget::EstimateTokenizer;
+use crate::recall::graph::{GraphRetriever, GraphRetrieverConfig};
+use crate::recall::keyword::KeywordRetriever;
+use crate::recall::reranker::{self, RerankerConfig};
+use crate::recall::semantic::SemanticRetriever;
+use crate::recall::temporal::TemporalRetriever;
+use crate::reflect::DefaultReflectPipeline;
+use crate::retain::DefaultRetainPipeline;
+use crate::retain::chunker::SimpleChunker;
+use crate::retain::extractor::{ExtractionConfig, LlmFactExtractor};
+use crate::retain::graph_builder::{DefaultGraphBuilder, GraphConfig};
+use crate::retain::resolver::LayeredEntityResolver;
+use crate::storage::pg::PgMemoryStore;
+use crate::types::*;
+use crate::{
     AppHandle, ServerBackgroundConsolidationInfo, ServerConsolidationRuntimeInfo, ServerInfo,
     ServerModelsInfo, ServerReflectInfo, ServerRetrievalInfo, router,
 };
@@ -45,6 +43,8 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use tower::util::ServiceExt;
+
+use super::support;
 
 // ---------------------------------------------------------------------------
 // Config helpers — read from .env with defaults matching main.rs
@@ -177,14 +177,14 @@ impl RealTestHarness {
             let model_name = self.embeddings.model_name().to_string();
             if model_name.contains("bge") {
                 Box::new(
-                    elephant::embedding::local::LocalEmbeddings::new(
+                    crate::embedding::local::LocalEmbeddings::new(
                         std::path::Path::new(&embedding_model_path()),
                         512,
                     )
                     .expect("local embeddings"),
                 )
             } else {
-                Box::new(elephant::embedding::openai::OpenAiEmbeddings::new(
+                Box::new(crate::embedding::openai::OpenAiEmbeddings::new(
                     embedding_api_key(),
                     model_name,
                     dims,
@@ -211,7 +211,7 @@ impl RealTestHarness {
             None, // no dedup in tests
         ));
 
-        let store_arc: Arc<dyn elephant::MemoryStore> =
+        let store_arc: Arc<dyn crate::MemoryStore> =
             Arc::new(PgMemoryStore::new(self.pool.clone()));
         let embed_arc: Arc<dyn EmbeddingClient> = self.embeddings.clone();
 
@@ -247,7 +247,7 @@ impl RealTestHarness {
             self.llm.clone(),
             self.embeddings.clone(),
             recall.clone(),
-            elephant::consolidation::ConsolidationConfig::default(),
+            crate::consolidation::ConsolidationConfig::default(),
         ));
         let opinion_merger = Arc::new(DefaultOpinionMerger::new(
             store_arc.clone(),

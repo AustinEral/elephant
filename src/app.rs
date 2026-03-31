@@ -121,45 +121,47 @@ impl AppHandle {
         let server_consolidation_policy = consolidation::ConsolidationPolicy::from_config(
             server_config.background_consolidation(),
         )?;
-        Ok(Self {
-            info: AppInfo {
-                version: env!("CARGO_PKG_VERSION").into(),
-                models: AppModelsInfo {
-                    retain: runtime.info().retain_model.clone(),
-                    reflect: runtime.info().reflect_model.clone(),
-                    embedding: runtime.info().embedding_model.clone(),
-                    reranker: runtime.info().reranker_model.clone(),
-                },
-                retrieval: AppRetrievalInfo {
-                    retriever_limit: runtime.info().tuning.retriever_limit,
-                    max_facts: runtime.info().tuning.max_facts,
-                },
-                reflect: AppReflectInfo {
-                    max_iterations: runtime.info().tuning.reflect_max_iterations,
-                    max_tokens: runtime.info().tuning.reflect_max_tokens,
-                    source_lookup_enabled: runtime.info().tuning.reflect_enable_source_lookup,
-                },
-                consolidation: AppConsolidationInfo {
-                    batch_size: runtime.info().tuning.consolidation_batch_size,
-                    max_tokens: runtime.info().tuning.consolidation_max_tokens,
-                    recall_budget: runtime.info().tuning.consolidation_recall_budget,
-                },
-                server_consolidation: server_consolidation_policy.to_info(),
+        let info = AppInfo {
+            version: env!("CARGO_PKG_VERSION").into(),
+            models: AppModelsInfo {
+                retain: runtime.info().retain_model.clone(),
+                reflect: runtime.info().reflect_model.clone(),
+                embedding: runtime.info().embedding_model.clone(),
+                reranker: runtime.info().reranker_model.clone(),
             },
-            retain: consolidation::wrap_retain_pipeline_with_consolidation(
-                runtime.retain_pipeline(),
-                runtime.store(),
-                runtime.consolidator(),
-                runtime.opinion_merger(),
-                server_consolidation_policy,
-            )?,
-            recall: runtime.recall_pipeline(),
-            reflect: runtime.reflect_pipeline(),
-            consolidator: runtime.consolidator(),
-            opinion_merger: runtime.opinion_merger(),
-            store: runtime.store(),
-            embeddings: runtime.embeddings(),
-        })
+            retrieval: AppRetrievalInfo {
+                retriever_limit: runtime.info().tuning.retriever_limit,
+                max_facts: runtime.info().tuning.max_facts,
+            },
+            reflect: AppReflectInfo {
+                max_iterations: runtime.info().tuning.reflect_max_iterations,
+                max_tokens: runtime.info().tuning.reflect_max_tokens,
+                source_lookup_enabled: runtime.info().tuning.reflect_enable_source_lookup,
+            },
+            consolidation: AppConsolidationInfo {
+                batch_size: runtime.info().tuning.consolidation_batch_size,
+                max_tokens: runtime.info().tuning.consolidation_max_tokens,
+                recall_budget: runtime.info().tuning.consolidation_recall_budget,
+            },
+            server_consolidation: server_consolidation_policy.to_info(),
+        };
+        let retain = consolidation::wrap_retain_pipeline_with_consolidation(
+            runtime.retain_pipeline(),
+            runtime.store(),
+            runtime.consolidator(),
+            runtime.opinion_merger(),
+            server_consolidation_policy,
+        )?;
+        Ok(Self::from_parts(
+            info,
+            retain,
+            runtime.recall_pipeline(),
+            runtime.reflect_pipeline(),
+            runtime.consolidator(),
+            runtime.opinion_merger(),
+            runtime.store(),
+            runtime.embeddings(),
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -186,9 +188,9 @@ impl AppHandle {
     }
 
     /// Construct an application handle from explicit test doubles and runtime info.
-    #[doc(hidden)]
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
-    pub fn from_parts_for_testing(
+    pub(crate) fn from_parts_for_testing(
         info: AppInfo,
         retain: Arc<dyn RetainPipeline>,
         recall: Arc<dyn RecallPipeline>,
