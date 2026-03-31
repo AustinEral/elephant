@@ -94,7 +94,8 @@ fn read_secret(file_vars: &BTreeMap<String, String>, name: &str) -> Result<Optio
 }
 
 fn parse_env_file(path: &Path) -> Result<BTreeMap<String, String>> {
-    let raw = fs::read_to_string(path).map_err(|error| {
+    let resolved = resolve_workspace_path(path);
+    let raw = fs::read_to_string(&resolved).map_err(|error| {
         ConfigError::configuration(format!("failed to read {}: {error}", path.display()))
     })?;
     let mut vars = BTreeMap::new();
@@ -125,4 +126,15 @@ fn unquote(value: &str) -> String {
     } else {
         value.to_string()
     }
+}
+
+fn resolve_workspace_path(path: &Path) -> std::path::PathBuf {
+    if path.is_absolute() || !path.starts_with("bench") {
+        return path.to_path_buf();
+    }
+
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("bench crate must live under the workspace root")
+        .join(path)
 }

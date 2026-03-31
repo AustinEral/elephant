@@ -21,18 +21,6 @@ pub const JUDGE_TEMPERATURE: Option<f32> = None;
 pub const JUDGE_MAX_TOKENS: usize = 200;
 pub const JUDGE_MAX_ATTEMPTS: usize = 3;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct JudgeOverrides {
-    pub provider: Option<llm::Provider>,
-    pub model: Option<String>,
-}
-
-pub fn resolve_judge_config(
-    overrides: &JudgeOverrides,
-) -> Result<BenchJudgeConfig, elephant::ConfigError> {
-    BenchJudgeConfig::from_env(overrides.provider, overrides.model.as_deref())
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum JudgeError {
     #[error("judge error: {0}")]
@@ -132,10 +120,6 @@ async fn llm_judge_with_policy(
 }
 
 /// Build an LLM client configured for judge duty.
-///
-/// Uses env var fallback chain: JUDGE_PROVIDER -> LLM_PROVIDER, JUDGE_API_KEY -> LLM_API_KEY,
-/// JUDGE_MODEL -> LLM_MODEL, and JUDGE_BASE_URL -> LLM_BASE_URL. `overrides` can replace
-/// the resolved provider and/or model.
 pub fn build_judge_client(
     metrics: Arc<MetricsCollector>,
     judge_config: &BenchJudgeConfig,

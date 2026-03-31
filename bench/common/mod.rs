@@ -5,7 +5,7 @@ pub mod judge;
 
 use elephant::llm::DeterminismRequirement;
 use elephant::llm::ReasoningEffort;
-use elephant_bench::{BenchConfig, BenchRuntimeTuning};
+use elephant_bench::BenchRuntimeTuning;
 
 #[allow(unused_imports)]
 pub use fingerprint::{fnv1a64, fnv1a64_hex};
@@ -39,52 +39,6 @@ pub fn format_reasoning_effort_summary(tuning: &BenchRuntimeTuning) -> String {
 }
 
 #[allow(dead_code)]
-pub fn benchmark_determinism_requirement_from_env() -> Result<Option<DeterminismRequirement>, String>
-{
-    BenchConfig::from_env()
-        .map(|config| config.determinism_requirement())
-        .map_err(|err| err.to_string())
-}
-
-#[allow(dead_code)]
 pub fn format_determinism_requirement(requirement: DeterminismRequirement) -> &'static str {
     requirement.as_str()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::env;
-    use std::sync::{Mutex, OnceLock};
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    #[test]
-    fn parses_low_variance_requirement_from_env() {
-        let _guard = env_lock().lock().unwrap();
-        unsafe {
-            env::set_var("BENCH_DETERMINISM_REQUIREMENT", "low_variance");
-        }
-        let parsed = benchmark_determinism_requirement_from_env().unwrap();
-        assert_eq!(parsed, Some(DeterminismRequirement::LowVariance));
-        unsafe {
-            env::remove_var("BENCH_DETERMINISM_REQUIREMENT");
-        }
-    }
-
-    #[test]
-    fn rejects_invalid_requirement_from_env() {
-        let _guard = env_lock().lock().unwrap();
-        unsafe {
-            env::set_var("BENCH_DETERMINISM_REQUIREMENT", "maybe");
-        }
-        let err = benchmark_determinism_requirement_from_env().unwrap_err();
-        assert!(err.contains("BENCH_DETERMINISM_REQUIREMENT"));
-        unsafe {
-            env::remove_var("BENCH_DETERMINISM_REQUIREMENT");
-        }
-    }
 }

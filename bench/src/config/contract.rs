@@ -10,8 +10,16 @@ fn default_protocol_version() -> String {
     "2026-03-31-locomo-contract-v1".into()
 }
 
+fn default_longmemeval_protocol_version() -> String {
+    "2026-03-31-longmemeval-contract-v1".into()
+}
+
 fn default_dataset_identifier() -> String {
     "locomo10".into()
+}
+
+fn default_longmemeval_dataset_identifier() -> String {
+    "longmemeval-s".into()
 }
 
 fn default_category_filter() -> Vec<u8> {
@@ -75,6 +83,8 @@ fn default_reflect_max_iterations() -> usize {
 pub(crate) enum BenchmarkKind {
     #[default]
     Locomo,
+    #[serde(rename = "longmemeval")]
+    LongMemEval,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -141,6 +151,23 @@ pub(crate) enum RerankerProviderKind {
     None,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum LongMemEvalIngestFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum LongMemEvalConsolidationMode {
+    #[default]
+    End,
+    PerSession,
+    Off,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LocomoContractFile {
@@ -162,6 +189,40 @@ pub(crate) struct LocomoContractFile {
     pub(crate) determinism_requirement: Option<DeterminismRequirement>,
     pub(crate) runtime: RuntimeContract,
     pub(crate) judge: JudgeContract,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LongMemEvalContractFile {
+    #[serde(default = "default_schema_version")]
+    pub(crate) schema_version: u32,
+    #[serde(default = "default_longmemeval_benchmark")]
+    pub(crate) benchmark: BenchmarkKind,
+    #[serde(default = "default_longmemeval_protocol_version")]
+    pub(crate) protocol_version: String,
+    #[serde(default = "default_longmemeval_dataset")]
+    pub(crate) dataset: DatasetContract,
+    #[serde(default)]
+    pub(crate) slice: LongMemEvalSliceContract,
+    #[serde(default)]
+    pub(crate) ingest_format: LongMemEvalIngestFormat,
+    #[serde(default)]
+    pub(crate) consolidation: LongMemEvalConsolidationMode,
+    #[serde(default)]
+    pub(crate) determinism_requirement: Option<DeterminismRequirement>,
+    pub(crate) runtime: RuntimeContract,
+    pub(crate) judge: JudgeContract,
+}
+
+fn default_longmemeval_benchmark() -> BenchmarkKind {
+    BenchmarkKind::LongMemEval
+}
+
+fn default_longmemeval_dataset() -> DatasetContract {
+    DatasetContract {
+        identifier: default_longmemeval_dataset_identifier(),
+        expected_fingerprint: None,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -204,6 +265,19 @@ impl Default for LocomoSliceContract {
             question_limit: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LongMemEvalSliceContract {
+    #[serde(default)]
+    pub(crate) instances: Vec<String>,
+    #[serde(default)]
+    pub(crate) session_limit: Option<usize>,
+    #[serde(default)]
+    pub(crate) instance_limit: Option<usize>,
+    #[serde(default)]
+    pub(crate) instance_offset: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -464,6 +538,26 @@ pub(crate) struct ResolvedLocomoContract {
     pub(crate) ingest: LocomoIngestMode,
     pub(crate) image_policy: &'static str,
     pub(crate) consolidation: LocomoConsolidationMode,
+    pub(crate) determinism_requirement: Option<DeterminismRequirement>,
+    pub(crate) runtime: RuntimeContract,
+    pub(crate) judge: JudgeContract,
+    pub(crate) judge_prompt_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ResolvedLongMemEvalContract {
+    pub(crate) benchmark: &'static str,
+    pub(crate) schema_version: u32,
+    pub(crate) protocol_version: String,
+    pub(crate) dataset_identifier: String,
+    pub(crate) dataset_fingerprint: String,
+    pub(crate) expected_dataset_fingerprint: Option<String>,
+    pub(crate) instances: Vec<String>,
+    pub(crate) session_limit: Option<usize>,
+    pub(crate) instance_limit: Option<usize>,
+    pub(crate) instance_offset: usize,
+    pub(crate) ingest_format: LongMemEvalIngestFormat,
+    pub(crate) consolidation: LongMemEvalConsolidationMode,
     pub(crate) determinism_requirement: Option<DeterminismRequirement>,
     pub(crate) runtime: RuntimeContract,
     pub(crate) judge: JudgeContract,

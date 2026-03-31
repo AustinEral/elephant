@@ -19,10 +19,14 @@ use crate::env::BenchJudgeConfig;
 use crate::harness::{BenchHarness, BenchHarnessBuilder};
 
 use super::contract::{
-    BenchmarkKind, JudgeContract, LocomoContractFile, ProviderKind, RerankerProviderKind,
-    ResolvedLocomoContract, RuntimeContract,
+    BenchmarkKind, JudgeContract, LocomoContractFile, LongMemEvalConsolidationMode,
+    LongMemEvalContractFile, LongMemEvalIngestFormat, ProviderKind, RerankerProviderKind,
+    ResolvedLocomoContract, ResolvedLongMemEvalContract, RuntimeContract,
 };
-use super::execution::{BenchExecution, BenchExecutionOverlayFile};
+use super::execution::{
+    BenchExecution, BenchExecutionOverlayFile, LongMemEvalExecution,
+    LongMemEvalExecutionOverlayFile,
+};
 use super::secrets::{BenchSecrets, RedactedBenchSecrets};
 
 type Result<T> = std::result::Result<T, ConfigError>;
@@ -168,85 +172,174 @@ impl ResolvedBenchConfig {
 
     /// Build a typed runtime config from the resolved contract, execution, and secrets.
     pub fn build_runtime_config(&self) -> Result<RuntimeConfig> {
-        let llm = build_runtime_llm_config(&self.contract.runtime, &self.execution, &self.secrets)?;
-        let embedding =
-            build_embedding_config(&self.contract.runtime, &self.execution, &self.secrets)?;
-        let reranker =
-            build_reranker_config(&self.contract.runtime, &self.execution, &self.secrets)?;
-        let tuning = &self.contract.runtime.tuning;
-        let reasoning_effort = ReasoningEffortConfig {
-            retain_extract: tuning.reasoning_effort.retain_extract,
-            retain_resolve: tuning.reasoning_effort.retain_resolve,
-            retain_graph: tuning.reasoning_effort.retain_graph,
-            reflect: tuning.reasoning_effort.reflect,
-            consolidate: tuning.reasoning_effort.consolidate,
-            opinion_merge: tuning.reasoning_effort.opinion_merge,
-        };
-
-        RuntimeConfig::new(
-            self.execution.database_url.clone(),
-            llm,
-            embedding,
-            reranker,
-        )?
-        .with_dedup_threshold(tuning.dedup_threshold)?
-        .with_reasoning_effort(reasoning_effort)?
-        .with_extraction(extractor::ExtractionConfig {
-            structured_output_max_attempts: tuning.extraction.structured_output_max_attempts,
-            temperature: tuning.extraction.temperature,
-            reasoning_effort: tuning.reasoning_effort.retain_extract,
-        })?
-        .with_resolve_temperature(tuning.resolve_temperature)?
-        .with_graph(graph_builder::GraphConfig {
-            semantic_threshold: tuning.graph.semantic_threshold,
-            temporal_max_days: tuning.graph.temporal_max_days,
-            enable_causal: tuning.graph.enable_causal,
-            causal_temperature: tuning.graph.causal_temperature,
-            causal_reasoning_effort: tuning.reasoning_effort.retain_graph,
-        })?
-        .with_consolidation(ConsolidationConfig {
-            batch_size: tuning.consolidation.batch_size,
-            max_tokens: tuning.consolidation.max_tokens,
-            recall_budget: tuning.consolidation.recall_budget,
-            structured_output_max_attempts: tuning.consolidation.structured_output_max_attempts,
-            temperature: tuning.consolidation.temperature,
-            reasoning_effort: tuning.reasoning_effort.consolidate,
-        })?
-        .with_opinion_merge(opinion_merger::OpinionMergeConfig {
-            temperature: tuning.opinion_merge.temperature,
-            reasoning_effort: tuning.reasoning_effort.opinion_merge,
-        })?
-        .with_reflect(ReflectConfig::new(
-            tuning.reflect.max_iterations,
-            tuning.reflect.max_tokens,
-            tuning.reflect.source_limit,
-            tuning.reflect.source_max_chars,
-            tuning.reflect.enable_source_lookup,
-        )?)?
-        .with_reflect_temperature(tuning.reflect_temperature)?
-        .with_retrieval(RetrievalConfig::new(
-            tuning.retrieval.retriever_limit,
-            tuning.retrieval.max_facts,
-        )?)
+        build_runtime_config_from_parts(
+            &self.contract.runtime,
+            &self.execution.database_url,
+            &self.execution,
+            &self.secrets,
+        )
     }
 
     /// Build a typed benchmark judge config from the resolved contract, execution, and secrets.
     pub fn build_judge_config(&self) -> Result<BenchJudgeConfig> {
-        let client = build_client_config(
-            self.contract.judge.provider,
-            self.secrets.judge_api_key(),
-            &self.contract.judge.model,
-            self.execution.judge_base_url.as_deref(),
-            self.execution.judge_timeout_secs,
-            self.execution.judge_vertex_project.as_deref(),
-            self.execution.judge_vertex_location.as_deref(),
-        )?;
-        Ok(BenchJudgeConfig::new(
-            client,
-            self.contract.judge.temperature,
-            self.contract.judge.max_tokens,
-            self.contract.judge.max_attempts,
-        ))
+        build_judge_config_from_parts(&self.contract.judge, &self.execution, &self.secrets)
+    }
+
+    /// Build a benchmark harness from the resolved runtime contract.
+    pub async fn build_harness(
+        &self,
+        metrics: Arc<MetricsCollector>,
+    ) -> elephant::Result<BenchHarness> {
+        let runtime_config = self.build_runtime_config()?;
+        let bench_config = crate::env::BenchConfig::new(self.determinism_requirement());
+        BenchHarnessBuilder::new(runtime_config, bench_config)
+            .metrics(metrics)
+            .build()
+            .await
+    }
+}
+
+/// Fully resolved LongMemEval benchmark config with redacted-print support and typed builders.
+#[derive(Debug, Clone)]
+pub struct ResolvedLongMemEvalBenchConfig {
+    contract: ResolvedLongMemEvalContract,
+    execution: LongMemEvalExecution,
+    secrets: BenchSecrets,
+    contract_hash: String,
+}
+
+impl ResolvedLongMemEvalBenchConfig {
+    /// Return the stable hash for the resolved contract only.
+    pub fn contract_hash(&self) -> &str {
+        &self.contract_hash
+    }
+
+    /// Return the protocol version for this resolved contract.
+    pub fn protocol_version(&self) -> &str {
+        &self.contract.protocol_version
+    }
+
+    /// Return the dataset fingerprint for this resolved contract.
+    pub fn dataset_fingerprint(&self) -> &str {
+        &self.contract.dataset_fingerprint
+    }
+
+    /// Return the selected instance ids for this resolved contract.
+    pub fn instances(&self) -> &[String] {
+        &self.contract.instances
+    }
+
+    /// Return the optional session limit for this resolved contract.
+    pub fn session_limit(&self) -> Option<usize> {
+        self.contract.session_limit
+    }
+
+    /// Return the optional instance limit for this resolved contract.
+    pub fn instance_limit(&self) -> Option<usize> {
+        self.contract.instance_limit
+    }
+
+    /// Return the instance offset for this resolved contract.
+    pub fn instance_offset(&self) -> usize {
+        self.contract.instance_offset
+    }
+
+    /// Return the resolved ingest format.
+    pub fn ingest_format(&self) -> &'static str {
+        match self.contract.ingest_format {
+            LongMemEvalIngestFormat::Text => "text",
+            LongMemEvalIngestFormat::Json => "json",
+        }
+    }
+
+    /// Return the resolved consolidation mode.
+    pub fn consolidation_mode(&self) -> &'static str {
+        match self.contract.consolidation {
+            LongMemEvalConsolidationMode::End => "end",
+            LongMemEvalConsolidationMode::PerSession => "per-session",
+            LongMemEvalConsolidationMode::Off => "off",
+        }
+    }
+
+    /// Return the optional determinism requirement for this resolved contract.
+    pub fn determinism_requirement(&self) -> Option<elephant::llm::DeterminismRequirement> {
+        self.contract.determinism_requirement
+    }
+
+    /// Return the dataset path from the resolved execution config.
+    pub fn dataset_path(&self) -> &Path {
+        &self.execution.dataset_path
+    }
+
+    /// Return the output directory from the resolved execution config.
+    pub fn output_dir(&self) -> &Path {
+        &self.execution.output_dir
+    }
+
+    /// Return the optional execution tag.
+    pub fn tag(&self) -> Option<&str> {
+        self.execution.tag.as_deref()
+    }
+
+    /// Return the resolved instance concurrency.
+    pub fn instance_jobs(&self) -> usize {
+        self.execution.instance_jobs
+    }
+
+    /// Return the reflect budget token setting from the resolved contract.
+    pub fn reflect_budget_tokens(&self) -> usize {
+        self.contract.runtime.tuning.reflect_budget_tokens
+    }
+
+    /// Return a redacted JSON snapshot of the resolved contract.
+    pub fn redacted_contract_json(&self) -> serde_json::Value {
+        serde_json::to_value(&self.contract).expect("resolved contract serializes")
+    }
+
+    /// Return a redacted JSON snapshot of the resolved execution config.
+    pub fn redacted_execution_json(&self) -> serde_json::Value {
+        serde_json::to_value(RedactedLongMemEvalExecution::from(&self.execution))
+            .expect("resolved execution serializes")
+    }
+
+    /// Return a cloned resolved config with an explicit judge-model override applied.
+    pub fn with_judge_model_override(&self, judge_model: Option<&str>) -> Result<Self> {
+        let Some(judge_model) = judge_model else {
+            return Ok(self.clone());
+        };
+        validate_nonblank("judge.model", judge_model)?;
+
+        let mut resolved = self.clone();
+        resolved.contract.judge.model = judge_model.to_string();
+        resolved.contract_hash = contract_hash_for(&resolved.contract)?;
+        resolved.build_judge_config()?;
+        Ok(resolved)
+    }
+
+    /// Render the resolved benchmark config as pretty JSON with secrets redacted.
+    pub fn to_pretty_redacted_json(&self) -> String {
+        let payload = RedactedLongMemEvalResolvedBenchConfig {
+            contract: &self.contract,
+            execution: RedactedLongMemEvalExecution::from(&self.execution),
+            secrets: self.secrets.redacted(),
+            contract_hash: &self.contract_hash,
+        };
+        serde_json::to_string_pretty(&payload).expect("resolved config serializes")
+    }
+
+    /// Build a typed runtime config from the resolved contract, execution, and secrets.
+    pub fn build_runtime_config(&self) -> Result<RuntimeConfig> {
+        build_runtime_config_from_parts(
+            &self.contract.runtime,
+            &self.execution.database_url,
+            &self.execution,
+            &self.secrets,
+        )
+    }
+
+    /// Build a typed benchmark judge config from the resolved contract, execution, and secrets.
+    pub fn build_judge_config(&self) -> Result<BenchJudgeConfig> {
+        build_judge_config_from_parts(&self.contract.judge, &self.execution, &self.secrets)
     }
 
     /// Build a benchmark harness from the resolved runtime contract.
@@ -267,6 +360,14 @@ impl ResolvedBenchConfig {
 struct RedactedResolvedBenchConfig<'a> {
     contract: &'a ResolvedLocomoContract,
     execution: RedactedBenchExecution<'a>,
+    secrets: RedactedBenchSecrets,
+    contract_hash: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct RedactedLongMemEvalResolvedBenchConfig<'a> {
+    contract: &'a ResolvedLongMemEvalContract,
+    execution: RedactedLongMemEvalExecution<'a>,
     secrets: RedactedBenchSecrets,
     contract_hash: &'a str,
 }
@@ -302,6 +403,59 @@ impl<'a> From<&'a BenchExecution> for RedactedBenchExecution<'a> {
             tag: value.tag.as_deref(),
             conversation_jobs: value.conversation_jobs,
             question_jobs: value.question_jobs,
+            database_url: "<redacted>",
+            llm_base_url: value.llm_base_url.as_deref(),
+            llm_timeout_secs: value.llm_timeout_secs,
+            llm_vertex_project: value.llm_vertex_project.as_deref(),
+            llm_vertex_location: value.llm_vertex_location.as_deref(),
+            embedding_model_path: value
+                .embedding_model_path
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            embedding_max_seq_len: value.embedding_max_seq_len,
+            reranker_model_path: value
+                .reranker_model_path
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            reranker_api_url: value.reranker_api_url.as_deref(),
+            reranker_max_seq_len: value.reranker_max_seq_len,
+            judge_base_url: value.judge_base_url.as_deref(),
+            judge_timeout_secs: value.judge_timeout_secs,
+            judge_vertex_project: value.judge_vertex_project.as_deref(),
+            judge_vertex_location: value.judge_vertex_location.as_deref(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct RedactedLongMemEvalExecution<'a> {
+    dataset_path: String,
+    output_dir: String,
+    tag: Option<&'a str>,
+    instance_jobs: usize,
+    database_url: &'static str,
+    llm_base_url: Option<&'a str>,
+    llm_timeout_secs: u64,
+    llm_vertex_project: Option<&'a str>,
+    llm_vertex_location: Option<&'a str>,
+    embedding_model_path: Option<String>,
+    embedding_max_seq_len: usize,
+    reranker_model_path: Option<String>,
+    reranker_api_url: Option<&'a str>,
+    reranker_max_seq_len: usize,
+    judge_base_url: Option<&'a str>,
+    judge_timeout_secs: u64,
+    judge_vertex_project: Option<&'a str>,
+    judge_vertex_location: Option<&'a str>,
+}
+
+impl<'a> From<&'a LongMemEvalExecution> for RedactedLongMemEvalExecution<'a> {
+    fn from(value: &'a LongMemEvalExecution) -> Self {
+        Self {
+            dataset_path: value.dataset_path.display().to_string(),
+            output_dir: value.output_dir.display().to_string(),
+            tag: value.tag.as_deref(),
+            instance_jobs: value.instance_jobs,
             database_url: "<redacted>",
             llm_base_url: value.llm_base_url.as_deref(),
             llm_timeout_secs: value.llm_timeout_secs,
@@ -391,7 +545,71 @@ pub fn resolve_locomo_bench_config(
     Ok(resolved)
 }
 
-fn contract_hash_for(contract: &ResolvedLocomoContract) -> Result<String> {
+/// Resolve a checked-in LongMemEval profile, optional execution overlay, and benchmark secrets.
+pub fn resolve_longmemeval_bench_config(
+    profile_path: &Path,
+    execution_overlay_path: Option<&Path>,
+    secrets_env_file: Option<&Path>,
+) -> Result<ResolvedLongMemEvalBenchConfig> {
+    let profile = load_toml::<LongMemEvalContractFile>(profile_path)?;
+    validate_longmemeval_profile(&profile)?;
+    let overlay = execution_overlay_path
+        .map(load_toml::<LongMemEvalExecutionOverlayFile>)
+        .transpose()?;
+    let execution = LongMemEvalExecution::from_overlay(overlay);
+    validate_longmemeval_execution(&execution)?;
+    let secrets = BenchSecrets::load(secrets_env_file)?;
+
+    let dataset_bytes = fs::read(&execution.dataset_path).map_err(|error| {
+        ConfigError::configuration(format!(
+            "failed to read dataset {}: {error}",
+            execution.dataset_path.display()
+        ))
+    })?;
+    let dataset_fingerprint = fnv1a64_hex(&dataset_bytes);
+    if let Some(expected) = &profile.dataset.expected_fingerprint
+        && expected != &dataset_fingerprint
+    {
+        return Err(ConfigError::configuration(format!(
+            "dataset fingerprint mismatch for {}: expected {}, got {}",
+            profile.dataset.identifier, expected, dataset_fingerprint
+        )));
+    }
+
+    let resolved_contract = ResolvedLongMemEvalContract {
+        benchmark: "longmemeval",
+        schema_version: profile.schema_version,
+        protocol_version: profile.protocol_version,
+        dataset_identifier: profile.dataset.identifier,
+        dataset_fingerprint,
+        expected_dataset_fingerprint: profile.dataset.expected_fingerprint,
+        instances: profile.slice.instances,
+        session_limit: profile.slice.session_limit,
+        instance_limit: profile.slice.instance_limit,
+        instance_offset: profile.slice.instance_offset,
+        ingest_format: profile.ingest_format,
+        consolidation: profile.consolidation,
+        determinism_requirement: profile.determinism_requirement,
+        runtime: profile.runtime,
+        judge: profile.judge,
+        judge_prompt_hash: longmemeval_judge_prompt_hash(),
+    };
+
+    let contract_hash = contract_hash_for(&resolved_contract)?;
+
+    let resolved = ResolvedLongMemEvalBenchConfig {
+        contract: resolved_contract,
+        execution,
+        secrets,
+        contract_hash,
+    };
+
+    resolved.build_runtime_config()?;
+    resolved.build_judge_config()?;
+    Ok(resolved)
+}
+
+fn contract_hash_for<T: Serialize>(contract: &T) -> Result<String> {
     serde_json::to_vec(contract)
         .map(|bytes| fnv1a64_hex(&bytes))
         .map_err(|error| {
@@ -400,12 +618,24 @@ fn contract_hash_for(contract: &ResolvedLocomoContract) -> Result<String> {
 }
 
 fn load_toml<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
-    let raw = fs::read_to_string(path).map_err(|error| {
+    let resolved = resolve_workspace_path(path);
+    let raw = fs::read_to_string(&resolved).map_err(|error| {
         ConfigError::configuration(format!("failed to read {}: {error}", path.display()))
     })?;
     toml::from_str(&raw).map_err(|error| {
         ConfigError::configuration(format!("failed to parse {}: {error}", path.display()))
     })
+}
+
+fn resolve_workspace_path(path: &Path) -> std::path::PathBuf {
+    if path.is_absolute() || !path.starts_with("bench") {
+        return path.to_path_buf();
+    }
+
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("bench crate must live under the workspace root")
+        .join(path)
 }
 
 fn validate_profile(profile: &LocomoContractFile) -> Result<()> {
@@ -447,6 +677,42 @@ fn validate_profile(profile: &LocomoContractFile) -> Result<()> {
     if matches!(profile.slice.question_limit, Some(0)) {
         return Err(ConfigError::configuration(
             "slice.question_limit must be greater than 0 if set",
+        ));
+    }
+    validate_runtime_contract(&profile.runtime)?;
+    validate_judge_contract(&profile.judge)?;
+    Ok(())
+}
+
+fn validate_longmemeval_profile(profile: &LongMemEvalContractFile) -> Result<()> {
+    if profile.schema_version == 0 {
+        return Err(ConfigError::configuration(
+            "schema_version must be greater than 0",
+        ));
+    }
+    if profile.benchmark != BenchmarkKind::LongMemEval {
+        return Err(ConfigError::configuration(
+            "benchmark must be \"longmemeval\"",
+        ));
+    }
+    if profile.protocol_version.trim().is_empty() {
+        return Err(ConfigError::configuration(
+            "protocol_version must not be blank",
+        ));
+    }
+    if profile.dataset.identifier.trim().is_empty() {
+        return Err(ConfigError::configuration(
+            "dataset.identifier must not be blank",
+        ));
+    }
+    if matches!(profile.slice.session_limit, Some(0)) {
+        return Err(ConfigError::configuration(
+            "slice.session_limit must be greater than 0 if set",
+        ));
+    }
+    if matches!(profile.slice.instance_limit, Some(0)) {
+        return Err(ConfigError::configuration(
+            "slice.instance_limit must be greater than 0 if set",
         ));
     }
     validate_runtime_contract(&profile.runtime)?;
@@ -509,22 +775,36 @@ fn validate_execution(execution: &BenchExecution) -> Result<()> {
             "execution.question_jobs must be greater than 0",
         ));
     }
-    if execution.llm_timeout_secs == 0 {
+    validate_execution_common(execution)
+}
+
+fn validate_longmemeval_execution(execution: &LongMemEvalExecution) -> Result<()> {
+    validate_nonblank("execution.database_url", &execution.database_url)?;
+    if execution.instance_jobs == 0 {
+        return Err(ConfigError::configuration(
+            "execution.instance_jobs must be greater than 0",
+        ));
+    }
+    validate_execution_common(execution)
+}
+
+fn validate_execution_common<E: ExecutionConfigRef>(execution: &E) -> Result<()> {
+    if execution.llm_timeout_secs() == 0 {
         return Err(ConfigError::configuration(
             "execution.llm_timeout_secs must be greater than 0",
         ));
     }
-    if execution.embedding_max_seq_len == 0 {
+    if execution.embedding_max_seq_len() == 0 {
         return Err(ConfigError::configuration(
             "execution.embedding_max_seq_len must be greater than 0",
         ));
     }
-    if execution.reranker_max_seq_len == 0 {
+    if execution.reranker_max_seq_len() == 0 {
         return Err(ConfigError::configuration(
             "execution.reranker_max_seq_len must be greater than 0",
         ));
     }
-    if execution.judge_timeout_secs == 0 {
+    if execution.judge_timeout_secs() == 0 {
         return Err(ConfigError::configuration(
             "execution.judge_timeout_secs must be greater than 0",
         ));
@@ -542,46 +822,255 @@ fn validate_nonblank(name: &str, value: &str) -> Result<()> {
     }
 }
 
-fn build_runtime_llm_config(
+trait ExecutionConfigRef {
+    fn llm_base_url(&self) -> Option<&str>;
+    fn llm_timeout_secs(&self) -> u64;
+    fn llm_vertex_project(&self) -> Option<&str>;
+    fn llm_vertex_location(&self) -> Option<&str>;
+    fn embedding_model_path(&self) -> Option<&Path>;
+    fn embedding_max_seq_len(&self) -> usize;
+    fn reranker_model_path(&self) -> Option<&Path>;
+    fn reranker_api_url(&self) -> Option<&str>;
+    fn reranker_max_seq_len(&self) -> usize;
+    fn judge_base_url(&self) -> Option<&str>;
+    fn judge_timeout_secs(&self) -> u64;
+    fn judge_vertex_project(&self) -> Option<&str>;
+    fn judge_vertex_location(&self) -> Option<&str>;
+}
+
+impl ExecutionConfigRef for BenchExecution {
+    fn llm_base_url(&self) -> Option<&str> {
+        self.llm_base_url.as_deref()
+    }
+
+    fn llm_timeout_secs(&self) -> u64 {
+        self.llm_timeout_secs
+    }
+
+    fn llm_vertex_project(&self) -> Option<&str> {
+        self.llm_vertex_project.as_deref()
+    }
+
+    fn llm_vertex_location(&self) -> Option<&str> {
+        self.llm_vertex_location.as_deref()
+    }
+
+    fn embedding_model_path(&self) -> Option<&Path> {
+        self.embedding_model_path.as_deref()
+    }
+
+    fn embedding_max_seq_len(&self) -> usize {
+        self.embedding_max_seq_len
+    }
+
+    fn reranker_model_path(&self) -> Option<&Path> {
+        self.reranker_model_path.as_deref()
+    }
+
+    fn reranker_api_url(&self) -> Option<&str> {
+        self.reranker_api_url.as_deref()
+    }
+
+    fn reranker_max_seq_len(&self) -> usize {
+        self.reranker_max_seq_len
+    }
+
+    fn judge_base_url(&self) -> Option<&str> {
+        self.judge_base_url.as_deref()
+    }
+
+    fn judge_timeout_secs(&self) -> u64 {
+        self.judge_timeout_secs
+    }
+
+    fn judge_vertex_project(&self) -> Option<&str> {
+        self.judge_vertex_project.as_deref()
+    }
+
+    fn judge_vertex_location(&self) -> Option<&str> {
+        self.judge_vertex_location.as_deref()
+    }
+}
+
+impl ExecutionConfigRef for LongMemEvalExecution {
+    fn llm_base_url(&self) -> Option<&str> {
+        self.llm_base_url.as_deref()
+    }
+
+    fn llm_timeout_secs(&self) -> u64 {
+        self.llm_timeout_secs
+    }
+
+    fn llm_vertex_project(&self) -> Option<&str> {
+        self.llm_vertex_project.as_deref()
+    }
+
+    fn llm_vertex_location(&self) -> Option<&str> {
+        self.llm_vertex_location.as_deref()
+    }
+
+    fn embedding_model_path(&self) -> Option<&Path> {
+        self.embedding_model_path.as_deref()
+    }
+
+    fn embedding_max_seq_len(&self) -> usize {
+        self.embedding_max_seq_len
+    }
+
+    fn reranker_model_path(&self) -> Option<&Path> {
+        self.reranker_model_path.as_deref()
+    }
+
+    fn reranker_api_url(&self) -> Option<&str> {
+        self.reranker_api_url.as_deref()
+    }
+
+    fn reranker_max_seq_len(&self) -> usize {
+        self.reranker_max_seq_len
+    }
+
+    fn judge_base_url(&self) -> Option<&str> {
+        self.judge_base_url.as_deref()
+    }
+
+    fn judge_timeout_secs(&self) -> u64 {
+        self.judge_timeout_secs
+    }
+
+    fn judge_vertex_project(&self) -> Option<&str> {
+        self.judge_vertex_project.as_deref()
+    }
+
+    fn judge_vertex_location(&self) -> Option<&str> {
+        self.judge_vertex_location.as_deref()
+    }
+}
+
+fn build_runtime_config_from_parts<E: ExecutionConfigRef>(
     runtime: &RuntimeContract,
-    execution: &BenchExecution,
+    database_url: &str,
+    execution: &E,
+    secrets: &BenchSecrets,
+) -> Result<RuntimeConfig> {
+    let llm = build_runtime_llm_config(runtime, execution, secrets)?;
+    let embedding = build_embedding_config(runtime, execution, secrets)?;
+    let reranker = build_reranker_config(runtime, execution, secrets)?;
+    let tuning = &runtime.tuning;
+    let reasoning_effort = ReasoningEffortConfig {
+        retain_extract: tuning.reasoning_effort.retain_extract,
+        retain_resolve: tuning.reasoning_effort.retain_resolve,
+        retain_graph: tuning.reasoning_effort.retain_graph,
+        reflect: tuning.reasoning_effort.reflect,
+        consolidate: tuning.reasoning_effort.consolidate,
+        opinion_merge: tuning.reasoning_effort.opinion_merge,
+    };
+
+    RuntimeConfig::new(database_url.to_string(), llm, embedding, reranker)?
+        .with_dedup_threshold(tuning.dedup_threshold)?
+        .with_reasoning_effort(reasoning_effort)?
+        .with_extraction(extractor::ExtractionConfig {
+            structured_output_max_attempts: tuning.extraction.structured_output_max_attempts,
+            temperature: tuning.extraction.temperature,
+            reasoning_effort: tuning.reasoning_effort.retain_extract,
+        })?
+        .with_resolve_temperature(tuning.resolve_temperature)?
+        .with_graph(graph_builder::GraphConfig {
+            semantic_threshold: tuning.graph.semantic_threshold,
+            temporal_max_days: tuning.graph.temporal_max_days,
+            enable_causal: tuning.graph.enable_causal,
+            causal_temperature: tuning.graph.causal_temperature,
+            causal_reasoning_effort: tuning.reasoning_effort.retain_graph,
+        })?
+        .with_consolidation(ConsolidationConfig {
+            batch_size: tuning.consolidation.batch_size,
+            max_tokens: tuning.consolidation.max_tokens,
+            recall_budget: tuning.consolidation.recall_budget,
+            structured_output_max_attempts: tuning.consolidation.structured_output_max_attempts,
+            temperature: tuning.consolidation.temperature,
+            reasoning_effort: tuning.reasoning_effort.consolidate,
+        })?
+        .with_opinion_merge(opinion_merger::OpinionMergeConfig {
+            temperature: tuning.opinion_merge.temperature,
+            reasoning_effort: tuning.reasoning_effort.opinion_merge,
+        })?
+        .with_reflect(ReflectConfig::new(
+            tuning.reflect.max_iterations,
+            tuning.reflect.max_tokens,
+            tuning.reflect.source_limit,
+            tuning.reflect.source_max_chars,
+            tuning.reflect.enable_source_lookup,
+        )?)?
+        .with_reflect_temperature(tuning.reflect_temperature)?
+        .with_retrieval(RetrievalConfig::new(
+            tuning.retrieval.retriever_limit,
+            tuning.retrieval.max_facts,
+        )?)
+}
+
+fn build_judge_config_from_parts<E: ExecutionConfigRef>(
+    judge: &JudgeContract,
+    execution: &E,
+    secrets: &BenchSecrets,
+) -> Result<BenchJudgeConfig> {
+    let client = build_client_config(
+        judge.provider,
+        secrets.judge_api_key(),
+        &judge.model,
+        execution.judge_base_url(),
+        execution.judge_timeout_secs(),
+        execution.judge_vertex_project(),
+        execution.judge_vertex_location(),
+    )?;
+    Ok(BenchJudgeConfig::new(
+        client,
+        judge.temperature,
+        judge.max_tokens,
+        judge.max_attempts,
+    ))
+}
+
+fn build_runtime_llm_config<E: ExecutionConfigRef>(
+    runtime: &RuntimeContract,
+    execution: &E,
     secrets: &BenchSecrets,
 ) -> Result<LlmConfig> {
     let retain = build_client_config(
         runtime.llm.provider,
         secrets.runtime_api_key(),
         &runtime.llm.retain_model,
-        execution.llm_base_url.as_deref(),
-        execution.llm_timeout_secs,
-        execution.llm_vertex_project.as_deref(),
-        execution.llm_vertex_location.as_deref(),
+        execution.llm_base_url(),
+        execution.llm_timeout_secs(),
+        execution.llm_vertex_project(),
+        execution.llm_vertex_location(),
     )?;
     let reflect = build_client_config(
         runtime.llm.provider,
         secrets.runtime_api_key(),
         &runtime.llm.reflect_model,
-        execution.llm_base_url.as_deref(),
-        execution.llm_timeout_secs,
-        execution.llm_vertex_project.as_deref(),
-        execution.llm_vertex_location.as_deref(),
+        execution.llm_base_url(),
+        execution.llm_timeout_secs(),
+        execution.llm_vertex_project(),
+        execution.llm_vertex_location(),
     )?;
     Ok(LlmConfig::new(retain, reflect))
 }
 
-fn build_embedding_config(
+fn build_embedding_config<E: ExecutionConfigRef>(
     runtime: &RuntimeContract,
-    execution: &BenchExecution,
+    execution: &E,
     secrets: &BenchSecrets,
 ) -> Result<EmbeddingConfig> {
     match runtime.embedding.provider {
         super::contract::EmbeddingProviderKind::Local => {
-            let path = execution.embedding_model_path.as_ref().ok_or_else(|| {
+            let path = execution.embedding_model_path().ok_or_else(|| {
                 ConfigError::configuration(
                     "execution.embedding_model_path must be set for runtime.embedding.provider=local",
                 )
             })?;
-            Ok(EmbeddingConfig::local(path.display().to_string())
-                .with_max_seq_len(execution.embedding_max_seq_len))
+            Ok(
+                EmbeddingConfig::local(path.display().to_string())
+                    .with_max_seq_len(execution.embedding_max_seq_len()),
+            )
         }
         super::contract::EmbeddingProviderKind::OpenAi => {
             let api_key = secrets.embedding_api_key().ok_or_else(|| {
@@ -596,27 +1085,29 @@ fn build_embedding_config(
             })?;
             Ok(
                 EmbeddingConfig::openai(api_key, &runtime.embedding.model, dimensions)
-                    .with_max_seq_len(execution.embedding_max_seq_len),
+                    .with_max_seq_len(execution.embedding_max_seq_len()),
             )
         }
     }
 }
 
-fn build_reranker_config(
+fn build_reranker_config<E: ExecutionConfigRef>(
     runtime: &RuntimeContract,
-    execution: &BenchExecution,
+    execution: &E,
     secrets: &BenchSecrets,
 ) -> Result<RerankerConfig> {
     match runtime.reranker.provider {
         RerankerProviderKind::None => Ok(RerankerConfig::none()),
         RerankerProviderKind::Local => {
-            let path = execution.reranker_model_path.as_ref().ok_or_else(|| {
+            let path = execution.reranker_model_path().ok_or_else(|| {
                 ConfigError::configuration(
                     "execution.reranker_model_path must be set for runtime.reranker.provider=local",
                 )
             })?;
-            Ok(RerankerConfig::local(path.display().to_string())
-                .with_max_seq_len(execution.reranker_max_seq_len))
+            Ok(
+                RerankerConfig::local(path.display().to_string())
+                    .with_max_seq_len(execution.reranker_max_seq_len()),
+            )
         }
         RerankerProviderKind::Api => {
             let api_key = secrets.reranker_api_key().ok_or_else(|| {
@@ -624,7 +1115,7 @@ fn build_reranker_config(
                     "ELEPHANT_BENCH_RERANKER_API_KEY must be set for runtime.reranker.provider=api",
                 )
             })?;
-            let api_url = execution.reranker_api_url.as_deref().ok_or_else(|| {
+            let api_url = execution.reranker_api_url().ok_or_else(|| {
                 ConfigError::configuration(
                     "execution.reranker_api_url must be set for runtime.reranker.provider=api",
                 )
@@ -634,8 +1125,10 @@ fn build_reranker_config(
                     "runtime.reranker.model must be set for runtime.reranker.provider=api",
                 )
             })?;
-            Ok(RerankerConfig::api(api_key, api_url, model)
-                .with_max_seq_len(execution.reranker_max_seq_len))
+            Ok(
+                RerankerConfig::api(api_key, api_url, model)
+                    .with_max_seq_len(execution.reranker_max_seq_len()),
+            )
         }
     }
 }
@@ -718,6 +1211,16 @@ fn nonzero_timeout(timeout_secs: u64) -> Result<u64> {
 
 fn judge_prompt_hash() -> String {
     fnv1a64_hex(include_str!("../../locomo/judge_answer.txt").as_bytes())
+}
+
+fn longmemeval_judge_prompt_hash() -> String {
+    let mut combined = String::new();
+    combined.push_str(include_str!("../../longmemeval/prompts/judge_abstention.txt"));
+    combined.push_str(include_str!("../../longmemeval/prompts/judge_factual.txt"));
+    combined.push_str(include_str!("../../longmemeval/prompts/judge_knowledge_update.txt"));
+    combined.push_str(include_str!("../../longmemeval/prompts/judge_preference.txt"));
+    combined.push_str(include_str!("../../longmemeval/prompts/judge_temporal.txt"));
+    fnv1a64_hex(combined.as_bytes())
 }
 
 fn fnv1a64_hex(bytes: &[u8]) -> String {

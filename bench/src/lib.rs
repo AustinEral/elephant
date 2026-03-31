@@ -5,7 +5,10 @@ pub mod config;
 mod env;
 mod harness;
 
-pub use config::{ResolvedBenchConfig, resolve_locomo_bench_config};
+pub use config::{
+    ResolvedBenchConfig, ResolvedLongMemEvalBenchConfig, resolve_locomo_bench_config,
+    resolve_longmemeval_bench_config,
+};
 pub use env::{BenchConfig, BenchJudgeConfig};
 pub use harness::{
     BenchHarness, BenchHarnessBuilder, BenchRuntime, BenchRuntimeMetadata,

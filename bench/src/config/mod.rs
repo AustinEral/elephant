@@ -5,4 +5,7 @@ mod execution;
 mod resolve;
 mod secrets;
 
-pub use resolve::{ResolvedBenchConfig, resolve_locomo_bench_config};
+pub use resolve::{
+    ResolvedBenchConfig, ResolvedLongMemEvalBenchConfig, resolve_locomo_bench_config,
+    resolve_longmemeval_bench_config,
+};

@@ -1,0 +1,25 @@
+schema_version = 1
+benchmark = "longmemeval"
+protocol_version = "2026-03-31-longmemeval-contract-v1"
+ingest_format = "text"
+consolidation = "end"
+
+[dataset]
+identifier = "longmemeval-m"
+
+[runtime.llm]
+provider = "openai"
+retain_model = "gpt-5.4-mini"
+reflect_model = "gpt-5.4-mini"
+
+[runtime.embedding]
+provider = "local"
+model = "bge-small-en-v1.5"
+
+[runtime.reranker]
+provider = "local"
+model = "ms-marco-MiniLM-L-6-v2"
+
+[judge]
+provider = "openai"
+model = "gpt-5.4"
