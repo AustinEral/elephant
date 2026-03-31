@@ -33,8 +33,8 @@ use elephant::types::{
     BankId, NetworkType, ReflectDoneTrace, ReflectQuery, RetainInput, RetrievalSource, TurnId,
 };
 use elephant_bench::{
-    BenchHarnessBuilder, BenchJudgeConfig, BenchRuntime, BenchRuntimeMetadata,
-    BenchRuntimePromptHashes, BenchRuntimeTuning, resolve_locomo_bench_config,
+    BenchJudgeConfig, BenchRuntime, BenchRuntimeMetadata, BenchRuntimePromptHashes,
+    BenchRuntimeTuning, resolve_locomo_bench_config,
 };
 
 // --- LoCoMo dataset types ---
@@ -682,14 +682,6 @@ async fn finalize_bank_stats(
 // --- LLM Judge (delegated to common::judge) ---
 
 const JUDGE_PROMPT: &str = include_str!("judge_answer.txt");
-
-fn resolve_judge_config(override_model: Option<String>) -> BenchJudgeConfig {
-    common::judge::resolve_judge_config(&common::judge::JudgeOverrides {
-        provider: None,
-        model: override_model,
-    })
-    .unwrap()
-}
 
 async fn llm_judge(
     judge: &dyn LlmClient,
@@ -1369,6 +1361,12 @@ fn resolve_qa_config(artifact_path: &Path, overrides: CliOverrides) -> Result<Ru
     let artifact = load_benchmark_output(artifact_path)?;
     let mut config = run_config_from_artifact(&artifact)?;
 
+    if let Some(path) = overrides.config_path {
+        config.config_path = Some(path);
+    }
+    if let Some(dataset) = overrides.dataset {
+        config.dataset = dataset;
+    }
     if let Some(output) = overrides.output {
         config.output = Some(output);
     }
@@ -1398,12 +1396,6 @@ fn validate_qa_overrides(overrides: &CliOverrides) -> Result<(), String> {
     let mut unsupported = Vec::new();
     if overrides.profile.is_some() {
         unsupported.push("--profile");
-    }
-    if overrides.config_path.is_some() {
-        unsupported.push("--config");
-    }
-    if overrides.dataset.is_some() {
-        unsupported.push("--dataset");
     }
     if overrides.session_limit.is_some() {
         unsupported.push("--session-limit");
@@ -2640,13 +2632,13 @@ fn print_help() {
     eprintln!("  --profile <NAME>                Named profile for `run`/`ingest` [default: full]");
     eprintln!("                                  Profiles: full, smoke, legacy-raw");
     eprintln!(
-        "  --config <PATH>                 TOML execution overlay for `run`/`ingest`/`config-resolve`"
+        "  --config <PATH>                 TOML execution overlay for `run`/`ingest`/`qa`/`config-resolve`"
     );
     eprintln!(
-        "  --secrets-env-file <PATH>       Benchmark secrets env file for `run`/`ingest`/`config-resolve`"
+        "  --secrets-env-file <PATH>       Benchmark secrets env file for `run`/`ingest`/`qa`/`config-resolve`"
     );
     eprintln!(
-        "  --dataset <PATH>                Execution-only dataset path override for `run`/`ingest`"
+        "  --dataset <PATH>                Execution-only dataset path override for `run`/`ingest`/`qa`"
     );
     eprintln!("  --tag <NAME>                    Save to results/local/<tag>.json by default");
     eprintln!("  --out <PATH>                    Output results path (overrides --tag)");
@@ -3680,9 +3672,6 @@ fn default_output_path(
 async fn main() {
     let invocation = parse_args();
     let command = invocation.command;
-    if matches!(command, BenchCommand::Qa) {
-        let _ = dotenvy::dotenv();
-    }
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -3716,7 +3705,10 @@ async fn main() {
         }
     }
 
-    let resolved_run = if matches!(command, BenchCommand::Run | BenchCommand::Ingest) {
+    let resolved_bench = if matches!(
+        command,
+        BenchCommand::Run | BenchCommand::Ingest | BenchCommand::Qa
+    ) {
         let profile_path = config.profile.contract_path();
         let resolved = resolve_locomo_bench_config(
             &profile_path,
@@ -3727,10 +3719,18 @@ async fn main() {
             eprintln!("failed to resolve benchmark config: {err}");
             std::process::exit(1);
         });
-        apply_resolved_fresh_config(&mut config, &resolved).unwrap_or_else(|err| {
-            eprintln!("failed to apply resolved benchmark config: {err}");
-            std::process::exit(1);
-        });
+        let resolved = resolved
+            .with_judge_model_override(config.judge_model.as_deref())
+            .unwrap_or_else(|err| {
+                eprintln!("failed to apply judge override to benchmark config: {err}");
+                std::process::exit(1);
+            });
+        if matches!(command, BenchCommand::Run | BenchCommand::Ingest) {
+            apply_resolved_fresh_config(&mut config, &resolved).unwrap_or_else(|err| {
+                eprintln!("failed to apply resolved benchmark config: {err}");
+                std::process::exit(1);
+            });
+        }
         Some(resolved)
     } else {
         None
@@ -3899,7 +3899,7 @@ async fn main() {
     let metrics = Arc::new(MetricsCollector::new());
     metrics.extend_snapshot(&existing_stage_metrics);
     let (runtime_metadata, determinism_requirement, runtime, judge_config, judge, judge_label) =
-        if let Some(resolved) = resolved_run.as_ref() {
+        if let Some(resolved) = resolved_bench.as_ref() {
             let harness = resolved
                 .build_harness(metrics.clone())
                 .await
@@ -3935,38 +3935,7 @@ async fn main() {
                 judge_label,
             )
         } else {
-            let harness = BenchHarnessBuilder::from_env()
-                .unwrap_or_else(|err| {
-                    eprintln!("failed to load benchmark runtime config: {err}");
-                    std::process::exit(1);
-                })
-                .metrics(metrics.clone())
-                .build()
-                .await
-                .unwrap_or_else(|err| {
-                    eprintln!("failed to build Elephant runtime: {err}");
-                    std::process::exit(1);
-                });
-            let runtime_metadata = harness.metadata().clone();
-            let determinism_requirement = harness.determinism_requirement();
-            let runtime = Arc::new(harness.into_runtime());
-            let judge_config = Arc::new(resolve_judge_config(config.judge_model.clone()));
-            let judge = Some(
-                common::judge::build_judge_client(metrics.clone(), judge_config.as_ref())
-                    .unwrap_or_else(|err| {
-                        eprintln!("failed to build judge client: {err}");
-                        std::process::exit(1);
-                    }),
-            );
-            let judge_label = common::judge::judge_label(judge_config.as_ref());
-            (
-                runtime_metadata,
-                determinism_requirement,
-                runtime,
-                judge_config,
-                judge,
-                judge_label,
-            )
+            unreachable!("run, ingest, and qa all resolve typed benchmark config")
         };
 
     println!("retain_model: {}", runtime_metadata.retain_model());
@@ -4016,7 +3985,7 @@ async fn main() {
 
     let cli_command = env::args().collect::<Vec<_>>().join(" ");
     let manifest = BenchmarkManifest {
-        protocol_version: resolved_run
+        protocol_version: resolved_bench
             .as_ref()
             .map(|resolved| resolved.protocol_version().to_string())
             .unwrap_or_else(|| "2026-03-10-config-v1".into()),
@@ -4027,12 +3996,12 @@ async fn main() {
             .as_ref()
             .map(|path| path.display().to_string()),
         dataset_path: config.dataset.display().to_string(),
-        dataset_fingerprint: resolved_run
+        dataset_fingerprint: resolved_bench
             .as_ref()
             .map(|resolved| resolved.dataset_fingerprint().to_string())
             .unwrap_or_else(|| format!("{:016x}", fnv1a64(&raw_bytes))),
         command: cli_command,
-        category_filter: resolved_run
+        category_filter: resolved_bench
             .as_ref()
             .map(|resolved| resolved.category_filter().to_vec())
             .unwrap_or_else(|| vec![1, 2, 3, 4]),
@@ -4047,7 +4016,7 @@ async fn main() {
         raw_json: config.ingest.raw_json(),
         dirty_worktree: git_dirty_worktree(),
         prompt_hashes: benchmark_prompt_hashes(&runtime_metadata),
-        runtime_config: resolved_run
+        runtime_config: resolved_bench
             .as_ref()
             .map(|resolved| {
                 benchmark_runtime_config(&runtime_metadata, resolved, judge_config.as_ref())
@@ -4060,13 +4029,13 @@ async fn main() {
                 judge_max_attempts: judge_config.max_attempts(),
                 qa_updates_memory: false,
             }),
-        contract_hash: resolved_run
+        contract_hash: resolved_bench
             .as_ref()
             .map(|resolved| resolved.contract_hash().to_string()),
-        resolved_contract: resolved_run
+        resolved_contract: resolved_bench
             .as_ref()
             .map(|resolved| resolved.redacted_contract_json()),
-        execution: resolved_run
+        execution: resolved_bench
             .as_ref()
             .map(|resolved| resolved.redacted_execution_json()),
         source_artifact,
@@ -4962,6 +4931,90 @@ mod tests {
         ];
         let err = parse_args_from(&raw).unwrap_err();
         assert!(err.contains("`qa` does not accept --profile"));
+
+        fs::remove_file(&artifact_path).ok();
+    }
+
+    #[test]
+    fn qa_allows_execution_overrides() {
+        let artifact_path = env::temp_dir().join(format!(
+            "locomo-qa-test-execution-{}.json",
+            std::process::id()
+        ));
+        let artifact = json!({
+            "benchmark": "locomo",
+            "timestamp": "2026-03-10T00:00:00Z",
+            "judge_model": "anthropic/test-judge",
+            "retain_model": "anthropic/test-main",
+            "reflect_model": "anthropic/test-main",
+            "embedding_model": "local/test-embedding",
+            "reranker_model": "local/test-reranker",
+            "consolidation_strategy": "end",
+            "total_questions": 0,
+            "accuracy": 0.0,
+            "mean_f1": 0.0,
+            "mean_evidence_recall": 0.0,
+            "per_category": {},
+            "per_conversation": {},
+            "bank_ids": {
+                "conv-26": "01KK623GTJJB2WW3RKHSDSCDT6"
+            },
+            "turn_refs": {},
+            "manifest": {
+                "protocol_version": "2026-03-10-config-v1",
+                "profile": "full",
+                "mode": "ingest",
+                "config_path": null,
+                "dataset_path": "data/locomo10.json",
+                "dataset_fingerprint": "9f7f4c0a5fbb2df2",
+                "command": "locomo-bench ingest --profile full",
+                "category_filter": [1, 2, 3, 4],
+                "selected_conversations": [],
+                "image_policy": "blip_caption_inline",
+                "ingestion_granularity": "session",
+                "question_concurrency": 1,
+                "conversation_concurrency": 1,
+                "consolidation_strategy": "end",
+                "session_limit": null,
+                "question_limit": null,
+                "raw_json": false,
+                "dirty_worktree": false
+            },
+            "stage_metrics": {},
+            "total_stage_usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "calls": 0,
+                "errors": 0,
+                "latency_ms": 0
+            },
+            "results": [],
+            "total_time_s": 0.0
+        });
+        fs::write(
+            &artifact_path,
+            serde_json::to_string(&artifact).expect("serialize test artifact"),
+        )
+        .expect("write test artifact");
+
+        let raw = vec![
+            "locomo-bench".to_string(),
+            "qa".to_string(),
+            artifact_path.display().to_string(),
+            "--config".to_string(),
+            "bench/locomo/profiles/full.toml".to_string(),
+            "--dataset".to_string(),
+            "data/locomo10-copy.json".to_string(),
+        ];
+        let invocation = parse_args_from(&raw).unwrap().unwrap();
+        assert_eq!(
+            invocation.config.config_path,
+            Some(PathBuf::from("bench/locomo/profiles/full.toml"))
+        );
+        assert_eq!(
+            invocation.config.dataset,
+            PathBuf::from("data/locomo10-copy.json")
+        );
 
         fs::remove_file(&artifact_path).ok();
     }

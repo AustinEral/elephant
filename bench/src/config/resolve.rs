@@ -141,6 +141,20 @@ impl ResolvedBenchConfig {
             .expect("resolved execution serializes")
     }
 
+    /// Return a cloned resolved config with an explicit judge-model override applied.
+    pub fn with_judge_model_override(&self, judge_model: Option<&str>) -> Result<Self> {
+        let Some(judge_model) = judge_model else {
+            return Ok(self.clone());
+        };
+        validate_nonblank("judge.model", judge_model)?;
+
+        let mut resolved = self.clone();
+        resolved.contract.judge.model = judge_model.to_string();
+        resolved.contract_hash = contract_hash_for(&resolved.contract)?;
+        resolved.build_judge_config()?;
+        Ok(resolved)
+    }
+
     /// Render the resolved benchmark config as pretty JSON with secrets redacted.
     pub fn to_pretty_redacted_json(&self) -> String {
         let payload = RedactedResolvedBenchConfig {
@@ -363,11 +377,7 @@ pub fn resolve_locomo_bench_config(
         judge_prompt_hash: judge_prompt_hash(),
     };
 
-    let contract_hash = serde_json::to_vec(&resolved_contract)
-        .map(|bytes| fnv1a64_hex(&bytes))
-        .map_err(|error| {
-            ConfigError::configuration(format!("failed to serialize resolved contract: {error}"))
-        })?;
+    let contract_hash = contract_hash_for(&resolved_contract)?;
 
     let resolved = ResolvedBenchConfig {
         contract: resolved_contract,
@@ -379,6 +389,14 @@ pub fn resolve_locomo_bench_config(
     resolved.build_runtime_config()?;
     resolved.build_judge_config()?;
     Ok(resolved)
+}
+
+fn contract_hash_for(contract: &ResolvedLocomoContract) -> Result<String> {
+    serde_json::to_vec(contract)
+        .map(|bytes| fnv1a64_hex(&bytes))
+        .map_err(|error| {
+            ConfigError::configuration(format!("failed to serialize resolved contract: {error}"))
+        })
 }
 
 fn load_toml<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
