@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .banks
         .values()
         .filter_map(|id| id.parse::<ulid::Ulid>().ok())
-        .map(|u| uuid::Uuid::from(u))
+        .map(uuid::Uuid::from)
         .collect();
 
     println!("Resetting consolidation for {} banks...", bank_ids.len());

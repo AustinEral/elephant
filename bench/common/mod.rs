@@ -3,16 +3,15 @@ pub mod fingerprint;
 pub mod io;
 pub mod judge;
 
-use std::env;
-
+use elephant::RuntimeTuning as ElephantRuntimeTuning;
 use elephant::llm::DeterminismRequirement;
 use elephant::llm::ReasoningEffort;
-use elephant::runtime::RuntimeTuning as ElephantRuntimeTuning;
+use elephant_bench::BenchConfig;
 
 #[allow(unused_imports)]
 pub use fingerprint::{fnv1a64, fnv1a64_hex};
 #[allow(unused_imports)]
-pub use io::{append_jsonl, sidecar_path};
+pub use io::{append_jsonl, resolve_workspace_path, sidecar_path};
 
 #[allow(dead_code)]
 fn format_reasoning_effort(effort: Option<ReasoningEffort>) -> &'static str {
@@ -43,20 +42,9 @@ pub fn format_reasoning_effort_summary(tuning: &ElephantRuntimeTuning) -> String
 #[allow(dead_code)]
 pub fn benchmark_determinism_requirement_from_env() -> Result<Option<DeterminismRequirement>, String>
 {
-    let Some(raw) = env::var("BENCH_DETERMINISM_REQUIREMENT").ok() else {
-        return Ok(None);
-    };
-
-    let value = raw.trim().to_ascii_lowercase();
-    match value.as_str() {
-        "best_effort" | "best-effort" | "1" | "true" | "yes" | "on" => {
-            Ok(Some(DeterminismRequirement::BestEffort))
-        }
-        "strong" => Ok(Some(DeterminismRequirement::Strong)),
-        _ => Err(format!(
-            "BENCH_DETERMINISM_REQUIREMENT must be one of: best_effort, strong; got: {raw}"
-        )),
-    }
+    BenchConfig::from_env()
+        .map(|config| config.determinism_requirement())
+        .map_err(|err| err.to_string())
 }
 
 #[allow(dead_code)]
@@ -67,6 +55,7 @@ pub fn format_determinism_requirement(requirement: DeterminismRequirement) -> &'
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
     use std::sync::{Mutex, OnceLock};
 
     fn env_lock() -> &'static Mutex<()> {

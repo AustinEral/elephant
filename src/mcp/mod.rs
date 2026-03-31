@@ -1,5 +1,7 @@
 //! MCP server adapter — exposes elephant pipelines as MCP tools.
 
+use std::fmt;
+
 use chrono::DateTime;
 use chrono::Utc;
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -10,7 +12,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::server::AppState;
+use crate::app::{AppHandle, AppInfo};
 use crate::types::{
     BankId, Fact, FactId, MemoryBank, RecallQuery, ReflectQuery, RetainInput, RetrievalSource,
     TemporalRange, TurnId,
@@ -156,7 +158,7 @@ fn json_text<T: serde::Serialize>(val: &T) -> Result<String, rmcp::ErrorData> {
 struct McpBankView {
     #[serde(flatten)]
     bank: MemoryBank,
-    active_runtime: crate::server::ServerInfo,
+    active_runtime: AppInfo,
 }
 
 #[derive(Serialize)]
@@ -243,16 +245,24 @@ impl ReflectParams {
 /// MCP server handler that wraps elephant's pipelines and store.
 #[derive(Clone)]
 pub struct ElephantMcp {
-    state: AppState,
+    app: AppHandle,
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
 }
 
+impl fmt::Debug for ElephantMcp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ElephantMcp")
+            .field("app", &self.app)
+            .finish_non_exhaustive()
+    }
+}
+
 impl ElephantMcp {
-    /// Create a new MCP server handler from shared application state.
-    pub fn new(state: AppState) -> Self {
+    /// Create a new MCP server handler from the shared application facade.
+    pub fn new(app: impl Into<AppHandle>) -> Self {
         Self {
-            state,
+            app: app.into(),
             tool_router: Self::tool_router(),
         }
     }
@@ -260,7 +270,7 @@ impl ElephantMcp {
     fn bank_view(&self, bank: MemoryBank) -> McpBankView {
         McpBankView {
             bank,
-            active_runtime: self.state.info.clone(),
+            active_runtime: self.app.info().clone(),
         }
     }
 
@@ -315,12 +325,7 @@ impl ElephantMcp {
     async fn retain(&self, Parameters(params): Parameters<RetainParams>) -> Result<String, String> {
         let input = params.into_input().map_err(|e| e.message.to_string())?;
 
-        let output = self
-            .state
-            .retain
-            .retain(&input)
-            .await
-            .map_err(|e| e.to_string())?;
+        let output = self.app.retain(&input).await.map_err(|e| e.to_string())?;
         json_text(&output).map_err(|e| e.message.to_string())
     }
 
@@ -331,31 +336,19 @@ impl ElephantMcp {
     async fn recall(&self, Parameters(params): Parameters<RecallParams>) -> Result<String, String> {
         let query = params.into_query().map_err(|e| e.message.to_string())?;
 
-        let result = self
-            .state
-            .recall
-            .recall(&query)
-            .await
-            .map_err(|e| e.to_string())?;
+        let result = self.app.recall(&query).await.map_err(|e| e.to_string())?;
         json_text(&self.recall_view(result)).map_err(|e| e.message.to_string())
     }
 
     /// Remember and answer from what you know.
-    #[tool(
-        description = "Use your memory to answer. This is the primary memory interface."
-    )]
+    #[tool(description = "Use your memory to answer. This is the primary memory interface.")]
     async fn reflect(
         &self,
         Parameters(params): Parameters<ReflectParams>,
     ) -> Result<String, String> {
         let query = params.into_query().map_err(|e| e.message.to_string())?;
 
-        let result = self
-            .state
-            .reflect
-            .reflect(&query)
-            .await
-            .map_err(|e| e.to_string())?;
+        let result = self.app.reflect(&query).await.map_err(|e| e.to_string())?;
         json_text(&self.reflect_view(result)).map_err(|e| e.message.to_string())
     }
 
@@ -366,12 +359,7 @@ impl ElephantMcp {
         description = "List the available memories you can use, including active runtime configuration."
     )]
     async fn list_banks(&self) -> Result<String, String> {
-        let banks = self
-            .state
-            .store
-            .list_banks()
-            .await
-            .map_err(|e| e.to_string())?;
+        let banks = self.app.list_banks().await.map_err(|e| e.to_string())?;
         let views: Vec<McpBankView> = banks.into_iter().map(|bank| self.bank_view(bank)).collect();
         json_text(&views).map_err(|e| e.message.to_string())
     }
@@ -383,8 +371,7 @@ impl ElephantMcp {
         Parameters(params): Parameters<GetBankParams>,
     ) -> Result<String, String> {
         let bank = self
-            .state
-            .store
+            .app
             .get_bank(parse_bank_id(&params.bank_id).map_err(|e| e.message.to_string())?)
             .await
             .map_err(|e| e.to_string())?;
@@ -392,9 +379,7 @@ impl ElephantMcp {
     }
 
     /// Create a new memory.
-    #[tool(
-        description = "Create a new memory and return it with active runtime configuration."
-    )]
+    #[tool(description = "Create a new memory and return it with active runtime configuration.")]
     async fn create_bank(
         &self,
         Parameters(params): Parameters<CreateBankParams>,
@@ -410,12 +395,11 @@ impl ElephantMcp {
             mission: normalize_optional_text(params.mission).unwrap_or_default(),
             directives: vec![],
             disposition: Disposition::default(),
-            embedding_model: self.state.embeddings.model_name().to_string(),
-            embedding_dimensions: self.state.embeddings.dimensions() as u16,
+            embedding_model: self.app.embedding_model_name().to_string(),
+            embedding_dimensions: self.app.embedding_dimensions(),
         };
 
-        self.state
-            .store
+        self.app
             .create_bank(&bank)
             .await
             .map_err(|e| e.to_string())?;
@@ -455,16 +439,14 @@ mod tests {
     use crate::recall::RecallPipeline;
     use crate::reflect::ReflectPipeline;
     use crate::retain::RetainPipeline;
-    use crate::server::{AppState, ServerInfo};
     use crate::server::{
-        ServerBackgroundConsolidationInfo, ServerConsolidationRuntimeInfo, ServerModelsInfo,
-        ServerReflectInfo, ServerRetrievalInfo,
+        AppHandle, ServerBackgroundConsolidationInfo, ServerConsolidationRuntimeInfo, ServerInfo,
+        ServerModelsInfo, ServerReflectInfo, ServerRetrievalInfo,
     };
     use crate::storage::{MemoryStore, mock::MockMemoryStore};
     use crate::types::{
         ConsolidationReport, Disposition, Fact, FactId, FactType, MemoryBank, NetworkType,
-        OpinionMergeReport, RecallResult, ReflectResult, RetainOutput, RetrievalSource,
-        ScoredFact,
+        OpinionMergeReport, RecallResult, ReflectResult, RetainOutput, RetrievalSource, ScoredFact,
     };
     use chrono::Utc;
 
@@ -614,9 +596,9 @@ mod tests {
         recall_query: Arc<Mutex<Option<RecallQuery>>>,
         reflect_query: Arc<Mutex<Option<ReflectQuery>>>,
         store: Arc<MockMemoryStore>,
-    ) -> AppState {
-        AppState {
-            info: ServerInfo {
+    ) -> AppHandle {
+        AppHandle::from_parts(
+            ServerInfo {
                 version: env!("CARGO_PKG_VERSION").into(),
                 models: ServerModelsInfo {
                     retain: "test".into(),
@@ -645,20 +627,20 @@ mod tests {
                     merge_opinions_after: false,
                 },
             },
-            retain: Arc::new(CapturingRetainPipeline {
+            Arc::new(CapturingRetainPipeline {
                 last_input: retain_input,
             }),
-            recall: Arc::new(CapturingRecallPipeline {
+            Arc::new(CapturingRecallPipeline {
                 last_query: recall_query,
             }),
-            reflect: Arc::new(CapturingReflectPipeline {
+            Arc::new(CapturingReflectPipeline {
                 last_query: reflect_query,
             }),
-            consolidator: Arc::new(NoOpConsolidator),
-            opinion_merger: Arc::new(NoOpOpinionMerger),
+            Arc::new(NoOpConsolidator),
+            Arc::new(NoOpOpinionMerger),
             store,
-            embeddings: Arc::new(MockEmbeddings::new(384)),
-        }
+            Arc::new(MockEmbeddings::new(384)),
+        )
     }
 
     #[tokio::test]

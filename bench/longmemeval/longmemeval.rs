@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::env;
 use std::fs;
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
@@ -22,17 +23,18 @@ mod common;
 mod dataset;
 mod ingest;
 
-use common::io::{append_jsonl, atomic_write_json, sidecar_path};
+use common::io::{append_jsonl, atomic_write_json, resolve_workspace_path, sidecar_path};
 use dataset::load_dataset;
 use ingest::{ConsolidationMode, IngestConfig, IngestFormat};
 
 use elephant::consolidation::ConsolidationProgress;
 use elephant::metrics::{LlmStage, MetricsCollector, StageUsage, with_scoped_collector};
-use elephant::runtime::{
-    BuildRuntimeOptions, ElephantRuntime, RuntimePromptHashes as ElephantPromptHashes,
-    RuntimeTuning as ElephantRuntimeTuning, build_runtime_from_env,
-};
 use elephant::types::{NetworkType, ReflectQuery};
+use elephant::{
+    ElephantRuntime, RuntimePromptHashes as ElephantPromptHashes,
+    RuntimeTuning as ElephantRuntimeTuning,
+};
+use elephant_bench::BenchHarnessBuilder;
 
 // --- Judge prompts ---
 
@@ -124,18 +126,13 @@ impl BenchCommand {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 enum RunProfile {
     Smoke,
+    #[default]
     FullS,
     FullM,
-}
-
-impl Default for RunProfile {
-    fn default() -> Self {
-        Self::FullS
-    }
 }
 
 impl RunProfile {
@@ -575,8 +572,9 @@ fn parse_args() -> BenchInvocation {
 // --- Config resolution ---
 
 fn load_json_config(path: &Path) -> Result<FileRunConfig, String> {
-    let raw =
-        fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    let resolved = resolve_workspace_path(path);
+    let raw = fs::read_to_string(&resolved)
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
     serde_json::from_str(&raw).map_err(|e| format!("failed to parse {}: {e}", path.display()))
 }
 
@@ -1115,8 +1113,9 @@ fn ensure_output_paths_are_safe(
 // --- Artifact loading ---
 
 fn load_benchmark_output(path: &Path) -> Result<BenchmarkOutput, String> {
-    let raw =
-        fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    let resolved = resolve_workspace_path(path);
+    let raw = fs::read_to_string(&resolved)
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
     serde_json::from_str(&raw).map_err(|e| format!("failed to parse {}: {e}", path.display()))
 }
 
@@ -1170,13 +1169,13 @@ fn run_config_from_artifact(artifact: &BenchmarkOutput) -> Result<RunConfig, Str
 fn benchmark_prompt_hashes(runtime: &ElephantRuntime) -> BenchmarkPromptHashes {
     BenchmarkPromptHashes {
         judge: judge_prompt_hash(),
-        elephant: runtime.info.prompt_hashes.clone(),
+        elephant: runtime.info().prompt_hashes.clone(),
     }
 }
 
 fn benchmark_runtime_config(runtime: &ElephantRuntime) -> BenchmarkRuntimeConfig {
     BenchmarkRuntimeConfig {
-        elephant: runtime.info.tuning.clone(),
+        elephant: runtime.info().tuning.clone(),
         reflect_budget_tokens: reflect_budget_tokens(),
     }
 }
@@ -1190,7 +1189,7 @@ async fn count_unconsolidated_facts(
     bank_id: elephant::types::BankId,
 ) -> Result<usize, String> {
     runtime
-        .store
+        .store()
         .get_facts_by_bank(
             bank_id,
             elephant::types::FactFilter {
@@ -1207,7 +1206,7 @@ async fn count_unconsolidated_facts(
 fn should_log_consolidation_progress(progress: &ConsolidationProgress) -> bool {
     progress.batch_index == 1
         || progress.batch_index == progress.total_batches
-        || progress.batch_index % 10 == 0
+        || progress.batch_index.is_multiple_of(10)
 }
 
 async fn consolidate_with_bench_progress(
@@ -1220,7 +1219,7 @@ async fn consolidate_with_bench_progress(
     let total_batches = if total_facts == 0 {
         0
     } else {
-        total_facts.div_ceil(runtime.info.tuning.consolidation_batch_size)
+        total_facts.div_ceil(runtime.info().tuning.consolidation_batch_size)
     };
     eprintln!(
         "  {qid} consolidating {total_facts} fact{} in {total_batches} batch{}...",
@@ -1230,7 +1229,7 @@ async fn consolidate_with_bench_progress(
 
     let started = Instant::now();
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let consolidator = runtime.consolidator.clone();
+    let consolidator = runtime.consolidator().clone();
     let task = tokio::spawn(async move {
         with_scoped_collector(
             metrics,
@@ -1373,8 +1372,9 @@ impl SharedState {
 // --- Merge helpers ---
 
 fn read_jsonl_records<T: DeserializeOwned>(path: &Path) -> Result<Vec<T>, String> {
-    let raw =
-        fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    let resolved = resolve_workspace_path(path);
+    let raw = fs::read_to_string(&resolved)
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
     raw.lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| {
@@ -1409,8 +1409,9 @@ struct LoadedArtifactBundle {
 }
 
 fn load_artifact_bundle(path: &Path) -> Result<LoadedArtifactBundle, String> {
+    let resolved = resolve_workspace_path(path);
     let artifact_bytes =
-        fs::read(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+        fs::read(&resolved).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
     let output: BenchmarkOutput = serde_json::from_slice(&artifact_bytes)
         .map_err(|e| format!("failed to parse {}: {e}", path.display()))?;
 
@@ -1439,7 +1440,7 @@ fn load_artifact_bundle(path: &Path) -> Result<LoadedArtifactBundle, String> {
         Vec::new()
     } else {
         let debug_path = artifact_relative_path(path, &output.artifacts.debug_path);
-        if !debug_path.exists() {
+        if !resolve_workspace_path(&debug_path).exists() {
             return Err(format!(
                 "artifact {} is missing debug sidecar {}",
                 path.display(),
@@ -1806,14 +1807,12 @@ async fn main() {
     let output_path = default_output_path(command, &config, artifact_path.as_deref());
 
     // Resume validation
-    if config.resume {
-        if !output_path.exists() {
-            eprintln!(
-                "--resume requires existing artifact at {}",
-                output_path.display()
-            );
-            std::process::exit(1);
-        }
+    if config.resume && !output_path.exists() {
+        eprintln!(
+            "--resume requires existing artifact at {}",
+            output_path.display()
+        );
+        std::process::exit(1);
     }
 
     // Safety check (--resume implies overwrite is OK for the summary)
@@ -1922,23 +1921,23 @@ async fn main() {
 
     // Build runtime with MetricsCollector
     let metrics = Arc::new(MetricsCollector::new());
-    let determinism_requirement = common::benchmark_determinism_requirement_from_env()
-        .unwrap_or_else(|message| {
-            eprintln!("{message}");
+    let harness = BenchHarnessBuilder::from_env()
+        .unwrap_or_else(|err| {
+            eprintln!("failed to load benchmark runtime config: {err}");
+            std::process::exit(1);
+        })
+        .metrics(metrics.clone())
+        .max_pool_connections(
+            NonZeroU32::new(std::cmp::min(config.instance_jobs as u32 * 8, 80).max(1)).unwrap(),
+        )
+        .build()
+        .await
+        .unwrap_or_else(|err| {
+            eprintln!("failed to build runtime: {err}");
             std::process::exit(1);
         });
-    let runtime = Arc::new(
-        build_runtime_from_env(BuildRuntimeOptions {
-            metrics: Some(metrics.clone()),
-            max_pool_connections: Some(std::cmp::min(config.instance_jobs as u32 * 8, 80)),
-            determinism_requirement,
-        })
-        .await
-        .unwrap_or_else(|e| {
-            eprintln!("failed to build runtime: {e}");
-            std::process::exit(1);
-        }),
-    );
+    let determinism_requirement = harness.determinism_requirement();
+    let runtime = Arc::new(harness.into_runtime());
 
     // Print config summary
     eprintln!("longmemeval-bench {}", command.as_str());
@@ -1963,13 +1962,13 @@ async fn main() {
     if !config.instances.is_empty() {
         eprintln!("  instances:      {:?}", config.instances);
     }
-    eprintln!("  retain_model:   {}", runtime.info.retain_model);
-    eprintln!("  reflect_model:  {}", runtime.info.reflect_model);
-    eprintln!("  embedding_model: {}", runtime.info.embedding_model);
-    eprintln!("  reranker_model: {}", runtime.info.reranker_model);
+    eprintln!("  retain_model:   {}", runtime.info().retain_model);
+    eprintln!("  reflect_model:  {}", runtime.info().reflect_model);
+    eprintln!("  embedding_model: {}", runtime.info().embedding_model);
+    eprintln!("  reranker_model: {}", runtime.info().reranker_model);
     eprintln!(
         "  reasoning_effort: {}",
-        common::format_reasoning_effort_summary(&runtime.info.tuning)
+        common::format_reasoning_effort_summary(&runtime.info().tuning)
     );
     if let Some(requirement) = determinism_requirement {
         eprintln!(
@@ -1999,27 +1998,27 @@ async fn main() {
 
     if is_resume && output_path.exists() {
         // Load existing summary to get bank IDs and instance_status
-        if let Ok(bytes) = fs::read(&output_path) {
-            if let Ok(existing) = serde_json::from_slice::<BenchmarkOutput>(&bytes) {
-                for (qid, bid) in &existing.banks {
-                    existing_banks
-                        .entry(qid.clone())
-                        .or_insert_with(|| bid.clone());
-                }
-                resume_instance_status = existing.instance_status;
-                resume_instance_timings = existing.instance_timings;
+        if let Ok(bytes) = fs::read(&output_path)
+            && let Ok(existing) = serde_json::from_slice::<BenchmarkOutput>(&bytes)
+        {
+            for (qid, bid) in &existing.banks {
+                existing_banks
+                    .entry(qid.clone())
+                    .or_insert_with(|| bid.clone());
             }
+            resume_instance_status = existing.instance_status;
+            resume_instance_timings = existing.instance_timings;
         }
         // Load completed question results from sidecar (needed for skip classification)
-        if questions_path.exists() {
-            if let Ok(records) = read_jsonl_records::<QuestionResult>(&questions_path) {
-                completed_results = records;
-            }
+        if questions_path.exists()
+            && let Ok(records) = read_jsonl_records::<QuestionResult>(&questions_path)
+        {
+            completed_results = records;
         }
-        if debug_path.exists() {
-            if let Ok(records) = read_jsonl_records::<QuestionDebugRecord>(&debug_path) {
-                completed_debug = records;
-            }
+        if debug_path.exists()
+            && let Ok(records) = read_jsonl_records::<QuestionDebugRecord>(&debug_path)
+        {
+            completed_debug = records;
         }
 
         // Classify instances and build resume plan
@@ -2142,17 +2141,22 @@ async fn main() {
 
     // Build judge client (only needed for Run/Qa)
     let judge_overrides = resolve_judge_overrides(&config);
+    let judge_config = if !matches!(command, BenchCommand::Ingest) {
+        Some(common::judge::resolve_judge_config(&judge_overrides).unwrap())
+    } else {
+        None
+    };
     let judge: Option<Arc<dyn elephant::llm::LlmClient>> =
         if !matches!(command, BenchCommand::Ingest) {
             Some(common::judge::build_judge_client(
                 metrics.clone(),
-                &judge_overrides,
+                judge_config.as_ref().expect("judge config"),
             ))
         } else {
             None
         };
     let jl = if !matches!(command, BenchCommand::Ingest) {
-        common::judge::judge_label(&judge_overrides)
+        common::judge::judge_label(judge_config.as_ref().expect("judge config"))
     } else {
         String::new()
     };
@@ -2188,10 +2192,10 @@ async fn main() {
         debug_path: debug_path.clone(),
         judge_label: jl.clone(),
         tag: config.tag.clone(),
-        retain_model: runtime.info.retain_model.clone(),
-        reflect_model: runtime.info.reflect_model.clone(),
-        embedding_model: runtime.info.embedding_model.clone(),
-        reranker_model: runtime.info.reranker_model.clone(),
+        retain_model: runtime.info().retain_model.clone(),
+        reflect_model: runtime.info().reflect_model.clone(),
+        embedding_model: runtime.info().embedding_model.clone(),
+        reranker_model: runtime.info().reranker_model.clone(),
         consolidation_strategy: config.consolidation.as_str().into(),
         manifest,
         metrics: metrics.clone(),
@@ -2261,7 +2265,7 @@ async fn main() {
                         .parse()
                         .map_err(|e| format!("bad bank_id: {e}"))?;
                     eprintln!("  {qid} deleting partial bank {}", status.bank_id);
-                    if let Err(e) = runtime.store.delete_bank(bid).await {
+                    if let Err(e) = runtime.store().delete_bank(bid).await {
                         eprintln!("  {qid} delete_bank failed (continuing): {e}");
                     }
                 }
@@ -2273,10 +2277,10 @@ async fn main() {
                     mission: "Long-term conversational memory benchmark".into(),
                     directives: vec![],
                     disposition: elephant::types::Disposition::default(),
-                    embedding_model: runtime.embeddings.model_name().to_string(),
-                    embedding_dimensions: runtime.embeddings.dimensions() as u16,
+                    embedding_model: runtime.embeddings().model_name().to_string(),
+                    embedding_dimensions: runtime.embeddings().dimensions() as u16,
                 };
-                if let Err(e) = runtime.store.create_bank(&bank).await {
+                if let Err(e) = runtime.store().create_bank(&bank).await {
                     let err_msg = format!("failed to create bank: {e}");
                     eprintln!("ERROR {qid}: {err_msg}");
                     let qr = QuestionResult {
@@ -2503,7 +2507,7 @@ async fn main() {
 
             let reflect_result = with_scoped_collector(
                 metrics.clone(),
-                runtime.reflect.reflect(&ReflectQuery {
+                runtime.reflect_pipeline().reflect(&ReflectQuery {
                     bank_id: bank_id_str.parse().unwrap(),
                     question: instance.question.clone(),
                     context: None,

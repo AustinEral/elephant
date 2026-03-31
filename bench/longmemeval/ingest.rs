@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tracing::warn;
 
+use elephant::ElephantRuntime;
 use elephant::error::Result;
 use elephant::metrics::{LlmStage, StageUsage};
-use elephant::runtime::ElephantRuntime;
 use elephant::types::id::BankId;
 use elephant::types::network::NetworkType;
 use elephant::types::{Disposition, FactFilter, MemoryBank, RetainInput};
@@ -17,17 +17,12 @@ use elephant::types::{Disposition, FactFilter, MemoryBank, RetainInput};
 use super::dataset::{LongMemEvalInstance, Turn};
 
 /// Session formatting mode for ingestion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum IngestFormat {
+    #[default]
     Text,
     Json,
-}
-
-impl Default for IngestFormat {
-    fn default() -> Self {
-        Self::Text
-    }
 }
 
 impl IngestFormat {
@@ -54,18 +49,13 @@ impl FromStr for IngestFormat {
 }
 
 /// Consolidation strategy after ingestion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ConsolidationMode {
+    #[default]
     End,
     PerSession,
     Off,
-}
-
-impl Default for ConsolidationMode {
-    fn default() -> Self {
-        Self::End
-    }
 }
 
 impl ConsolidationMode {
@@ -106,7 +96,7 @@ impl ConsolidationMode {
 }
 
 /// Configuration for LongMemEval ingestion.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IngestConfig {
     /// Session formatting: text (default) or json.
     pub format: IngestFormat,
@@ -115,16 +105,6 @@ pub struct IngestConfig {
     /// Optional limit on the number of haystack sessions to ingest.
     #[serde(default)]
     pub session_limit: Option<usize>,
-}
-
-impl Default for IngestConfig {
-    fn default() -> Self {
-        Self {
-            format: IngestFormat::default(),
-            consolidation: ConsolidationMode::default(),
-            session_limit: None,
-        }
-    }
 }
 
 /// Result of ingesting one LongMemEval instance.
@@ -251,10 +231,10 @@ pub async fn ingest_instance(
             mission: "Long-term conversational memory benchmark".into(),
             directives: vec![],
             disposition: Disposition::default(),
-            embedding_model: runtime.embeddings.model_name().to_string(),
-            embedding_dimensions: runtime.embeddings.dimensions() as u16,
+            embedding_model: runtime.embeddings().model_name().to_string(),
+            embedding_dimensions: runtime.embeddings().dimensions() as u16,
         };
-        runtime.store.create_bank(&bank).await?;
+        runtime.store().create_bank(&bank).await?;
         bank.id
     };
 
@@ -293,7 +273,7 @@ pub async fn ingest_instance(
         let timestamp = parse_haystack_date(date_str);
 
         match runtime
-            .retain
+            .retain_pipeline()
             .retain(&RetainInput {
                 bank_id,
                 content,
@@ -335,7 +315,7 @@ pub async fn ingest_instance(
 
         // Per-session consolidation
         if config.consolidation.per_session() {
-            match runtime.consolidator.consolidate(bank_id).await {
+            match runtime.consolidator().consolidate(bank_id).await {
                 Ok(cr) => {
                     stats.observations_created += cr.observations_created;
                     stats.observations_updated += cr.observations_updated;
@@ -358,7 +338,7 @@ pub async fn ingest_instance(
     let mut consolidation_time_s = 0.0;
     if config.consolidation.enabled() && !config.consolidation.per_session() {
         let total_facts = runtime
-            .store
+            .store()
             .get_facts_by_bank(
                 bank_id,
                 FactFilter {
@@ -373,7 +353,7 @@ pub async fn ingest_instance(
         let total_batches = if total_facts == 0 {
             0
         } else {
-            total_facts.div_ceil(runtime.info.tuning.consolidation_batch_size)
+            total_facts.div_ceil(runtime.info().tuning.consolidation_batch_size)
         };
         eprintln!(
             "  {} consolidating {} facts in {} batches...",
@@ -381,7 +361,7 @@ pub async fn ingest_instance(
         );
         let t0 = Instant::now();
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let consolidator = runtime.consolidator.clone();
+        let consolidator = runtime.consolidator().clone();
         let consolidate_bank_id = bank_id;
         let task = tokio::spawn(async move {
             consolidator

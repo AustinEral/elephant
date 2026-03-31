@@ -18,24 +18,27 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::ImageExt;
 
 use elephant::consolidation::{DefaultConsolidator, DefaultOpinionMerger};
-use elephant::embedding::{self, EmbeddingClient, EmbeddingConfig, EmbeddingProvider};
+use elephant::embedding::{self, EmbeddingClient, EmbeddingConfig};
 use elephant::llm::LlmClient;
 use elephant::recall::DefaultRecallPipeline;
 use elephant::recall::budget::EstimateTokenizer;
 use elephant::recall::graph::{GraphRetriever, GraphRetrieverConfig};
 use elephant::recall::keyword::KeywordRetriever;
-use elephant::recall::reranker::{self, RerankerConfig, RerankerProvider};
+use elephant::recall::reranker::{self, RerankerConfig};
 use elephant::recall::semantic::SemanticRetriever;
 use elephant::recall::temporal::TemporalRetriever;
 use elephant::reflect::DefaultReflectPipeline;
 use elephant::retain::DefaultRetainPipeline;
 use elephant::retain::chunker::SimpleChunker;
-use elephant::retain::extractor::LlmFactExtractor;
+use elephant::retain::extractor::{ExtractionConfig, LlmFactExtractor};
 use elephant::retain::graph_builder::{DefaultGraphBuilder, GraphConfig};
 use elephant::retain::resolver::LayeredEntityResolver;
-use elephant::server::{AppState, router};
 use elephant::storage::pg::PgMemoryStore;
 use elephant::types::*;
+use elephant::{
+    AppHandle, ServerBackgroundConsolidationInfo, ServerConsolidationRuntimeInfo, ServerInfo,
+    ServerModelsInfo, ServerReflectInfo, ServerRetrievalInfo, router,
+};
 
 use axum::Router;
 use axum::body::Body;
@@ -46,6 +49,38 @@ use tower::util::ServiceExt;
 // ---------------------------------------------------------------------------
 // Config helpers — read from .env with defaults matching main.rs
 // ---------------------------------------------------------------------------
+
+fn test_server_info() -> ServerInfo {
+    ServerInfo {
+        version: env!("CARGO_PKG_VERSION").into(),
+        models: ServerModelsInfo {
+            retain: "test".into(),
+            reflect: "test".into(),
+            embedding: "test".into(),
+            reranker: "none".into(),
+        },
+        retrieval: ServerRetrievalInfo {
+            retriever_limit: 20,
+            max_facts: 50,
+        },
+        reflect: ServerReflectInfo {
+            max_iterations: 8,
+            max_tokens: None,
+            source_lookup_enabled: true,
+        },
+        consolidation: ServerConsolidationRuntimeInfo {
+            batch_size: 16,
+            max_tokens: 2048,
+            recall_budget: 1024,
+        },
+        server_consolidation: ServerBackgroundConsolidationInfo {
+            enabled: true,
+            min_facts: 32,
+            cooldown_secs: 30,
+            merge_opinions_after: false,
+        },
+    }
+}
 
 fn env(key: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| panic!("{key} must be set in .env"))
@@ -159,7 +194,10 @@ impl RealTestHarness {
 
         let retain = Arc::new(DefaultRetainPipeline::new(
             Box::new(SimpleChunker),
-            Box::new(LlmFactExtractor::new(make_llm())),
+            Box::new(LlmFactExtractor::new(
+                make_llm(),
+                ExtractionConfig::default(),
+            )),
             Box::new(LayeredEntityResolver::new(make_emb(), make_llm())),
             Box::new(DefaultGraphBuilder::new(make_llm(), GraphConfig::default())),
             Box::new(PgMemoryStore::new(self.pool.clone())),
@@ -190,18 +228,11 @@ impl RealTestHarness {
                 GraphRetrieverConfig::default(),
             )),
             Box::new(TemporalRetriever::new(store_arc.clone())),
-            reranker::build_reranker(&RerankerConfig {
-                provider: RerankerProvider::None,
-                model_path: None,
-                max_seq_len: 512,
-                api_key: None,
-                api_url: None,
-                api_model: None,
-            })
-            .expect("reranker"),
+            reranker::build_reranker(&RerankerConfig::none()).expect("reranker"),
             Box::new(EstimateTokenizer),
             60.0,
             50,
+            4_096,
         ));
 
         let reflect = Arc::new(DefaultReflectPipeline::new(
@@ -223,23 +254,18 @@ impl RealTestHarness {
             self.llm.clone(),
             self.embeddings.clone(),
         ));
-        let state = AppState {
-            info: elephant::server::ServerInfo {
-                retain_model: "test".into(),
-                reflect_model: "test".into(),
-                embedding_model: "test".into(),
-                reranker_model: "none".into(),
-            },
+        let app = AppHandle::from_parts_for_testing(
+            test_server_info(),
             retain,
             recall,
             reflect,
             consolidator,
             opinion_merger,
-            store: self.store.clone(),
-            embeddings: self.embeddings.clone(),
-        };
+            self.store.clone(),
+            self.embeddings.clone(),
+        );
 
-        router(state)
+        router(app)
     }
 }
 
@@ -249,26 +275,16 @@ impl RealTestHarness {
 
 fn local_embedding_config() -> EmbeddingConfig {
     let _ = dotenvy::dotenv();
-    EmbeddingConfig {
-        provider: EmbeddingProvider::Local,
-        model_path: Some(embedding_model_path()),
-        max_seq_len: 512,
-        api_key: None,
-        model: None,
-        dimensions: None,
-    }
+    EmbeddingConfig::local(embedding_model_path())
 }
 
 fn openai_embedding_config() -> EmbeddingConfig {
     let _ = dotenvy::dotenv();
-    EmbeddingConfig {
-        provider: EmbeddingProvider::OpenAi,
-        model_path: None,
-        max_seq_len: 512,
-        api_key: Some(embedding_api_key()),
-        model: Some(embedding_api_model()),
-        dimensions: Some(embedding_api_dims()),
-    }
+    EmbeddingConfig::openai(
+        embedding_api_key(),
+        embedding_api_model(),
+        embedding_api_dims(),
+    )
 }
 
 // ---------------------------------------------------------------------------

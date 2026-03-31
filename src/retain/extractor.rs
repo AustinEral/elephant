@@ -6,8 +6,8 @@ use async_trait::async_trait;
 
 use crate::error::Result;
 use crate::llm::{
-    CompletionRequest, LlmClient, Message, ReasoningEffortConfig, StructuredOutputRetryOptions,
-    StructuredResponseErrorKind, complete_structured_with_retries, temperature_from_env,
+    CompletionRequest, LlmClient, Message, ReasoningEffort, StructuredOutputRetryOptions,
+    StructuredResponseErrorKind, complete_structured_with_retries,
 };
 use crate::types::{ExtractedFact, ExtractionInput};
 
@@ -18,6 +18,8 @@ pub struct ExtractionConfig {
     pub structured_output_max_attempts: usize,
     /// Sampling temperature for fact extraction.
     pub temperature: f32,
+    /// Reasoning effort override for extraction, if supported.
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 impl Default for ExtractionConfig {
@@ -25,23 +27,9 @@ impl Default for ExtractionConfig {
         Self {
             structured_output_max_attempts: 3,
             temperature: EXTRACT_TEMPERATURE,
+            reasoning_effort: None,
         }
     }
-}
-
-/// Read extraction configuration from environment.
-pub fn config_from_env() -> Result<ExtractionConfig> {
-    Ok(ExtractionConfig {
-        structured_output_max_attempts: std::env::var(
-            "RETAIN_EXTRACT_STRUCTURED_OUTPUT_MAX_ATTEMPTS",
-        )
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .filter(|&v| v > 0)
-        .unwrap_or(ExtractionConfig::default().structured_output_max_attempts),
-        temperature: temperature_from_env("RETAIN_EXTRACT_TEMPERATURE")?
-            .unwrap_or(ExtractionConfig::default().temperature),
-    })
 }
 
 /// Trait for extracting structured facts from raw text.
@@ -126,7 +114,7 @@ impl FactExtractor for LlmFactExtractor {
             .system(system)
             .message(Message::user(user_msg))
             .temperature(self.config.temperature)
-            .reasoning_effort_opt(ReasoningEffortConfig::current()?.retain_extract)
+            .reasoning_effort_opt(self.config.reasoning_effort)
             .max_tokens(EXTRACT_MAX_TOKENS)
             .build();
 

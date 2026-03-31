@@ -10,7 +10,7 @@ use dotenvy::dotenv;
 use elephant::llm::LlmClient;
 use elephant::llm::retry::{RetryPolicy, RetryingLlmClient};
 use elephant::retain::chunker::{Chunker, SimpleChunker};
-use elephant::retain::extractor::{FactExtractor, LlmFactExtractor};
+use elephant::retain::extractor::{ExtractionConfig, FactExtractor, LlmFactExtractor};
 use elephant::types::{BankId, ChunkConfig, ExtractionInput};
 use serde::Deserialize;
 
@@ -155,7 +155,7 @@ fn extract_case_live(path: &Path) -> datatest_stable::Result<()> {
 
     let rt = tokio::runtime::Runtime::new()?;
     let llm = build_llm().map_err(std::io::Error::other)?;
-    let extractor = LlmFactExtractor::new(llm);
+    let extractor = LlmFactExtractor::new(llm, ExtractionConfig::default());
     let chunker = SimpleChunker;
     let chunk_config = ChunkConfig {
         max_tokens: 512,

@@ -17,8 +17,8 @@ use tracing::{Instrument, debug, info, info_span, warn};
 use crate::embedding::EmbeddingClient;
 use crate::error::Result;
 use crate::llm::{
-    CompletionRequest, LlmClient, Message, ReasoningEffortConfig, StructuredOutputRetryOptions,
-    StructuredResponseErrorKind, complete_structured_with_retries, temperature_from_env,
+    CompletionRequest, LlmClient, Message, ReasoningEffort, StructuredOutputRetryOptions,
+    StructuredResponseErrorKind, complete_structured_with_retries,
 };
 use crate::recall::RecallPipeline;
 use crate::storage::MemoryStore;
@@ -40,6 +40,8 @@ pub struct ConsolidationConfig {
     pub structured_output_max_attempts: usize,
     /// Sampling temperature for observation consolidation.
     pub temperature: f32,
+    /// Reasoning effort override for observation consolidation, if supported.
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 impl Default for ConsolidationConfig {
@@ -50,35 +52,9 @@ impl Default for ConsolidationConfig {
             recall_budget: 512,
             structured_output_max_attempts: 3,
             temperature: CONSOLIDATE_TEMPERATURE,
+            reasoning_effort: None,
         }
     }
-}
-
-/// Read consolidation configuration from environment.
-pub fn config_from_env() -> Result<ConsolidationConfig> {
-    Ok(ConsolidationConfig {
-        batch_size: std::env::var("CONSOLIDATION_BATCH_SIZE")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(ConsolidationConfig::default().batch_size),
-        max_tokens: std::env::var("CONSOLIDATION_MAX_TOKENS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(ConsolidationConfig::default().max_tokens),
-        recall_budget: std::env::var("CONSOLIDATION_RECALL_BUDGET")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(ConsolidationConfig::default().recall_budget),
-        structured_output_max_attempts: std::env::var(
-            "CONSOLIDATION_STRUCTURED_OUTPUT_MAX_ATTEMPTS",
-        )
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .filter(|&v| v > 0)
-        .unwrap_or(ConsolidationConfig::default().structured_output_max_attempts),
-        temperature: temperature_from_env("CONSOLIDATE_TEMPERATURE")?
-            .unwrap_or(ConsolidationConfig::default().temperature),
-    })
 }
 
 /// Consolidates raw facts into topic-scoped observations.
@@ -326,7 +302,7 @@ impl DefaultConsolidator {
                 .message(Message::user(prompt))
                 .max_tokens(self.config.max_tokens)
                 .temperature(self.config.temperature)
-                .reasoning_effort_opt(ReasoningEffortConfig::current()?.consolidate)
+                .reasoning_effort_opt(self.config.reasoning_effort)
                 .build();
 
             let resp: ConsolidateResponse = complete_structured_with_retries(

@@ -26,18 +26,18 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio::task::JoinSet;
 
-use elephant::MemoryStore;
 use elephant::consolidation::ConsolidationProgress;
 use elephant::llm::LlmClient;
 use elephant::metrics::{LlmStage, MetricsCollector, StageUsage, with_scoped_collector};
-use elephant::runtime::{
-    BuildRuntimeOptions, ElephantRuntime, RuntimePromptHashes as ElephantPromptHashes,
-    RuntimeTuning as ElephantRuntimeTuning, build_runtime_from_env,
-};
 use elephant::types::{
     BankId, Disposition, MemoryBank, NetworkType, ReflectDoneTrace, ReflectQuery, RetainInput,
     RetrievalSource, TurnId,
 };
+use elephant::{
+    ElephantRuntime, MemoryStore, RuntimePromptHashes as ElephantPromptHashes,
+    RuntimeTuning as ElephantRuntimeTuning,
+};
+use elephant_bench::{BenchHarnessBuilder, BenchJudgeConfig};
 
 // --- LoCoMo dataset types ---
 
@@ -508,10 +508,10 @@ fn get_session_turns(conv: &Conversation, idx: usize) -> Vec<Turn> {
     }
     for suffix in ["dialogue", "dialog"] {
         let key = format!("session_{idx}_{suffix}");
-        if let Some(v) = conv.sessions.get(&key) {
-            if let Ok(turns) = serde_json::from_value::<Vec<Turn>>(v.clone()) {
-                return turns;
-            }
+        if let Some(v) = conv.sessions.get(&key)
+            && let Ok(turns) = serde_json::from_value::<Vec<Turn>>(v.clone())
+        {
+            return turns;
         }
     }
     Vec::new()
@@ -630,13 +630,13 @@ fn fmt_elapsed(seconds: f64) -> String {
 fn benchmark_prompt_hashes(runtime: &ElephantRuntime) -> BenchmarkPromptHashes {
     BenchmarkPromptHashes {
         judge: fnv1a64_hex(JUDGE_PROMPT),
-        elephant: runtime.info.prompt_hashes.clone(),
+        elephant: runtime.info().prompt_hashes.clone(),
     }
 }
 
 fn benchmark_runtime_config(runtime: &ElephantRuntime) -> BenchmarkRuntimeConfig {
     BenchmarkRuntimeConfig {
-        elephant: runtime.info.tuning.clone(),
+        elephant: runtime.info().tuning.clone(),
         reflect_budget_tokens: reflect_budget_tokens(),
         judge_temperature: common::judge::JUDGE_TEMPERATURE,
         judge_max_tokens: common::judge::JUDGE_MAX_TOKENS,
@@ -646,7 +646,7 @@ fn benchmark_runtime_config(runtime: &ElephantRuntime) -> BenchmarkRuntimeConfig
 }
 
 async fn finalize_bank_stats(
-    store: &Arc<dyn MemoryStore>,
+    store: Arc<dyn MemoryStore>,
     bank_id: BankId,
     stats: &mut ConversationBankStats,
 ) -> Result<(), String> {
@@ -684,24 +684,12 @@ fn reflect_budget_tokens() -> usize {
     }
 }
 
-fn build_judge_client(
-    metrics: Arc<MetricsCollector>,
-    override_model: Option<String>,
-) -> Arc<dyn LlmClient> {
-    common::judge::build_judge_client(
-        metrics,
-        &common::judge::JudgeOverrides {
-            provider: None,
-            model: override_model,
-        },
-    )
-}
-
-fn judge_label(override_model: &Option<String>) -> String {
-    common::judge::judge_label(&common::judge::JudgeOverrides {
+fn resolve_judge_config(override_model: Option<String>) -> BenchJudgeConfig {
+    common::judge::resolve_judge_config(&common::judge::JudgeOverrides {
         provider: None,
-        model: override_model.clone(),
+        model: override_model,
     })
+    .unwrap()
 }
 
 async fn llm_judge(
@@ -721,6 +709,10 @@ async fn llm_judge(
 
 fn sidecar_path(output_path: &Path, suffix: &str) -> PathBuf {
     common::sidecar_path(output_path, suffix)
+}
+
+fn resolve_workspace_path(path: &Path) -> PathBuf {
+    common::resolve_workspace_path(path)
 }
 
 fn relative_artifact_path(base: &Path, target: &Path) -> String {
@@ -927,18 +919,13 @@ fn flush_results(
 
 // --- CLI ---
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 enum RunProfile {
+    #[default]
     Full,
     Smoke,
     LegacyRaw,
-}
-
-impl Default for RunProfile {
-    fn default() -> Self {
-        Self::Full
-    }
 }
 
 impl RunProfile {
@@ -991,18 +978,13 @@ impl BenchCommand {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 enum IngestMode {
+    #[default]
     Turn,
     Session,
     RawJson,
-}
-
-impl Default for IngestMode {
-    fn default() -> Self {
-        Self::Turn
-    }
 }
 
 impl IngestMode {
@@ -1052,18 +1034,13 @@ impl FromStr for IngestMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 enum ConsolidationMode {
+    #[default]
     End,
     PerSession,
     Off,
-}
-
-impl Default for ConsolidationMode {
-    fn default() -> Self {
-        Self::End
-    }
 }
 
 impl ConsolidationMode {
@@ -1742,14 +1719,16 @@ fn parse_usize_arg(raw: Option<&String>, flag: &str) -> Result<usize, String> {
 }
 
 fn load_json_config(path: &Path) -> Result<FileRunConfig, String> {
-    let raw =
-        fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    let resolved = resolve_workspace_path(path);
+    let raw = fs::read_to_string(&resolved)
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
     serde_json::from_str(&raw).map_err(|e| format!("failed to parse {}: {e}", path.display()))
 }
 
 fn load_benchmark_output(path: &Path) -> Result<BenchmarkOutput, String> {
-    let raw =
-        fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    let resolved = resolve_workspace_path(path);
+    let raw = fs::read_to_string(&resolved)
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
     serde_json::from_str(&raw).map_err(|e| format!("failed to parse {}: {e}", path.display()))
 }
 
@@ -1847,8 +1826,9 @@ struct PublishedArtifacts {
 }
 
 fn read_jsonl_records<T: DeserializeOwned>(path: &Path) -> Result<Vec<T>, String> {
-    let raw =
-        fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    let resolved = resolve_workspace_path(path);
+    let raw = fs::read_to_string(&resolved)
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
     raw.lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| {
@@ -1866,8 +1846,9 @@ fn artifact_relative_path(summary_path: &Path, rel: &str) -> PathBuf {
 }
 
 fn load_artifact_bundle(path: &Path) -> Result<LoadedArtifactBundle, String> {
+    let resolved = resolve_workspace_path(path);
     let artifact_bytes =
-        fs::read(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+        fs::read(&resolved).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
     let output: BenchmarkOutput = serde_json::from_slice(&artifact_bytes)
         .map_err(|e| format!("failed to parse {}: {e}", path.display()))?;
 
@@ -1899,7 +1880,7 @@ fn load_artifact_bundle(path: &Path) -> Result<LoadedArtifactBundle, String> {
         Vec::new()
     } else {
         let debug_path = artifact_relative_path(path, &output.artifacts.debug_path);
-        if !debug_path.exists() {
+        if !resolve_workspace_path(&debug_path).exists() {
             return Err(format!(
                 "artifact {} is missing debug sidecar {}",
                 path.display(),
@@ -1928,23 +1909,25 @@ fn load_artifact_bundle(path: &Path) -> Result<LoadedArtifactBundle, String> {
 }
 
 fn write_json_pretty<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
+    let resolved = resolve_workspace_path(path);
+    if let Some(parent) = resolved.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
     }
     let json = serde_json::to_vec_pretty(value)
         .map_err(|e| format!("failed to serialize {}: {e}", path.display()))?;
-    fs::write(path, json).map_err(|e| format!("failed to write {}: {e}", path.display()))
+    fs::write(&resolved, json).map_err(|e| format!("failed to write {}: {e}", path.display()))
 }
 
 fn write_jsonl_gzip<T: Serialize>(path: &Path, values: &[T]) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
+    let resolved = resolve_workspace_path(path);
+    if let Some(parent) = resolved.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
     }
 
-    let file =
-        fs::File::create(path).map_err(|e| format!("failed to create {}: {e}", path.display()))?;
+    let file = fs::File::create(&resolved)
+        .map_err(|e| format!("failed to create {}: {e}", path.display()))?;
     let encoder = GzEncoder::new(file, Compression::default());
     let mut writer = BufWriter::new(encoder);
     for value in values {
@@ -1964,11 +1947,12 @@ fn write_jsonl_gzip<T: Serialize>(path: &Path, values: &[T]) -> Result<(), Strin
 }
 
 fn load_publish_index(path: &Path) -> Result<PublishedBenchmarkIndex, String> {
-    if !path.exists() {
+    let resolved = resolve_workspace_path(path);
+    if !resolved.exists() {
         return Ok(PublishedBenchmarkIndex::default());
     }
-    let raw =
-        fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    let raw = fs::read_to_string(&resolved)
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
     serde_json::from_str(&raw).map_err(|e| format!("failed to parse {}: {e}", path.display()))
 }
 
@@ -2766,7 +2750,7 @@ async fn count_unconsolidated_facts(
     bank_id: BankId,
 ) -> Result<usize, String> {
     runtime
-        .store
+        .store()
         .get_facts_by_bank(
             bank_id,
             elephant::types::FactFilter {
@@ -2783,7 +2767,7 @@ async fn count_unconsolidated_facts(
 fn should_log_consolidation_progress(progress: &ConsolidationProgress) -> bool {
     progress.batch_index == 1
         || progress.batch_index == progress.total_batches
-        || progress.batch_index % 10 == 0
+        || progress.batch_index.is_multiple_of(10)
 }
 
 async fn consolidate_with_bench_progress(
@@ -2796,7 +2780,7 @@ async fn consolidate_with_bench_progress(
     let total_batches = if total_facts == 0 {
         0
     } else {
-        total_facts.div_ceil(runtime.info.tuning.consolidation_batch_size)
+        total_facts.div_ceil(runtime.info().tuning.consolidation_batch_size)
     };
     println!(
         "[{tag}] Consolidating {total_facts} fact{} in {total_batches} batch{}...",
@@ -2806,7 +2790,7 @@ async fn consolidate_with_bench_progress(
 
     let started = Instant::now();
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let consolidator = runtime.consolidator.clone();
+    let consolidator = runtime.consolidator().clone();
     let task = tokio::spawn(async move {
         with_scoped_collector(
             conversation_metrics,
@@ -2874,11 +2858,11 @@ async fn run_conversation(
             mission: "Long-term conversational memory benchmark".into(),
             directives: vec![],
             disposition: Disposition::default(),
-            embedding_model: runtime.embeddings.model_name().to_string(),
-            embedding_dimensions: runtime.embeddings.dimensions() as u16,
+            embedding_model: runtime.embeddings().model_name().to_string(),
+            embedding_dimensions: runtime.embeddings().dimensions() as u16,
         };
         runtime
-            .store
+            .store()
             .create_bank(&bank)
             .await
             .map_err(|e| format!("[{tag}] failed to create bank: {e}"))?;
@@ -2920,7 +2904,7 @@ async fn run_conversation(
                 };
                 match with_scoped_collector(
                     conversation_metrics.clone(),
-                    runtime.retain.retain(&RetainInput {
+                    runtime.retain_pipeline().retain(&RetainInput {
                         bank_id: bank.id,
                         content,
                         timestamp,
@@ -2959,7 +2943,7 @@ async fn run_conversation(
 
                     let resp = with_scoped_collector(
                         conversation_metrics.clone(),
-                        runtime.retain.retain(&RetainInput {
+                        runtime.retain_pipeline().retain(&RetainInput {
                             bank_id: bank.id,
                             content: turn_text.clone(),
                             timestamp,
@@ -3100,7 +3084,7 @@ async fn run_conversation(
         .lock()
         .await
         .record_conversation_metrics(sample_id.clone(), conversation_metrics.snapshot());
-    finalize_bank_stats(&runtime.store, bank_id, &mut bank_stats).await?;
+    finalize_bank_stats(runtime.store(), bank_id, &mut bank_stats).await?;
     shared
         .lock()
         .await
@@ -3164,7 +3148,6 @@ async fn run_conversation(
         let completed = completed.clone();
         let evidence_refs = qa.evidence.clone();
         let turn_refs = turn_refs.clone();
-        let bank_id = bank_id;
         let temporal_context = temporal_context.clone();
         let conversation_metrics = conversation_metrics.clone();
         let question_metrics = Arc::new(MetricsCollector::new());
@@ -3193,7 +3176,7 @@ async fn run_conversation(
                 with_scoped_collector(question_metrics_for_scope, async {
                     let t0 = Instant::now();
                     let reflect_result = runtime
-                        .reflect
+                        .reflect_pipeline()
                         .reflect(&ReflectQuery {
                             bank_id,
                             question: question.clone(),
@@ -3824,31 +3807,32 @@ async fn main() {
 
     let metrics = Arc::new(MetricsCollector::new());
     metrics.extend_snapshot(&existing_stage_metrics);
-    let determinism_requirement = common::benchmark_determinism_requirement_from_env()
-        .unwrap_or_else(|message| {
-            eprintln!("{message}");
+    let harness = BenchHarnessBuilder::from_env()
+        .unwrap_or_else(|err| {
+            eprintln!("failed to load benchmark runtime config: {err}");
+            std::process::exit(1);
+        })
+        .metrics(metrics.clone())
+        .build()
+        .await
+        .unwrap_or_else(|err| {
+            eprintln!("failed to build Elephant runtime: {err}");
             std::process::exit(1);
         });
-    let runtime = Arc::new(
-        build_runtime_from_env(BuildRuntimeOptions {
-            metrics: Some(metrics.clone()),
-            max_pool_connections: None,
-            determinism_requirement,
-        })
-        .await
-        .expect("failed to build Elephant runtime"),
-    );
+    let determinism_requirement = harness.determinism_requirement();
+    let runtime = Arc::new(harness.into_runtime());
 
-    let judge = build_judge_client(metrics.clone(), config.judge_model.clone());
-    let judge_label = judge_label(&config.judge_model);
+    let judge_config = resolve_judge_config(config.judge_model.clone());
+    let judge = common::judge::build_judge_client(metrics.clone(), &judge_config);
+    let judge_label = common::judge::judge_label(&judge_config);
 
-    println!("retain_model: {}", runtime.info.retain_model);
-    println!("reflect_model: {}", runtime.info.reflect_model);
-    println!("reranker_model: {}", runtime.info.reranker_model);
-    println!("embedding_model: {}", runtime.info.embedding_model);
+    println!("retain_model: {}", runtime.info().retain_model);
+    println!("reflect_model: {}", runtime.info().reflect_model);
+    println!("reranker_model: {}", runtime.info().reranker_model);
+    println!("embedding_model: {}", runtime.info().embedding_model);
     println!(
         "Reasoning effort: {}",
-        common::format_reasoning_effort_summary(&runtime.info.tuning)
+        common::format_reasoning_effort_summary(&runtime.info().tuning)
     );
     if let Some(requirement) = determinism_requirement {
         println!(
@@ -3928,10 +3912,10 @@ async fn main() {
         debug_path: debug_path.clone(),
         judge_label: judge_label.clone(),
         tag: config.tag.clone(),
-        retain_model: runtime.info.retain_model.clone(),
-        reflect_model: runtime.info.reflect_model.clone(),
-        embedding_model: runtime.info.embedding_model.clone(),
-        reranker_model: runtime.info.reranker_model.clone(),
+        retain_model: runtime.info().retain_model.clone(),
+        reflect_model: runtime.info().reflect_model.clone(),
+        embedding_model: runtime.info().embedding_model.clone(),
+        reranker_model: runtime.info().reranker_model.clone(),
         consolidation_strategy: consolidation_strategy.into(),
         manifest,
         metrics: metrics.clone(),

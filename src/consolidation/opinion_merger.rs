@@ -8,10 +8,7 @@ use serde::Deserialize;
 
 use crate::embedding::EmbeddingClient;
 use crate::error::Result;
-use crate::llm::{
-    CompletionRequest, LlmClient, Message, ReasoningEffortConfig, complete_structured,
-    temperature_from_env,
-};
+use crate::llm::{CompletionRequest, LlmClient, Message, ReasoningEffort, complete_structured};
 use crate::storage::MemoryStore;
 use crate::types::id::BankId;
 use crate::types::{FactFilter, NetworkType, OpinionMergeReport};
@@ -38,22 +35,17 @@ pub struct DefaultOpinionMerger {
 pub struct OpinionMergeConfig {
     /// Sampling temperature for opinion merge classification.
     pub temperature: f32,
+    /// Reasoning effort override for opinion merge classification, if supported.
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 impl Default for OpinionMergeConfig {
     fn default() -> Self {
         Self {
             temperature: MERGE_TEMPERATURE,
+            reasoning_effort: None,
         }
     }
-}
-
-/// Read opinion merge configuration from environment.
-pub fn config_from_env() -> Result<OpinionMergeConfig> {
-    Ok(OpinionMergeConfig {
-        temperature: temperature_from_env("OPINION_MERGE_TEMPERATURE")?
-            .unwrap_or(OpinionMergeConfig::default().temperature),
-    })
 }
 
 impl DefaultOpinionMerger {
@@ -168,7 +160,7 @@ impl OpinionMerger for DefaultOpinionMerger {
                 .message(Message::user(prompt))
                 .max_tokens(MERGE_MAX_TOKENS)
                 .temperature(self.config.temperature)
-                .reasoning_effort_opt(ReasoningEffortConfig::current()?.opinion_merge)
+                .reasoning_effort_opt(self.config.reasoning_effort)
                 .build();
 
             let resp: MergeResponse = complete_structured(self.llm.as_ref(), request).await?;

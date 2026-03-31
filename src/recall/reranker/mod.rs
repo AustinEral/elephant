@@ -4,6 +4,7 @@ pub mod api;
 pub mod local;
 
 use async_trait::async_trait;
+use std::fmt;
 
 use crate::error::{Error, Result};
 use crate::types::ScoredFact;
@@ -20,76 +21,155 @@ pub enum RerankerProvider {
 }
 
 /// Configuration for the reranker provider.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RerankerConfig {
-    /// Which provider to use.
-    pub provider: RerankerProvider,
-    /// Path to local ONNX model directory (for [`RerankerProvider::Local`]).
-    pub model_path: Option<String>,
-    /// Max sequence length for local tokenizer truncation (e.g. 512 for MiniLM).
-    pub max_seq_len: usize,
-    /// API key (for [`RerankerProvider::Api`]).
-    pub api_key: Option<String>,
-    /// API base URL (for [`RerankerProvider::Api`]).
-    pub api_url: Option<String>,
-    /// API model name (for [`RerankerProvider::Api`]).
-    pub api_model: Option<String>,
+    provider: RerankerProvider,
+    model_path: Option<String>,
+    max_seq_len: usize,
+    api_key: Option<String>,
+    api_url: Option<String>,
+    api_model: Option<String>,
 }
 
-/// Read reranker configuration from environment.
-pub fn config_from_env() -> Result<RerankerConfig> {
-    let provider = match std::env::var("RERANKER_PROVIDER")
-        .map_err(|e| Error::Internal(format!("RERANKER_PROVIDER must be set: {e}")))?
-        .as_str()
-    {
-        "local" => RerankerProvider::Local,
-        "api" => RerankerProvider::Api,
-        "none" => RerankerProvider::None,
-        other => {
-            return Err(Error::Internal(format!(
-                "unknown RERANKER_PROVIDER: {other}"
-            )));
-        }
-    };
+impl fmt::Debug for RerankerConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RerankerConfig")
+            .field("provider", &self.provider)
+            .field("model_path", &self.model_path)
+            .field("max_seq_len", &self.max_seq_len)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("api_url", &self.api_url)
+            .field("api_model", &self.api_model)
+            .finish()
+    }
+}
 
-    Ok(RerankerConfig {
-        provider,
-        model_path: std::env::var("RERANKER_MODEL_PATH").ok(),
-        max_seq_len: std::env::var("RERANKER_MAX_SEQ_LEN")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(512),
-        api_key: std::env::var("RERANKER_API_KEY").ok(),
-        api_url: std::env::var("RERANKER_API_URL").ok(),
-        api_model: std::env::var("RERANKER_API_MODEL").ok(),
-    })
+impl RerankerConfig {
+    pub(crate) fn from_parts(
+        provider: RerankerProvider,
+        model_path: Option<String>,
+        max_seq_len: usize,
+        api_key: Option<String>,
+        api_url: Option<String>,
+        api_model: Option<String>,
+    ) -> Self {
+        Self {
+            provider,
+            model_path,
+            max_seq_len,
+            api_key,
+            api_url,
+            api_model,
+        }
+    }
+
+    /// Create a config that preserves fused recall order.
+    pub fn none() -> Self {
+        Self::from_parts(RerankerProvider::None, None, 512, None, None, None)
+    }
+
+    /// Create a local reranker configuration from a model directory.
+    pub fn local(model_path: impl Into<String>) -> Self {
+        Self {
+            provider: RerankerProvider::Local,
+            model_path: Some(model_path.into()),
+            ..Self::none()
+        }
+    }
+
+    /// Create an API reranker configuration from explicit credentials.
+    pub fn api(
+        api_key: impl Into<String>,
+        api_url: impl Into<String>,
+        api_model: impl Into<String>,
+    ) -> Self {
+        Self {
+            provider: RerankerProvider::Api,
+            api_key: Some(api_key.into()),
+            api_url: Some(api_url.into()),
+            api_model: Some(api_model.into()),
+            ..Self::none()
+        }
+    }
+
+    /// Override the maximum tokenized sequence length.
+    pub fn with_max_seq_len(mut self, max_seq_len: usize) -> Self {
+        self.max_seq_len = max_seq_len;
+        self
+    }
+
+    /// Return the selected provider.
+    pub fn provider(&self) -> RerankerProvider {
+        self.provider.clone()
+    }
+
+    /// Return the local model directory, if configured.
+    pub fn model_path(&self) -> Option<&str> {
+        self.model_path.as_deref()
+    }
+
+    /// Return the tokenizer sequence cap.
+    pub fn max_seq_len(&self) -> usize {
+        self.max_seq_len
+    }
+
+    /// Return the API key, if configured.
+    pub fn api_key(&self) -> Option<&str> {
+        self.api_key.as_deref()
+    }
+
+    /// Return the API base URL, if configured.
+    pub fn api_url(&self) -> Option<&str> {
+        self.api_url.as_deref()
+    }
+
+    /// Return the API model name, if configured.
+    pub fn api_model(&self) -> Option<&str> {
+        self.api_model.as_deref()
+    }
 }
 
 /// Build a reranker from configuration.
 pub fn build_reranker(config: &RerankerConfig) -> Result<Box<dyn Reranker>> {
-    match config.provider {
+    match config.provider() {
         RerankerProvider::None => Ok(Box::new(NoOpReranker)),
         RerankerProvider::Local => {
-            let model_path = config.model_path.as_deref().ok_or_else(|| {
+            let model_path = config.model_path().ok_or_else(|| {
                 Error::Reranker("RERANKER_MODEL_PATH must be set for local reranker".into())
             })?;
+            if model_path.trim().is_empty() {
+                return Err(Error::Reranker(
+                    "RERANKER_MODEL_PATH must not be blank for local reranker".into(),
+                ));
+            }
             let reranker =
-                local::LocalReranker::new(std::path::Path::new(model_path), config.max_seq_len)?;
+                local::LocalReranker::new(std::path::Path::new(model_path), config.max_seq_len())?;
             Ok(Box::new(reranker))
         }
         RerankerProvider::Api => {
             let api_key = config
-                .api_key
-                .clone()
+                .api_key()
+                .map(str::to_string)
                 .ok_or_else(|| Error::Reranker("RERANKER_API_KEY must be set".into()))?;
+            if api_key.trim().is_empty() {
+                return Err(Error::Reranker("RERANKER_API_KEY must not be blank".into()));
+            }
             let api_url = config
-                .api_url
-                .clone()
+                .api_url()
+                .map(str::to_string)
                 .ok_or_else(|| Error::Reranker("RERANKER_API_URL must be set".into()))?;
+            if api_url.trim().is_empty() {
+                return Err(Error::Reranker("RERANKER_API_URL must not be blank".into()));
+            }
             let api_model = config
-                .api_model
-                .clone()
+                .api_model()
+                .map(str::to_string)
                 .ok_or_else(|| Error::Reranker("RERANKER_API_MODEL must be set".into()))?;
+            if api_model.trim().is_empty() {
+                return Err(Error::Reranker(
+                    "RERANKER_API_MODEL must not be blank".into(),
+                ));
+            }
             Ok(Box::new(api::ApiReranker::new(api_key, api_url, api_model)))
         }
     }
@@ -222,40 +302,19 @@ mod tests {
 
     #[test]
     fn build_reranker_none() {
-        let config = RerankerConfig {
-            provider: RerankerProvider::None,
-            model_path: None,
-            max_seq_len: 512,
-            api_key: None,
-            api_url: None,
-            api_model: None,
-        };
+        let config = RerankerConfig::none();
         assert!(build_reranker(&config).is_ok());
     }
 
     #[test]
     fn build_reranker_local_missing_path() {
-        let config = RerankerConfig {
-            provider: RerankerProvider::Local,
-            model_path: None,
-            max_seq_len: 512,
-            api_key: None,
-            api_url: None,
-            api_model: None,
-        };
+        let config = RerankerConfig::local("");
         assert!(build_reranker(&config).is_err());
     }
 
     #[test]
     fn build_reranker_api_missing_fields() {
-        let config = RerankerConfig {
-            provider: RerankerProvider::Api,
-            model_path: None,
-            max_seq_len: 512,
-            api_key: None,
-            api_url: None,
-            api_model: None,
-        };
+        let config = RerankerConfig::api("", "", "");
         assert!(build_reranker(&config).is_err());
     }
 
@@ -274,6 +333,20 @@ mod tests {
     }
 
     #[test]
+    fn api_config_debug_redacts_api_key() {
+        let config = RerankerConfig::api(
+            "reranker-secret",
+            "https://reranker.example.test",
+            "rerank-v1",
+        );
+        let debug = format!("{config:?}");
+
+        assert!(debug.contains("rerank-v1"));
+        assert!(!debug.contains("reranker-secret"));
+        assert!(debug.contains("<redacted>"));
+    }
+
+    #[test]
     fn format_reranker_input_without_temporal() {
         let sf = make_scored("plain fact", 0.5);
         assert_eq!(format_reranker_input(&sf), "plain fact");
@@ -281,14 +354,7 @@ mod tests {
 
     #[test]
     fn build_reranker_api_all_fields() {
-        let config = RerankerConfig {
-            provider: RerankerProvider::Api,
-            model_path: None,
-            max_seq_len: 512,
-            api_key: Some("key".into()),
-            api_url: Some("https://api.example.com/v1".into()),
-            api_model: Some("rerank-v1".into()),
-        };
+        let config = RerankerConfig::api("key", "https://api.example.com/v1", "rerank-v1");
         assert!(build_reranker(&config).is_ok());
     }
 }

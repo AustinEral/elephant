@@ -1,6 +1,8 @@
 //! Provider selection and client configuration for the `llm` module.
 
+#[cfg(test)]
 use std::env;
+use std::fmt;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
@@ -11,6 +13,7 @@ use crate::error::{Error, Result};
 pub const DEFAULT_TIMEOUT_SECS: u64 = 600;
 
 /// Prompt caching configuration for a concrete provider client.
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 enum PromptCacheConfig {
     /// Disable prompt caching.
@@ -22,10 +25,19 @@ enum PromptCacheConfig {
 }
 
 /// OpenAI prompt caching settings.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OpenAiPromptCacheConfig {
     key: Option<String>,
     retention: Option<OpenAiPromptCacheRetention>,
+}
+
+impl fmt::Debug for OpenAiPromptCacheConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OpenAiPromptCacheConfig")
+            .field("key", &self.key.as_ref().map(|_| "<redacted>"))
+            .field("retention", &self.retention)
+            .finish()
+    }
 }
 
 impl OpenAiPromptCacheConfig {
@@ -146,7 +158,7 @@ impl FromStr for Provider {
 }
 
 /// Validated client configuration for one provider implementation.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum ClientConfig {
     /// Anthropic client configuration.
     Anthropic(AnthropicConfig),
@@ -156,6 +168,17 @@ pub enum ClientConfig {
     Gemini(GeminiConfig),
     /// Vertex AI Gemini client configuration.
     Vertex(VertexConfig),
+}
+
+impl fmt::Debug for ClientConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Anthropic(config) => f.debug_tuple("Anthropic").field(config).finish(),
+            Self::OpenAi(config) => f.debug_tuple("OpenAi").field(config).finish(),
+            Self::Gemini(config) => f.debug_tuple("Gemini").field(config).finish(),
+            Self::Vertex(config) => f.debug_tuple("Vertex").field(config).finish(),
+        }
+    }
 }
 
 impl ClientConfig {
@@ -186,12 +209,23 @@ impl ClientConfig {
 }
 
 /// Anthropic-specific client configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AnthropicConfig {
     api_key: String,
     model: String,
     timeout_secs: u64,
     prompt_cache: Option<AnthropicPromptCacheConfig>,
+}
+
+impl fmt::Debug for AnthropicConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AnthropicConfig")
+            .field("api_key", &"<redacted>")
+            .field("model", &self.model)
+            .field("timeout_secs", &self.timeout_secs)
+            .field("prompt_cache", &self.prompt_cache)
+            .finish()
+    }
 }
 
 impl AnthropicConfig {
@@ -239,7 +273,7 @@ impl AnthropicConfig {
 }
 
 /// OpenAI-specific client configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OpenAiConfig {
     api_key: String,
     model: String,
@@ -249,7 +283,7 @@ pub struct OpenAiConfig {
 }
 
 /// Gemini-specific client configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct GeminiConfig {
     api_key: String,
     model: String,
@@ -259,7 +293,7 @@ pub struct GeminiConfig {
 }
 
 /// Vertex AI-specific client configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct VertexConfig {
     api_key: String,
     model: String,
@@ -267,6 +301,46 @@ pub struct VertexConfig {
     location: String,
     base_url: Option<String>,
     timeout_secs: u64,
+}
+
+impl fmt::Debug for OpenAiConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OpenAiConfig")
+            .field("api_key", &"<redacted>")
+            .field("model", &self.model)
+            .field("base_url", &self.base_url)
+            .field("timeout_secs", &self.timeout_secs)
+            .field("prompt_cache", &self.prompt_cache)
+            .finish()
+    }
+}
+
+impl fmt::Debug for GeminiConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GeminiConfig")
+            .field("api_key", &"<redacted>")
+            .field("model", &self.model)
+            .field("base_url", &self.base_url)
+            .field("timeout_secs", &self.timeout_secs)
+            .field(
+                "supports_function_call_ids",
+                &self.supports_function_call_ids,
+            )
+            .finish()
+    }
+}
+
+impl fmt::Debug for VertexConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("VertexConfig")
+            .field("api_key", &"<redacted>")
+            .field("model", &self.model)
+            .field("project", &self.project)
+            .field("location", &self.location)
+            .field("base_url", &self.base_url)
+            .field("timeout_secs", &self.timeout_secs)
+            .finish()
+    }
 }
 
 impl GeminiConfig {
@@ -451,10 +525,19 @@ impl OpenAiConfig {
 }
 
 /// Resolved LLM configuration for runtime construction.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LlmConfig {
     retain: ClientConfig,
     reflect: ClientConfig,
+}
+
+impl fmt::Debug for LlmConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LlmConfig")
+            .field("retain", &self.retain)
+            .field("reflect", &self.reflect)
+            .finish()
+    }
 }
 
 impl LlmConfig {
@@ -492,6 +575,7 @@ fn validate_timeout_secs(timeout_secs: u64) -> Result<u64> {
     }
 }
 
+#[cfg(test)]
 fn env_bool(name: &str, default: bool) -> Result<bool> {
     match env::var(name) {
         Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
@@ -505,6 +589,7 @@ fn env_bool(name: &str, default: bool) -> Result<bool> {
     }
 }
 
+#[cfg(test)]
 fn required_env_any(names: &[&str]) -> Result<String> {
     for name in names {
         if let Ok(value) = env::var(name) {
@@ -517,6 +602,7 @@ fn required_env_any(names: &[&str]) -> Result<String> {
     )))
 }
 
+#[cfg(test)]
 fn optional_env_any(names: &[&str]) -> Option<String> {
     for name in names {
         if let Ok(value) = env::var(name) {
@@ -526,6 +612,7 @@ fn optional_env_any(names: &[&str]) -> Option<String> {
     None
 }
 
+#[cfg(test)]
 fn timeout_secs_from_env() -> Result<u64> {
     match env::var("LLM_TIMEOUT_SECS") {
         Ok(value) => validate_timeout_secs(value.parse().map_err(|_| {
@@ -537,10 +624,12 @@ fn timeout_secs_from_env() -> Result<u64> {
     }
 }
 
+#[cfg(test)]
 fn vertex_project_from_env(names: &[&str]) -> Result<String> {
     required_env_any(names)
 }
 
+#[cfg(test)]
 fn vertex_location_from_env(names: &[&str]) -> Result<String> {
     match optional_env_any(names) {
         Some(value) => validate_nonempty("location", value),
@@ -548,6 +637,7 @@ fn vertex_location_from_env(names: &[&str]) -> Result<String> {
     }
 }
 
+#[cfg(test)]
 fn prompt_cache_config_from_env(provider: Provider) -> Result<PromptCacheConfig> {
     if !env_bool("LLM_PROMPT_CACHE_ENABLED", false)? {
         return Ok(PromptCacheConfig::Disabled);
@@ -569,7 +659,7 @@ fn prompt_cache_config_from_env(provider: Provider) -> Result<PromptCacheConfig>
             };
 
             let mut config = OpenAiPromptCacheConfig::new();
-            if let Some(key) = env::var("OPENAI_PROMPT_CACHE_KEY").ok() {
+            if let Ok(key) = env::var("OPENAI_PROMPT_CACHE_KEY") {
                 config = config.with_key(key);
             }
             if let Some(retention) = retention {
@@ -601,6 +691,8 @@ fn prompt_cache_config_from_env(provider: Provider) -> Result<PromptCacheConfig>
     }
 }
 
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 fn build_client_config(
     provider: Provider,
     api_key: String,
@@ -688,8 +780,9 @@ fn client_config_from_env_vars(
     )
 }
 
+#[cfg(test)]
 /// Build the retain and reflect client configs from the standard runtime environment.
-pub fn runtime_config_from_env() -> Result<LlmConfig> {
+fn runtime_config_from_env() -> Result<LlmConfig> {
     let provider = required_env_any(&["LLM_PROVIDER"])?.parse::<Provider>()?;
     let api_key = required_env_any(&["LLM_API_KEY"])?;
     let retain_model = required_env_any(&["RETAIN_LLM_MODEL", "LLM_MODEL"])?;
@@ -739,8 +832,9 @@ pub fn runtime_config_from_env() -> Result<LlmConfig> {
     Ok(LlmConfig::new(retain, reflect))
 }
 
+#[cfg(test)]
 /// Build the benchmark judge client configuration from the judge fallback chain.
-pub fn judge_client_config_from_env(
+fn judge_client_config_from_env(
     override_provider: Option<Provider>,
     override_model: Option<&str>,
 ) -> Result<ClientConfig> {
@@ -954,5 +1048,31 @@ mod tests {
                 }
             },
         );
+    }
+
+    #[test]
+    fn debug_redacts_provider_secrets() {
+        let openai = OpenAiConfig::new("sk-secret", "gpt-4o")
+            .unwrap()
+            .with_base_url("https://openai.invalid/v1")
+            .unwrap()
+            .with_prompt_cache(
+                OpenAiPromptCacheConfig::new()
+                    .with_key("cache-secret")
+                    .with_retention(OpenAiPromptCacheRetention::Hours24),
+            );
+        let client = ClientConfig::OpenAi(openai.clone());
+        let config = LlmConfig::new(client.clone(), client);
+
+        let openai_debug = format!("{openai:?}");
+        assert!(openai_debug.contains("gpt-4o"));
+        assert!(!openai_debug.contains("sk-secret"));
+        assert!(!openai_debug.contains("cache-secret"));
+        assert!(openai_debug.contains("<redacted>"));
+
+        let llm_debug = format!("{config:?}");
+        assert!(!llm_debug.contains("sk-secret"));
+        assert!(!llm_debug.contains("cache-secret"));
+        assert!(llm_debug.contains("gpt-4o"));
     }
 }

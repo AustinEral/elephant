@@ -10,7 +10,7 @@ use crate::types::{
     RecallQuery, RecallResult, ReflectQuery, ReflectResult, RetainInput, RetainOutput,
 };
 
-use super::AppState;
+use super::AppHandle;
 
 // --- Request types ---
 
@@ -42,10 +42,6 @@ pub struct DispositionInput {
     pub bias_strength: f32,
 }
 
-/// Request body for the consolidate endpoint (empty — consolidates all unconsolidated facts).
-#[derive(Debug, Deserialize)]
-pub struct ConsolidateRequest {}
-
 // --- Helpers ---
 
 fn parse_bank_id(id: &str) -> Result<BankId> {
@@ -61,19 +57,19 @@ fn parse_entity_id(id: &str) -> Result<crate::types::EntityId> {
 // --- Handlers ---
 
 /// GET /v1/info
-pub async fn server_info(State(state): State<AppState>) -> Json<super::ServerInfo> {
-    Json(state.info.clone())
+pub async fn server_info(State(app): State<AppHandle>) -> Json<super::ServerInfo> {
+    Json(app.info().clone())
 }
 
 /// GET /v1/banks
-pub async fn list_banks(State(state): State<AppState>) -> Result<Json<Vec<MemoryBank>>> {
-    let banks = state.store.list_banks().await?;
+pub async fn list_banks(State(app): State<AppHandle>) -> Result<Json<Vec<MemoryBank>>> {
+    let banks = app.list_banks().await?;
     Ok(Json(banks))
 }
 
 /// POST /v1/banks
 pub async fn create_bank(
-    State(state): State<AppState>,
+    State(app): State<AppHandle>,
     Json(body): Json<CreateBankRequest>,
 ) -> Result<Json<MemoryBank>> {
     let disposition = match body.disposition {
@@ -81,100 +77,91 @@ pub async fn create_bank(
         None => Disposition::default(),
     };
 
-    let bank = MemoryBank {
-        id: BankId::new(),
-        name: body.name,
-        mission: body.mission,
-        directives: body.directives,
-        disposition,
-        embedding_model: state.embeddings.model_name().to_string(),
-        embedding_dimensions: state.embeddings.dimensions() as u16,
-    };
-
-    state.store.create_bank(&bank).await?;
+    let bank = app.new_bank(body.name, body.mission, body.directives, disposition);
+    app.create_bank(&bank).await?;
     Ok(Json(bank))
 }
 
 /// GET /v1/banks/:id
 pub async fn get_bank(
-    State(state): State<AppState>,
+    State(app): State<AppHandle>,
     Path(id): Path<String>,
 ) -> Result<Json<MemoryBank>> {
     let bank_id = parse_bank_id(&id)?;
-    let bank = state.store.get_bank(bank_id).await?;
+    let bank = app.get_bank(bank_id).await?;
     Ok(Json(bank))
 }
 
 /// POST /v1/banks/:id/retain
 pub async fn retain(
-    State(state): State<AppState>,
+    State(app): State<AppHandle>,
     Path(id): Path<String>,
     Json(mut body): Json<RetainInput>,
 ) -> Result<Json<RetainOutput>> {
     body.bank_id = parse_bank_id(&id)?;
-    let output = state.retain.retain(&body).await?;
+    let output = app.retain(&body).await?;
     Ok(Json(output))
 }
 
 /// POST /v1/banks/:id/recall
 pub async fn recall(
-    State(state): State<AppState>,
+    State(app): State<AppHandle>,
     Path(id): Path<String>,
     Json(mut body): Json<RecallQuery>,
 ) -> Result<Json<RecallResult>> {
     body.bank_id = parse_bank_id(&id)?;
-    let result = state.recall.recall(&body).await?;
+    let result = app.recall(&body).await?;
     Ok(Json(result))
 }
 
 /// POST /v1/banks/:id/reflect
 pub async fn reflect(
-    State(state): State<AppState>,
+    State(app): State<AppHandle>,
     Path(id): Path<String>,
     Json(mut body): Json<ReflectQuery>,
 ) -> Result<Json<ReflectResult>> {
     body.bank_id = parse_bank_id(&id)?;
-    let result = state.reflect.reflect(&body).await?;
+    let result = app.reflect(&body).await?;
     Ok(Json(result))
 }
 
 /// GET /v1/banks/:id/entities
 pub async fn list_entities(
-    State(state): State<AppState>,
+    State(app): State<AppHandle>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<Entity>>> {
     let bank_id = parse_bank_id(&id)?;
-    let entities = state.store.list_entities(bank_id).await?;
+    let entities = app.list_entities(bank_id).await?;
     Ok(Json(entities))
 }
 
 /// GET /v1/banks/:id/entities/:eid/facts
 pub async fn entity_facts(
-    State(state): State<AppState>,
+    State(app): State<AppHandle>,
     Path((id, eid)): Path<(String, String)>,
 ) -> Result<Json<Vec<Fact>>> {
     let _bank_id = parse_bank_id(&id)?;
     let entity_id = parse_entity_id(&eid)?;
-    let facts = state.store.get_entity_facts(entity_id).await?;
+    let facts = app.entity_facts(entity_id).await?;
     Ok(Json(facts))
 }
 
 /// POST /v1/banks/:id/consolidate
 pub async fn consolidate(
-    State(state): State<AppState>,
+    State(app): State<AppHandle>,
     Path(id): Path<String>,
 ) -> Result<Json<ConsolidationReport>> {
     let bank_id = parse_bank_id(&id)?;
-    let report = state.consolidator.consolidate(bank_id).await?;
+    let report = app.consolidate(bank_id).await?;
     Ok(Json(report))
 }
 
 /// POST /v1/banks/:id/merge-opinions
 pub async fn merge_opinions(
-    State(state): State<AppState>,
+    State(app): State<AppHandle>,
     Path(id): Path<String>,
 ) -> Result<Json<OpinionMergeReport>> {
     let bank_id = parse_bank_id(&id)?;
-    let report = state.opinion_merger.merge(bank_id).await?;
+    let report = app.merge_opinions(bank_id).await?;
     Ok(Json(report))
 }

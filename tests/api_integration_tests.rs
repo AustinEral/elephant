@@ -18,26 +18,61 @@ use tower::util::ServiceExt;
 
 use elephant::consolidation::{DefaultConsolidator, DefaultOpinionMerger};
 use elephant::embedding::mock::MockEmbeddings;
-use elephant::llm::LlmClient;
 use elephant::llm::mock::MockLlmClient;
+use elephant::llm::{CompletionResponse, LlmClient, ToolCall};
 use elephant::recall::DefaultRecallPipeline;
 use elephant::recall::budget::EstimateTokenizer;
 use elephant::recall::graph::{GraphRetriever, GraphRetrieverConfig};
 use elephant::recall::keyword::KeywordRetriever;
-use elephant::recall::reranker::{self, RerankerConfig, RerankerProvider};
+use elephant::recall::reranker::{self, RerankerConfig};
 use elephant::recall::semantic::SemanticRetriever;
 use elephant::recall::temporal::TemporalRetriever;
 use elephant::reflect::DefaultReflectPipeline;
 use elephant::retain::DefaultRetainPipeline;
 use elephant::retain::chunker::SimpleChunker;
-use elephant::retain::extractor::LlmFactExtractor;
+use elephant::retain::extractor::{ExtractionConfig, LlmFactExtractor};
 use elephant::retain::graph_builder::{DefaultGraphBuilder, GraphConfig};
 use elephant::retain::resolver::LayeredEntityResolver;
-use elephant::server::{AppState, router};
 use elephant::storage::pg::PgMemoryStore;
 use elephant::types::*;
+use elephant::{
+    AppHandle, ServerBackgroundConsolidationInfo, ServerConsolidationRuntimeInfo, ServerInfo,
+    ServerModelsInfo, ServerReflectInfo, ServerRetrievalInfo, router,
+};
 
 const EMBED_DIMS: usize = 384;
+
+fn test_server_info() -> ServerInfo {
+    ServerInfo {
+        version: env!("CARGO_PKG_VERSION").into(),
+        models: ServerModelsInfo {
+            retain: "test".into(),
+            reflect: "test".into(),
+            embedding: "test".into(),
+            reranker: "none".into(),
+        },
+        retrieval: ServerRetrievalInfo {
+            retriever_limit: 20,
+            max_facts: 50,
+        },
+        reflect: ServerReflectInfo {
+            max_iterations: 8,
+            max_tokens: None,
+            source_lookup_enabled: true,
+        },
+        consolidation: ServerConsolidationRuntimeInfo {
+            batch_size: 16,
+            max_tokens: 2048,
+            recall_budget: 1024,
+        },
+        server_consolidation: ServerBackgroundConsolidationInfo {
+            enabled: true,
+            min_facts: 32,
+            cooldown_secs: 30,
+            merge_opinions_after: false,
+        },
+    }
+}
 
 struct TestHarness {
     pool: PgPool,
@@ -97,7 +132,10 @@ impl TestHarness {
         let retain_llm_graph: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new());
 
         // Wire the shared MockLlmClient for extraction (where we push responses)
-        let extractor = Box::new(LlmFactExtractor::new(Arc::new(self.llm.as_ref().clone())));
+        let extractor = Box::new(LlmFactExtractor::new(
+            Arc::new(self.llm.as_ref().clone()),
+            ExtractionConfig::default(),
+        ));
         let resolver = Box::new(LayeredEntityResolver::new(
             Box::new(MockEmbeddings::new(EMBED_DIMS)),
             retain_llm_resolver,
@@ -144,18 +182,11 @@ impl TestHarness {
                 GraphRetrieverConfig::default(),
             )),
             Box::new(TemporalRetriever::new(store_arc.clone())),
-            reranker::build_reranker(&RerankerConfig {
-                provider: RerankerProvider::None,
-                model_path: None,
-                max_seq_len: 512,
-                api_key: None,
-                api_url: None,
-                api_model: None,
-            })
-            .expect("reranker"),
+            reranker::build_reranker(&RerankerConfig::none()).expect("reranker"),
             Box::new(EstimateTokenizer),
             60.0,
             50,
+            4_096,
         ));
 
         // Reflect pipeline
@@ -179,23 +210,18 @@ impl TestHarness {
             self.llm.clone() as Arc<dyn elephant::LlmClient>,
             self.embeddings.clone() as Arc<dyn elephant::EmbeddingClient>,
         ));
-        let state = AppState {
-            info: elephant::server::ServerInfo {
-                retain_model: "test".into(),
-                reflect_model: "test".into(),
-                embedding_model: "test".into(),
-                reranker_model: "none".into(),
-            },
+        let app = AppHandle::from_parts_for_testing(
+            test_server_info(),
             retain,
             recall,
             reflect,
             consolidator,
             opinion_merger,
-            store: self.store.clone(),
-            embeddings: self.embeddings.clone(),
-        };
+            self.store.clone(),
+            self.embeddings.clone(),
+        );
 
-        router(state)
+        router(app)
     }
 }
 
@@ -233,14 +259,19 @@ fn extraction_response(content: &str, entity: &str) -> String {
     .unwrap()
 }
 
-fn reflect_response(text: &str) -> String {
-    serde_json::to_string(&json!({
-        "response": text,
-        "sources": [],
-        "new_opinions": [],
-        "confidence": 0.8
-    }))
-    .unwrap()
+fn tool_call_response(id: &str, name: &str, arguments: Value) -> CompletionResponse {
+    CompletionResponse {
+        content: String::new(),
+        input_tokens: 10,
+        output_tokens: 20,
+        stop_reason: Some("tool_use".into()),
+        tool_calls: vec![ToolCall {
+            id: id.into(),
+            name: name.into(),
+            arguments,
+        }],
+        prompt_cache: None,
+    }
 }
 
 // --- Tests ---
@@ -428,9 +459,33 @@ async fn reflect_with_context() {
     let resp = h.app().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // Push reflect LLM response
-    h.llm.push_response(reflect_response(
-        "Rust prevents data races through its ownership system and borrow checker.",
+    // Reflect uses a forced tool sequence:
+    // 0 -> search_observations
+    // 1 -> recall
+    // 2 -> done
+    h.llm.push_response_full(tool_call_response(
+        "call_1",
+        "search_observations",
+        json!({
+            "query": "How does Rust prevent data races?",
+            "reason": "high-level overview"
+        }),
+    ));
+    h.llm.push_response_full(tool_call_response(
+        "call_2",
+        "recall",
+        json!({
+            "query": "Rust data races ownership borrow checker",
+            "reason": "ground the answer in retained facts"
+        }),
+    ));
+    h.llm.push_response_full(tool_call_response(
+        "call_3",
+        "done",
+        json!({
+            "response": "Rust prevents data races through its ownership system and borrow checker.",
+            "source_ids": []
+        }),
     ));
 
     // Reflect

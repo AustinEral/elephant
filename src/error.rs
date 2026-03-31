@@ -1,5 +1,7 @@
 //! Error types for the memory engine.
 
+use crate::config::{ConfigError, ConfigErrorKind};
+
 /// Errors that can occur in the memory engine.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -71,6 +73,17 @@ pub enum Error {
         /// The dimension count the current client produces.
         actual: u16,
     },
+}
+
+impl From<ConfigError> for Error {
+    fn from(error: ConfigError) -> Self {
+        let kind = error.kind();
+        let message = error.into_message();
+        match kind {
+            ConfigErrorKind::Configuration => Self::Configuration(message),
+            ConfigErrorKind::Internal => Self::Internal(message),
+        }
+    }
 }
 
 /// A `Result` alias using the memory engine [`Error`].
