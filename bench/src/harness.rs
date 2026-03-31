@@ -14,7 +14,7 @@ use elephant::{
     RuntimeConfig, RuntimePromptHashes, RuntimeTuning,
 };
 
-use crate::config::BenchConfig;
+use crate::env::BenchConfig;
 
 /// Serialized prompt-hash snapshot used by benchmark artifacts.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -16,6 +16,9 @@ use elephant::llm::{LlmClient, build_client};
 use elephant::metrics::{LlmStage, MeteredLlmClient, MetricsCollector};
 
 type Result<T> = std::result::Result<T, ConfigError>;
+const DEFAULT_JUDGE_TEMPERATURE: Option<f32> = None;
+const DEFAULT_JUDGE_MAX_TOKENS: usize = 200;
+const DEFAULT_JUDGE_MAX_ATTEMPTS: usize = 3;
 
 /// Validated benchmark-only startup configuration.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -68,6 +71,9 @@ impl BenchConfig {
 #[derive(Clone)]
 pub struct BenchJudgeConfig {
     client: ClientConfig,
+    temperature: Option<f32>,
+    max_tokens: usize,
+    max_attempts: usize,
 }
 
 impl fmt::Debug for BenchJudgeConfig {
@@ -80,8 +86,18 @@ impl fmt::Debug for BenchJudgeConfig {
 
 impl BenchJudgeConfig {
     /// Create a benchmark judge configuration from a validated client config.
-    pub(crate) fn new(client: ClientConfig) -> Self {
-        Self { client }
+    pub(crate) fn new(
+        client: ClientConfig,
+        temperature: Option<f32>,
+        max_tokens: usize,
+        max_attempts: usize,
+    ) -> Self {
+        Self {
+            client,
+            temperature,
+            max_tokens,
+            max_attempts,
+        }
     }
 
     /// Load the benchmark judge client configuration from environment with optional overrides.
@@ -124,19 +140,39 @@ impl BenchJudgeConfig {
         };
         let base_url = optional_string_any(&["JUDGE_BASE_URL", "LLM_BASE_URL"])?;
 
-        Ok(Self::new(build_client_config(
-            provider,
-            api_key,
-            model,
-            vertex_project,
-            vertex_location,
-            base_url,
-        )?))
+        Ok(Self::new(
+            build_client_config(
+                provider,
+                api_key,
+                model,
+                vertex_project,
+                vertex_location,
+                base_url,
+            )?,
+            DEFAULT_JUDGE_TEMPERATURE,
+            DEFAULT_JUDGE_MAX_TOKENS,
+            DEFAULT_JUDGE_MAX_ATTEMPTS,
+        ))
     }
 
     /// Return a stable provider/model label for the judge.
     pub fn label(&self) -> String {
         self.client.label()
+    }
+
+    /// Return the optional judge temperature override.
+    pub fn temperature(&self) -> Option<f32> {
+        self.temperature
+    }
+
+    /// Return the maximum completion tokens for one judge attempt.
+    pub fn max_tokens(&self) -> usize {
+        self.max_tokens
+    }
+
+    /// Return the maximum number of judge attempts.
+    pub fn max_attempts(&self) -> usize {
+        self.max_attempts
     }
 
     /// Build a metered, retrying judge client from the validated configuration.
@@ -419,7 +455,7 @@ mod tests {
     #[test]
     fn judge_config_new_uses_validated_client() {
         let client = ClientConfig::OpenAi(OpenAiConfig::new("sk-test", "gpt-4o-mini").unwrap());
-        let config = BenchJudgeConfig::new(client);
+        let config = BenchJudgeConfig::new(client, None, 200, 3);
         assert_eq!(config.label(), "openai/gpt-4o-mini");
     }
 

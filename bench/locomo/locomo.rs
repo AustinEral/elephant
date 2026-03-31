@@ -34,7 +34,7 @@ use elephant::types::{
 };
 use elephant_bench::{
     BenchHarnessBuilder, BenchJudgeConfig, BenchRuntime, BenchRuntimeMetadata,
-    BenchRuntimePromptHashes, BenchRuntimeTuning,
+    BenchRuntimePromptHashes, BenchRuntimeTuning, resolve_locomo_bench_config,
 };
 
 // --- LoCoMo dataset types ---
@@ -104,6 +104,12 @@ struct BenchmarkManifest {
     prompt_hashes: BenchmarkPromptHashes,
     #[serde(default)]
     runtime_config: BenchmarkRuntimeConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    contract_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resolved_contract: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    execution: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     source_artifact: Option<SourceArtifact>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -632,13 +638,17 @@ fn benchmark_prompt_hashes(runtime_metadata: &BenchRuntimeMetadata) -> Benchmark
     }
 }
 
-fn benchmark_runtime_config(runtime_metadata: &BenchRuntimeMetadata) -> BenchmarkRuntimeConfig {
+fn benchmark_runtime_config(
+    runtime_metadata: &BenchRuntimeMetadata,
+    resolved: &elephant_bench::ResolvedBenchConfig,
+    judge_config: &BenchJudgeConfig,
+) -> BenchmarkRuntimeConfig {
     BenchmarkRuntimeConfig {
         elephant: runtime_metadata.tuning().clone(),
-        reflect_budget_tokens: reflect_budget_tokens(),
-        judge_temperature: common::judge::JUDGE_TEMPERATURE,
-        judge_max_tokens: common::judge::JUDGE_MAX_TOKENS,
-        judge_max_attempts: common::judge::JUDGE_MAX_ATTEMPTS,
+        reflect_budget_tokens: resolved.reflect_budget_tokens(),
+        judge_temperature: judge_config.temperature(),
+        judge_max_tokens: judge_config.max_tokens(),
+        judge_max_attempts: judge_config.max_attempts(),
         qa_updates_memory: false,
     }
 }
@@ -673,15 +683,6 @@ async fn finalize_bank_stats(
 
 const JUDGE_PROMPT: &str = include_str!("judge_answer.txt");
 
-fn reflect_budget_tokens() -> usize {
-    match env::var("LOCOMO_REFLECT_BUDGET_TOKENS") {
-        Ok(value) => value.parse::<usize>().unwrap_or_else(|_| {
-            panic!("LOCOMO_REFLECT_BUDGET_TOKENS must be a positive integer, got: {value}")
-        }),
-        Err(_) => 4096,
-    }
-}
-
 fn resolve_judge_config(override_model: Option<String>) -> BenchJudgeConfig {
     common::judge::resolve_judge_config(&common::judge::JudgeOverrides {
         provider: None,
@@ -692,6 +693,7 @@ fn resolve_judge_config(override_model: Option<String>) -> BenchJudgeConfig {
 
 async fn llm_judge(
     judge: &dyn LlmClient,
+    judge_config: &BenchJudgeConfig,
     question: &str,
     gold_answer: &str,
     generated_answer: &str,
@@ -700,7 +702,7 @@ async fn llm_judge(
         .replace("{question}", question)
         .replace("{gold_answer}", gold_answer)
         .replace("{generated_answer}", generated_answer);
-    common::judge::llm_judge(judge, &rendered).await
+    common::judge::llm_judge_with_config(judge, judge_config, &rendered).await
 }
 
 // --- Result flushing ---
@@ -935,8 +937,8 @@ impl RunProfile {
         }
     }
 
-    fn config_path(self) -> PathBuf {
-        PathBuf::from(format!("bench/locomo/profiles/{}.json", self.as_str()))
+    fn contract_path(self) -> PathBuf {
+        PathBuf::from(format!("bench/locomo/profiles/{}.toml", self.as_str()))
     }
 }
 
@@ -962,6 +964,7 @@ enum BenchCommand {
     Qa,
     Merge,
     Publish,
+    ConfigResolve,
 }
 
 impl BenchCommand {
@@ -972,6 +975,7 @@ impl BenchCommand {
             Self::Qa => "qa",
             Self::Merge => "merge",
             Self::Publish => "publish",
+            Self::ConfigResolve => "config-resolve",
         }
     }
 }
@@ -1074,37 +1078,13 @@ impl FromStr for ConsolidationMode {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct FileRunConfig {
-    #[serde(default)]
-    dataset: Option<PathBuf>,
-    #[serde(default)]
-    output: Option<PathBuf>,
-    #[serde(default)]
-    tag: Option<String>,
-    #[serde(default)]
-    conversations: Vec<String>,
-    #[serde(default)]
-    session_limit: Option<usize>,
-    #[serde(default)]
-    question_limit: Option<usize>,
-    #[serde(default)]
-    ingest: Option<IngestMode>,
-    #[serde(default)]
-    consolidation: Option<ConsolidationMode>,
-    #[serde(default)]
-    conversation_jobs: Option<usize>,
-    #[serde(default)]
-    question_jobs: Option<usize>,
-    #[serde(default)]
-    judge_model: Option<String>,
-}
-
 #[derive(Debug, Clone)]
 struct RunConfig {
     profile: RunProfile,
     config_path: Option<PathBuf>,
+    output_dir: PathBuf,
     dataset: PathBuf,
+    dataset_override: Option<PathBuf>,
     output: Option<PathBuf>,
     tag: Option<String>,
     conversations: Vec<String>,
@@ -1113,7 +1093,9 @@ struct RunConfig {
     ingest: IngestMode,
     consolidation: ConsolidationMode,
     conversation_jobs: usize,
+    conversation_jobs_override: Option<usize>,
     question_jobs: usize,
+    question_jobs_override: Option<usize>,
     judge_model: Option<String>,
     allow_overwrite: bool,
 }
@@ -1123,7 +1105,9 @@ impl Default for RunConfig {
         Self {
             profile: RunProfile::Full,
             config_path: None,
+            output_dir: PathBuf::from("bench/locomo/results/local"),
             dataset: PathBuf::from("data/locomo10.json"),
+            dataset_override: None,
             output: None,
             tag: None,
             conversations: Vec::new(),
@@ -1132,47 +1116,11 @@ impl Default for RunConfig {
             ingest: IngestMode::Session,
             consolidation: ConsolidationMode::End,
             conversation_jobs: 1,
+            conversation_jobs_override: None,
             question_jobs: 1,
+            question_jobs_override: None,
             judge_model: None,
             allow_overwrite: false,
-        }
-    }
-}
-
-impl FileRunConfig {
-    fn apply(self, config: &mut RunConfig) {
-        if let Some(dataset) = self.dataset {
-            config.dataset = dataset;
-        }
-        if let Some(output) = self.output {
-            config.output = Some(output);
-        }
-        if let Some(tag) = self.tag {
-            config.tag = Some(tag);
-        }
-        if !self.conversations.is_empty() {
-            config.conversations = self.conversations;
-        }
-        if let Some(limit) = self.session_limit {
-            config.session_limit = Some(limit);
-        }
-        if let Some(limit) = self.question_limit {
-            config.question_limit = Some(limit);
-        }
-        if let Some(ingest) = self.ingest {
-            config.ingest = ingest;
-        }
-        if let Some(consolidation) = self.consolidation {
-            config.consolidation = consolidation;
-        }
-        if let Some(jobs) = self.conversation_jobs {
-            config.conversation_jobs = jobs;
-        }
-        if let Some(jobs) = self.question_jobs {
-            config.question_jobs = jobs;
-        }
-        if let Some(judge_model) = self.judge_model {
-            config.judge_model = Some(judge_model);
         }
     }
 }
@@ -1196,6 +1144,7 @@ struct CliOverrides {
     publish_run_id: Option<String>,
     publish_include_debug: bool,
     allow_overwrite: bool,
+    secrets_env_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -1205,6 +1154,7 @@ struct BenchInvocation {
     merge_artifacts: Vec<PathBuf>,
     config: RunConfig,
     publish_config: PublishConfig,
+    secrets_env_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1216,7 +1166,7 @@ struct PublishConfig {
 impl CliOverrides {
     fn apply(self, config: &mut RunConfig) {
         if let Some(dataset) = self.dataset {
-            config.dataset = dataset;
+            config.dataset_override = Some(dataset);
         }
         if let Some(output) = self.output {
             config.output = Some(output);
@@ -1224,26 +1174,11 @@ impl CliOverrides {
         if let Some(tag) = self.tag {
             config.tag = Some(tag);
         }
-        if !self.conversations.is_empty() {
-            config.conversations = self.conversations;
-        }
-        if let Some(limit) = self.session_limit {
-            config.session_limit = Some(limit);
-        }
-        if let Some(limit) = self.question_limit {
-            config.question_limit = Some(limit);
-        }
-        if let Some(ingest) = self.ingest {
-            config.ingest = ingest;
-        }
-        if let Some(consolidation) = self.consolidation {
-            config.consolidation = consolidation;
-        }
         if let Some(jobs) = self.conversation_jobs {
-            config.conversation_jobs = jobs;
+            config.conversation_jobs_override = Some(jobs);
         }
         if let Some(jobs) = self.question_jobs {
-            config.question_jobs = jobs;
+            config.question_jobs_override = Some(jobs);
         }
         if let Some(judge_model) = self.judge_model {
             config.judge_model = Some(judge_model);
@@ -1294,6 +1229,7 @@ fn parse_args_from(raw: &[String]) -> Result<Option<BenchInvocation>, String> {
     if overrides.help {
         return Ok(None);
     }
+    let secrets_env_file = overrides.secrets_env_file.clone();
 
     let config = match command {
         BenchCommand::Run | BenchCommand::Ingest => resolve_fresh_config(overrides)?,
@@ -1305,8 +1241,9 @@ fn parse_args_from(raw: &[String]) -> Result<Option<BenchInvocation>, String> {
         )?,
         BenchCommand::Merge => resolve_merge_config(overrides)?,
         BenchCommand::Publish => resolve_publish_config(overrides)?,
+        BenchCommand::ConfigResolve => resolve_config_resolve_config(overrides)?,
     };
-    if !matches!(command, BenchCommand::Publish) {
+    if !matches!(command, BenchCommand::Publish | BenchCommand::ConfigResolve) {
         validate_run_config(command, &config)?;
     }
     Ok(Some(BenchInvocation {
@@ -1315,24 +1252,76 @@ fn parse_args_from(raw: &[String]) -> Result<Option<BenchInvocation>, String> {
         merge_artifacts,
         config,
         publish_config,
+        secrets_env_file,
     }))
 }
 
 fn resolve_fresh_config(overrides: CliOverrides) -> Result<RunConfig, String> {
+    validate_fresh_overrides(&overrides)?;
     let profile = overrides.profile.unwrap_or_default();
     let mut config = RunConfig {
         profile,
         ..RunConfig::default()
     };
-    load_json_config(&profile.config_path())?.apply(&mut config);
-
-    if let Some(path) = overrides.config_path.clone() {
-        load_json_config(&path)?.apply(&mut config);
-        config.config_path = Some(path);
-    }
-
     overrides.apply(&mut config);
     Ok(config)
+}
+
+fn apply_resolved_fresh_config(
+    config: &mut RunConfig,
+    resolved: &elephant_bench::ResolvedBenchConfig,
+) -> Result<(), String> {
+    config.output_dir = resolved.output_dir().to_path_buf();
+    config.dataset = config
+        .dataset_override
+        .clone()
+        .unwrap_or_else(|| resolved.dataset_path().to_path_buf());
+    if config.tag.is_none() {
+        config.tag = resolved.tag().map(str::to_owned);
+    }
+    config.conversations = resolved.conversations().to_vec();
+    config.session_limit = resolved.session_limit();
+    config.question_limit = resolved.question_limit();
+    config.ingest = resolved.ingest_mode().parse()?;
+    config.consolidation = resolved.consolidation_mode().parse()?;
+    config.conversation_jobs = config
+        .conversation_jobs_override
+        .unwrap_or_else(|| resolved.conversation_jobs());
+    config.question_jobs = config
+        .question_jobs_override
+        .unwrap_or_else(|| resolved.question_jobs());
+    Ok(())
+}
+
+fn validate_fresh_overrides(overrides: &CliOverrides) -> Result<(), String> {
+    let mut unsupported = Vec::new();
+    if !overrides.conversations.is_empty() {
+        unsupported.push("--conversation");
+    }
+    if overrides.session_limit.is_some() {
+        unsupported.push("--session-limit");
+    }
+    if overrides.question_limit.is_some() {
+        unsupported.push("--question-limit");
+    }
+    if overrides.ingest.is_some() {
+        unsupported.push("--ingest");
+    }
+    if overrides.consolidation.is_some() {
+        unsupported.push("--consolidation");
+    }
+    if overrides.judge_model.is_some() {
+        unsupported.push("--judge-model");
+    }
+
+    if unsupported.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "`run`/`ingest` no longer accept {}; put benchmark-contract settings in the checked-in TOML profile",
+            unsupported.join(", ")
+        ))
+    }
 }
 
 fn resolve_merge_config(overrides: CliOverrides) -> Result<RunConfig, String> {
@@ -1358,6 +1347,19 @@ fn resolve_publish_config(overrides: CliOverrides) -> Result<RunConfig, String> 
     }
     if overrides.allow_overwrite {
         config.allow_overwrite = true;
+    }
+    Ok(config)
+}
+
+fn resolve_config_resolve_config(overrides: CliOverrides) -> Result<RunConfig, String> {
+    validate_config_resolve_overrides(&overrides)?;
+    let profile = overrides.profile.unwrap_or_default();
+    let mut config = RunConfig {
+        profile,
+        ..RunConfig::default()
+    };
+    if let Some(path) = overrides.config_path {
+        config.config_path = Some(path);
     }
     Ok(config)
 }
@@ -1524,7 +1526,11 @@ fn validate_publish_overrides(overrides: &CliOverrides) -> Result<(), String> {
 fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
     let mut overrides = CliOverrides::default();
     let command = match raw.get(1).map(String::as_str) {
-        None => return Err("expected subcommand: run, ingest, qa, merge, or publish".into()),
+        None => {
+            return Err(
+                "expected subcommand: run, ingest, qa, merge, publish, or config-resolve".into(),
+            );
+        }
         Some("--help") | Some("-h") => {
             overrides.help = true;
             return Ok(ParsedCli {
@@ -1540,9 +1546,10 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
         Some("qa") => BenchCommand::Qa,
         Some("merge") => BenchCommand::Merge,
         Some("publish") => BenchCommand::Publish,
+        Some("config-resolve") => BenchCommand::ConfigResolve,
         Some(other) => {
             return Err(format!(
-                "unknown subcommand: {other} (expected one of: run, ingest, qa, merge, publish)"
+                "unknown subcommand: {other} (expected one of: run, ingest, qa, merge, publish, config-resolve)"
             ));
         }
     };
@@ -1686,6 +1693,13 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
             "--force" => {
                 overrides.allow_overwrite = true;
             }
+            "--secrets-env-file" => {
+                i += 1;
+                overrides.secrets_env_file =
+                    Some(PathBuf::from(raw.get(i).ok_or_else(|| {
+                        "--secrets-env-file requires a value".to_string()
+                    })?));
+            }
             value if matches!(command, BenchCommand::Merge) && !value.starts_with('-') => {
                 merge_artifacts.push(PathBuf::from(value));
             }
@@ -1716,11 +1730,27 @@ fn parse_usize_arg(raw: Option<&String>, flag: &str) -> Result<usize, String> {
         .map_err(|_| format!("invalid numeric value for {flag}"))
 }
 
-fn load_json_config(path: &Path) -> Result<FileRunConfig, String> {
-    let resolved = resolve_workspace_path(path);
-    let raw = fs::read_to_string(&resolved)
-        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-    serde_json::from_str(&raw).map_err(|e| format!("failed to parse {}: {e}", path.display()))
+fn validate_config_resolve_overrides(overrides: &CliOverrides) -> Result<(), String> {
+    if overrides.dataset.is_some()
+        || overrides.output.is_some()
+        || overrides.tag.is_some()
+        || !overrides.conversations.is_empty()
+        || overrides.session_limit.is_some()
+        || overrides.question_limit.is_some()
+        || overrides.ingest.is_some()
+        || overrides.consolidation.is_some()
+        || overrides.conversation_jobs.is_some()
+        || overrides.question_jobs.is_some()
+        || overrides.judge_model.is_some()
+        || overrides.publish_run_id.is_some()
+        || overrides.publish_include_debug
+        || overrides.allow_overwrite
+    {
+        return Err(
+            "`config-resolve` only accepts --profile, --config, and --secrets-env-file".into(),
+        );
+    }
+    Ok(())
 }
 
 fn load_benchmark_output(path: &Path) -> Result<BenchmarkOutput, String> {
@@ -2160,7 +2190,9 @@ fn run_config_from_artifact(artifact: &BenchmarkOutput) -> Result<RunConfig, Str
     Ok(RunConfig {
         profile,
         config_path: manifest.config_path.as_ref().map(PathBuf::from),
+        output_dir: PathBuf::from("bench/locomo/results/local"),
         dataset: PathBuf::from(&manifest.dataset_path),
+        dataset_override: None,
         output: None,
         tag: None,
         conversations: manifest.selected_conversations.clone(),
@@ -2169,7 +2201,9 @@ fn run_config_from_artifact(artifact: &BenchmarkOutput) -> Result<RunConfig, Str
         ingest: ingest_mode_from_manifest(manifest)?,
         consolidation,
         conversation_jobs: manifest.conversation_concurrency.max(1),
+        conversation_jobs_override: None,
         question_jobs: manifest.question_concurrency.max(1),
+        question_jobs_override: None,
         judge_model: None,
         allow_overwrite: false,
     })
@@ -2257,6 +2291,12 @@ fn ensure_merge_compatible(
         other_manifest.protocol_version,
         "protocol version"
     );
+    if let (Some(left), Some(right)) = (
+        base_manifest.contract_hash.as_deref(),
+        other_manifest.contract_hash.as_deref(),
+    ) {
+        ensure_same!(left, right, "contract hash");
+    }
     ensure_same!(base_manifest.mode, other_manifest.mode, "mode");
     ensure_same!(
         base_manifest.dataset_fingerprint,
@@ -2513,6 +2553,7 @@ fn merge_artifacts(
         bundle.output.manifest.conversation_concurrency
     });
     manifest.dirty_worktree = git_dirty_worktree();
+    manifest.execution = None;
     manifest.source_artifact = None;
     manifest.source_artifacts = bundles.iter().map(merge_source_artifact).collect();
 
@@ -2571,6 +2612,9 @@ fn print_help() {
     eprintln!("  locomo-bench ingest [OPTIONS]");
     eprintln!("  locomo-bench qa <RESULTS.json> [OPTIONS]");
     eprintln!("  locomo-bench merge <RESULTS.json> <RESULTS.json>... [--out PATH|--tag NAME]");
+    eprintln!(
+        "  locomo-bench config-resolve [--profile NAME] [--config PATH] [--secrets-env-file PATH]"
+    );
     eprintln!();
     eprintln!(
         "  locomo-bench publish <RESULTS.json> [--out DIR] [--run-id NAME] [--include-debug]"
@@ -2588,32 +2632,48 @@ fn print_help() {
     eprintln!(
         "  publish <RESULTS.json>           Export a GitHub Pages friendly bundle from one canonical artifact"
     );
+    eprintln!(
+        "  config-resolve                   Validate and print the resolved TOML contract/execution/secrets config"
+    );
     eprintln!();
     eprintln!("Options:");
     eprintln!("  --profile <NAME>                Named profile for `run`/`ingest` [default: full]");
     eprintln!("                                  Profiles: full, smoke, legacy-raw");
-    eprintln!("  --config <PATH>                 JSON config file for `run`/`ingest`");
     eprintln!(
-        "  --dataset <PATH>                Dataset path for `run`/`ingest` [default: data/locomo10.json]"
+        "  --config <PATH>                 TOML execution overlay for `run`/`ingest`/`config-resolve`"
+    );
+    eprintln!(
+        "  --secrets-env-file <PATH>       Benchmark secrets env file for `run`/`ingest`/`config-resolve`"
+    );
+    eprintln!(
+        "  --dataset <PATH>                Execution-only dataset path override for `run`/`ingest`"
     );
     eprintln!("  --tag <NAME>                    Save to results/local/<tag>.json by default");
     eprintln!("  --out <PATH>                    Output results path (overrides --tag)");
-    eprintln!("  --conversation <ID>             Run one specific conversation (repeatable)");
-    eprintln!("  --ingest <MODE>                 turn | session | raw-json (`run`/`ingest` only)");
-    eprintln!("  --consolidation <MODE>          end | per-session | off (`run`/`ingest` only)");
+    eprintln!(
+        "  --conversation <ID>             Not supported for `run`/`ingest`; use a profile slice"
+    );
+    eprintln!(
+        "  --ingest <MODE>                 Not supported for `run`/`ingest`; use a profile contract"
+    );
+    eprintln!(
+        "  --consolidation <MODE>          Not supported for `run`/`ingest`; use a profile contract"
+    );
     eprintln!("  --conversation-jobs <N>         Parallel conversations");
     eprintln!("  --question-jobs <N>             Parallel questions per conversation");
-    eprintln!("  --judge-model <MODEL>           Override judge model");
+    eprintln!(
+        "  --judge-model <MODEL>           `qa` only; `run`/`ingest` use the profile contract"
+    );
     eprintln!("  --run-id <NAME>                 Publish bundle id (`publish` only)");
     eprintln!("  --include-debug                 Also export debug.jsonl.gz (`publish` only)");
     eprintln!("  --force                         Allow overwriting existing output files");
     eprintln!();
     eprintln!("Debug slice options:");
     eprintln!(
-        "  --session-limit <N>             Limit sessions per conversation (`run`/`ingest` only)"
+        "  --session-limit <N>             Not supported for `run`/`ingest`; use a profile slice"
     );
     eprintln!(
-        "  --question-limit <N>            Limit questions per conversation (`run`/`ingest` only)"
+        "  --question-limit <N>            Not supported for `run`/`ingest`; use a profile slice"
     );
 }
 
@@ -2726,6 +2786,7 @@ struct ConversationRunOptions {
     max_sessions: Option<usize>,
     max_questions: Option<usize>,
     question_concurrency: usize,
+    reflect_budget_tokens: usize,
     ingest_mode: IngestMode,
     consolidation: ConsolidationMode,
     consolidation_batch_size: usize,
@@ -2805,7 +2866,8 @@ async fn run_conversation(
     tag: String,
     runtime: Arc<BenchRuntime>,
     entry: LocomoEntry,
-    judge: Arc<dyn LlmClient>,
+    judge: Option<Arc<dyn LlmClient>>,
+    judge_config: Option<Arc<BenchJudgeConfig>>,
     options: ConversationRunOptions,
     shared: Arc<Mutex<SharedResults>>,
 ) -> Result<(), String> {
@@ -3129,6 +3191,7 @@ async fn run_conversation(
         let temporal_context = temporal_context.clone();
         let conversation_metrics = conversation_metrics.clone();
         let question_metrics = Arc::new(MetricsCollector::new());
+        let judge_config = judge_config.clone();
 
         qa_handles.spawn(async move {
             let _permit = sem.acquire().await.expect("semaphore closed");
@@ -3158,7 +3221,7 @@ async fn run_conversation(
                             bank_id,
                             question: question.clone(),
                             context: None,
-                            budget_tokens: reflect_budget_tokens(),
+                            budget_tokens: options.reflect_budget_tokens,
                             temporal_context: temporal_context.clone(),
                         })
                         .await;
@@ -3320,7 +3383,13 @@ async fn run_conversation(
                     conversation_metrics.clone(),
                     with_scoped_collector(
                         question_metrics.clone(),
-                        llm_judge(judge.as_ref(), &question, &gold, &hypothesis),
+                        llm_judge(
+                            judge.as_ref().expect("judge client").as_ref(),
+                            judge_config.as_ref().expect("judge config"),
+                            &question,
+                            &gold,
+                            &hypothesis,
+                        ),
                     ),
                 )
                 .await
@@ -3591,13 +3660,16 @@ fn default_output_path(
             PathBuf::from(format!("bench/locomo/results/local/{stem}.json"))
         }
         BenchCommand::Publish => PathBuf::from("bench/locomo/published"),
+        BenchCommand::ConfigResolve => {
+            PathBuf::from("bench/locomo/results/local/config-resolve.json")
+        }
         BenchCommand::Run | BenchCommand::Ingest => {
             let stem = if let Some(ref tag) = config.tag {
                 tag.clone()
             } else {
                 format!("{}-{}", config.profile.as_str(), command.as_str())
             };
-            PathBuf::from(format!("bench/locomo/results/local/{stem}.json"))
+            config.output_dir.join(format!("{stem}.json"))
         }
     }
 }
@@ -3606,7 +3678,11 @@ fn default_output_path(
 
 #[tokio::main]
 async fn main() {
-    let _ = dotenvy::dotenv();
+    let invocation = parse_args();
+    let command = invocation.command;
+    if matches!(command, BenchCommand::Qa) {
+        let _ = dotenvy::dotenv();
+    }
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -3616,12 +3692,50 @@ async fn main() {
         .with_target(false)
         .init();
 
-    let invocation = parse_args();
-    let command = invocation.command;
     let artifact_path = invocation.artifact_path.clone();
     let merge_inputs = invocation.merge_artifacts.clone();
     let publish_config = invocation.publish_config.clone();
-    let config = invocation.config;
+    let secrets_env_file = invocation.secrets_env_file.clone();
+    let mut config = invocation.config;
+
+    if matches!(command, BenchCommand::ConfigResolve) {
+        let profile_path = config.profile.contract_path();
+        match resolve_locomo_bench_config(
+            &profile_path,
+            config.config_path.as_deref(),
+            secrets_env_file.as_deref(),
+        ) {
+            Ok(resolved) => {
+                println!("{}", resolved.to_pretty_redacted_json());
+                return;
+            }
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    let resolved_run = if matches!(command, BenchCommand::Run | BenchCommand::Ingest) {
+        let profile_path = config.profile.contract_path();
+        let resolved = resolve_locomo_bench_config(
+            &profile_path,
+            config.config_path.as_deref(),
+            secrets_env_file.as_deref(),
+        )
+        .unwrap_or_else(|err| {
+            eprintln!("failed to resolve benchmark config: {err}");
+            std::process::exit(1);
+        });
+        apply_resolved_fresh_config(&mut config, &resolved).unwrap_or_else(|err| {
+            eprintln!("failed to apply resolved benchmark config: {err}");
+            std::process::exit(1);
+        });
+        Some(resolved)
+    } else {
+        None
+    };
+
     let output_path = default_output_path(command, &config, artifact_path.as_deref());
 
     if matches!(command, BenchCommand::Publish) {
@@ -3784,29 +3898,76 @@ async fn main() {
 
     let metrics = Arc::new(MetricsCollector::new());
     metrics.extend_snapshot(&existing_stage_metrics);
-    let harness = BenchHarnessBuilder::from_env()
-        .unwrap_or_else(|err| {
-            eprintln!("failed to load benchmark runtime config: {err}");
-            std::process::exit(1);
-        })
-        .metrics(metrics.clone())
-        .build()
-        .await
-        .unwrap_or_else(|err| {
-            eprintln!("failed to build Elephant runtime: {err}");
-            std::process::exit(1);
-        });
-    let runtime_metadata = harness.metadata().clone();
-    let determinism_requirement = harness.determinism_requirement();
-    let runtime = Arc::new(harness.into_runtime());
-
-    let judge_config = resolve_judge_config(config.judge_model.clone());
-    let judge =
-        common::judge::build_judge_client(metrics.clone(), &judge_config).unwrap_or_else(|err| {
-            eprintln!("failed to build judge client: {err}");
-            std::process::exit(1);
-        });
-    let judge_label = common::judge::judge_label(&judge_config);
+    let (runtime_metadata, determinism_requirement, runtime, judge_config, judge, judge_label) =
+        if let Some(resolved) = resolved_run.as_ref() {
+            let harness = resolved
+                .build_harness(metrics.clone())
+                .await
+                .unwrap_or_else(|err| {
+                    eprintln!("failed to build Elephant runtime: {err}");
+                    std::process::exit(1);
+                });
+            let runtime_metadata = harness.metadata().clone();
+            let determinism_requirement = harness.determinism_requirement();
+            let runtime = Arc::new(harness.into_runtime());
+            let judge_config = Arc::new(resolved.build_judge_config().unwrap_or_else(|err| {
+                eprintln!("failed to build benchmark judge config: {err}");
+                std::process::exit(1);
+            }));
+            let judge = if matches!(command, BenchCommand::Ingest) {
+                None
+            } else {
+                Some(
+                    common::judge::build_judge_client(metrics.clone(), judge_config.as_ref())
+                        .unwrap_or_else(|err| {
+                            eprintln!("failed to build judge client: {err}");
+                            std::process::exit(1);
+                        }),
+                )
+            };
+            let judge_label = common::judge::judge_label(judge_config.as_ref());
+            (
+                runtime_metadata,
+                determinism_requirement,
+                runtime,
+                judge_config,
+                judge,
+                judge_label,
+            )
+        } else {
+            let harness = BenchHarnessBuilder::from_env()
+                .unwrap_or_else(|err| {
+                    eprintln!("failed to load benchmark runtime config: {err}");
+                    std::process::exit(1);
+                })
+                .metrics(metrics.clone())
+                .build()
+                .await
+                .unwrap_or_else(|err| {
+                    eprintln!("failed to build Elephant runtime: {err}");
+                    std::process::exit(1);
+                });
+            let runtime_metadata = harness.metadata().clone();
+            let determinism_requirement = harness.determinism_requirement();
+            let runtime = Arc::new(harness.into_runtime());
+            let judge_config = Arc::new(resolve_judge_config(config.judge_model.clone()));
+            let judge = Some(
+                common::judge::build_judge_client(metrics.clone(), judge_config.as_ref())
+                    .unwrap_or_else(|err| {
+                        eprintln!("failed to build judge client: {err}");
+                        std::process::exit(1);
+                    }),
+            );
+            let judge_label = common::judge::judge_label(judge_config.as_ref());
+            (
+                runtime_metadata,
+                determinism_requirement,
+                runtime,
+                judge_config,
+                judge,
+                judge_label,
+            )
+        };
 
     println!("retain_model: {}", runtime_metadata.retain_model());
     println!("reflect_model: {}", runtime_metadata.reflect_model());
@@ -3855,7 +4016,10 @@ async fn main() {
 
     let cli_command = env::args().collect::<Vec<_>>().join(" ");
     let manifest = BenchmarkManifest {
-        protocol_version: "2026-03-10-config-v1".into(),
+        protocol_version: resolved_run
+            .as_ref()
+            .map(|resolved| resolved.protocol_version().to_string())
+            .unwrap_or_else(|| "2026-03-10-config-v1".into()),
         profile: config.profile.as_str().into(),
         mode: command.as_str().into(),
         config_path: config
@@ -3863,9 +4027,15 @@ async fn main() {
             .as_ref()
             .map(|path| path.display().to_string()),
         dataset_path: config.dataset.display().to_string(),
-        dataset_fingerprint: format!("{:016x}", fnv1a64(&raw_bytes)),
+        dataset_fingerprint: resolved_run
+            .as_ref()
+            .map(|resolved| resolved.dataset_fingerprint().to_string())
+            .unwrap_or_else(|| format!("{:016x}", fnv1a64(&raw_bytes))),
         command: cli_command,
-        category_filter: vec![1, 2, 3, 4],
+        category_filter: resolved_run
+            .as_ref()
+            .map(|resolved| resolved.category_filter().to_vec())
+            .unwrap_or_else(|| vec![1, 2, 3, 4]),
         selected_conversations: config.conversations.clone(),
         image_policy: config.ingest.image_policy().into(),
         ingestion_granularity: config.ingest.ingestion_granularity().into(),
@@ -3877,10 +4047,32 @@ async fn main() {
         raw_json: config.ingest.raw_json(),
         dirty_worktree: git_dirty_worktree(),
         prompt_hashes: benchmark_prompt_hashes(&runtime_metadata),
-        runtime_config: benchmark_runtime_config(&runtime_metadata),
+        runtime_config: resolved_run
+            .as_ref()
+            .map(|resolved| {
+                benchmark_runtime_config(&runtime_metadata, resolved, judge_config.as_ref())
+            })
+            .unwrap_or_else(|| BenchmarkRuntimeConfig {
+                elephant: runtime_metadata.tuning().clone(),
+                reflect_budget_tokens: 4096,
+                judge_temperature: judge_config.temperature(),
+                judge_max_tokens: judge_config.max_tokens(),
+                judge_max_attempts: judge_config.max_attempts(),
+                qa_updates_memory: false,
+            }),
+        contract_hash: resolved_run
+            .as_ref()
+            .map(|resolved| resolved.contract_hash().to_string()),
+        resolved_contract: resolved_run
+            .as_ref()
+            .map(|resolved| resolved.redacted_contract_json()),
+        execution: resolved_run
+            .as_ref()
+            .map(|resolved| resolved.redacted_execution_json()),
         source_artifact,
         source_artifacts: Vec::new(),
     };
+    let reflect_budget_tokens = manifest.runtime_config.reflect_budget_tokens;
 
     let shared = Arc::new(Mutex::new(SharedResults {
         results: Vec::new(),
@@ -3913,10 +4105,12 @@ async fn main() {
         let sem = semaphore.clone();
         let runtime = runtime.clone();
         let judge = judge.clone();
+        let judge_config = judge_config.clone();
         let options = ConversationRunOptions {
             max_sessions: config.session_limit,
             max_questions: config.question_limit,
             question_concurrency: config.question_jobs,
+            reflect_budget_tokens,
             ingest_mode: config.ingest,
             consolidation: config.consolidation,
             consolidation_batch_size: runtime_metadata.consolidation_batch_size(),
@@ -3944,7 +4138,16 @@ async fn main() {
                 .acquire()
                 .await
                 .map_err(|e| format!("semaphore closed: {e}"))?;
-            run_conversation(tag, runtime, entry, judge, options, shared).await
+            run_conversation(
+                tag,
+                runtime,
+                entry,
+                judge,
+                Some(judge_config),
+                options,
+                shared,
+            )
+            .await
         });
     }
 
@@ -4245,6 +4448,9 @@ mod tests {
                 dirty_worktree: Some(false),
                 prompt_hashes: BenchmarkPromptHashes::default(),
                 runtime_config: BenchmarkRuntimeConfig::default(),
+                contract_hash: None,
+                resolved_contract: None,
+                execution: None,
                 source_artifact: None,
                 source_artifacts: Vec::new(),
             },
@@ -4474,9 +4680,10 @@ mod tests {
         assert_eq!(config.profile, RunProfile::Smoke);
         assert_eq!(config.ingest, IngestMode::Session);
         assert_eq!(config.consolidation, ConsolidationMode::End);
-        assert_eq!(config.conversations, vec!["conv-26".to_string()]);
-        assert_eq!(config.session_limit, Some(1));
-        assert_eq!(config.question_limit, Some(5));
+        assert_eq!(config.conversations, Vec::<String>::new());
+        assert_eq!(config.session_limit, None);
+        assert_eq!(config.question_limit, None);
+        assert_eq!(config.config_path, None);
     }
 
     #[test]
