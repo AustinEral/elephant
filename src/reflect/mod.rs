@@ -45,14 +45,12 @@ pub struct DefaultReflectPipeline {
     source_lookup_limit: usize,
     source_content_max_chars: Option<usize>,
     enable_source_lookup: bool,
-    temperature: f32,
+    temperature: Option<f32>,
     reasoning_effort: Option<ReasoningEffort>,
 }
 
 /// Reflect agent prompt template.
 pub const REFLECT_AGENT_PROMPT_TEMPLATE: &str = include_str!("../../prompts/reflect_agent.txt");
-/// Reflect agent temperature.
-pub const REFLECT_TEMPERATURE: f32 = 0.3;
 /// Default maximum number of sources returned per fact for source lookups.
 pub const DEFAULT_SOURCE_LOOKUP_LIMIT: usize = 3;
 /// Default lookup availability for reflect.
@@ -75,7 +73,7 @@ impl DefaultReflectPipeline {
             DEFAULT_SOURCE_LOOKUP_LIMIT,
             None,
             DEFAULT_ENABLE_SOURCE_LOOKUP,
-            REFLECT_TEMPERATURE,
+            None,
             None,
         )
     }
@@ -91,7 +89,7 @@ impl DefaultReflectPipeline {
         source_lookup_limit: usize,
         source_content_max_chars: Option<usize>,
         enable_source_lookup: bool,
-        temperature: f32,
+        temperature: Option<f32>,
         reasoning_effort: Option<ReasoningEffort>,
     ) -> Self {
         Self {
@@ -299,15 +297,17 @@ impl DefaultReflectPipeline {
             let (iter_tools, tool_choice) =
                 tool_defs_for_iteration(self.enable_source_lookup, iteration, last_iteration);
 
-            let request = CompletionRequest::builder()
+            let mut request = CompletionRequest::builder()
                 .messages(messages.clone())
-                .temperature(self.temperature)
                 .reasoning_effort_opt(self.reasoning_effort)
                 .max_tokens_opt(self.max_output_tokens)
                 .system(system_prompt.clone())
                 .tools(iter_tools)
-                .tool_choice(tool_choice)
-                .build();
+                .tool_choice(tool_choice);
+            if let Some(temperature) = self.temperature {
+                request = request.temperature(temperature);
+            }
+            let request = request.build();
 
             let llm_start = Instant::now();
             let response = self.llm.complete(request).await?;

@@ -201,8 +201,8 @@ struct BenchmarkRuntimeConfig {
     elephant: BenchRuntimeTuning,
     #[serde(default)]
     reflect_budget_tokens: usize,
-    #[serde(default)]
-    judge_temperature: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    judge_temperature: Option<f32>,
     #[serde(default)]
     judge_max_tokens: usize,
     #[serde(default)]

@@ -82,32 +82,40 @@ pub struct RuntimeTuning {
     pub reflect_max_tokens: Option<usize>,
     /// Retain extraction reasoning effort override.
     pub retain_extract_reasoning_effort: Option<ReasoningEffort>,
-    /// Requested retain extraction temperature.
-    pub retain_extract_temperature: f32,
+    /// Requested retain extraction temperature override, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retain_extract_temperature: Option<f32>,
     /// Effective retain extraction temperature forwarded to the provider, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retain_extract_effective_temperature: Option<f32>,
     /// Total attempts for malformed extractor structured output.
     pub retain_extract_structured_output_max_attempts: usize,
     /// Retain entity-resolution reasoning effort override.
     pub retain_resolve_reasoning_effort: Option<ReasoningEffort>,
-    /// Requested retain entity-resolution temperature.
-    pub retain_resolve_temperature: f32,
+    /// Requested retain entity-resolution temperature override, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retain_resolve_temperature: Option<f32>,
     /// Effective retain entity-resolution temperature forwarded to the provider, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retain_resolve_effective_temperature: Option<f32>,
     /// Retain graph-builder reasoning effort override.
     pub retain_graph_reasoning_effort: Option<ReasoningEffort>,
-    /// Requested retain graph-builder temperature.
-    pub retain_graph_temperature: f32,
+    /// Requested retain graph-builder temperature override, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retain_graph_temperature: Option<f32>,
     /// Effective retain graph-builder temperature forwarded to the provider, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retain_graph_effective_temperature: Option<f32>,
     /// Whether reflect exposes the source lookup tool.
     #[serde(default = "default_true")]
     pub reflect_enable_source_lookup: bool,
     /// Reflect reasoning effort override.
     pub reflect_reasoning_effort: Option<ReasoningEffort>,
-    /// Requested reflect temperature.
-    pub reflect_temperature: f32,
+    /// Requested reflect temperature override, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reflect_temperature: Option<f32>,
     /// Effective reflect temperature forwarded to the provider, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reflect_effective_temperature: Option<f32>,
     /// Graph semantic-link threshold.
     pub graph_semantic_threshold: f32,
@@ -125,15 +133,19 @@ pub struct RuntimeTuning {
     pub consolidation_recall_budget: usize,
     /// Total attempts for malformed consolidator structured output.
     pub consolidation_structured_output_max_attempts: usize,
-    /// Requested consolidation temperature.
-    pub consolidate_temperature: f32,
+    /// Requested consolidation temperature override, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consolidate_temperature: Option<f32>,
     /// Effective consolidation temperature forwarded to the provider, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consolidate_effective_temperature: Option<f32>,
     /// Consolidation reasoning effort override.
     pub consolidate_reasoning_effort: Option<ReasoningEffort>,
-    /// Requested opinion-merge temperature.
-    pub opinion_merge_temperature: f32,
+    /// Requested opinion-merge temperature override, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opinion_merge_temperature: Option<f32>,
     /// Effective opinion-merge temperature forwarded to the provider, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opinion_merge_effective_temperature: Option<f32>,
     /// Opinion merge reasoning effort override.
     pub opinion_merge_reasoning_effort: Option<ReasoningEffort>,
@@ -334,19 +346,12 @@ impl RuntimeBuilder {
         let reranker_config = runtime_config.reranker();
         let reasoning_effort = runtime_config.reasoning_effort();
         let extraction_config = runtime_config.extraction();
-        let extract_temperature_override = runtime_config.extract_temperature_override();
         let resolve_temperature = runtime_config.resolve_temperature();
-        let resolve_temperature_override = runtime_config.resolve_temperature_override();
         let graph_config = runtime_config.graph();
-        let graph_temperature_override = runtime_config.graph_temperature_override();
         let consolidation_config = runtime_config.consolidation();
-        let consolidate_temperature_override = runtime_config.consolidate_temperature_override();
         let opinion_merge_config = runtime_config.opinion_merge();
-        let opinion_merge_temperature_override =
-            runtime_config.opinion_merge_temperature_override();
         let reflect_config = runtime_config.reflect();
         let reflect_temperature = runtime_config.reflect_temperature();
-        let reflect_temperature_override = runtime_config.reflect_temperature_override();
         let retrieval_config = runtime_config.retrieval();
         let dedup_threshold = runtime_config.dedup_threshold();
         let chunk_config = ChunkConfig {
@@ -356,98 +361,98 @@ impl RuntimeBuilder {
         };
         let extract_temperature_resolution = llm::resolve_temperature(
             llm_configs.retain(),
-            Some(extraction_config.temperature),
+            extraction_config.temperature,
             reasoning_effort.retain_extract,
         );
         let extract_determinism = llm::assess_determinism(
             llm_configs.retain(),
-            Some(extraction_config.temperature),
+            extraction_config.temperature,
             reasoning_effort.retain_extract,
         );
-        validate_explicit_temperature_override(
+        validate_configured_temperature(
             "retain extraction",
             "RETAIN_EXTRACT_TEMPERATURE",
-            extract_temperature_override,
+            extraction_config.temperature,
             &extract_temperature_resolution,
         )?;
         let resolve_temperature_resolution = llm::resolve_temperature(
             llm_configs.retain(),
-            Some(resolve_temperature),
+            resolve_temperature,
             reasoning_effort.retain_resolve,
         );
         let resolve_determinism = llm::assess_determinism(
             llm_configs.retain(),
-            Some(resolve_temperature),
+            resolve_temperature,
             reasoning_effort.retain_resolve,
         );
-        validate_explicit_temperature_override(
+        validate_configured_temperature(
             "retain entity resolution",
             "RETAIN_RESOLVE_TEMPERATURE",
-            resolve_temperature_override,
+            resolve_temperature,
             &resolve_temperature_resolution,
         )?;
         let graph_temperature_resolution = llm::resolve_temperature(
             llm_configs.retain(),
-            Some(graph_config.causal_temperature),
+            graph_config.causal_temperature,
             graph_config.causal_reasoning_effort,
         );
         let graph_determinism = llm::assess_determinism(
             llm_configs.retain(),
-            Some(graph_config.causal_temperature),
+            graph_config.causal_temperature,
             graph_config.causal_reasoning_effort,
         );
-        validate_explicit_temperature_override(
+        validate_configured_temperature(
             "retain graph building",
             "RETAIN_GRAPH_TEMPERATURE",
-            graph_temperature_override,
+            graph_config.causal_temperature,
             &graph_temperature_resolution,
         )?;
         let consolidate_temperature_resolution = llm::resolve_temperature(
             llm_configs.reflect(),
-            Some(consolidation_config.temperature),
+            consolidation_config.temperature,
             reasoning_effort.consolidate,
         );
         let consolidate_determinism = llm::assess_determinism(
             llm_configs.reflect(),
-            Some(consolidation_config.temperature),
+            consolidation_config.temperature,
             reasoning_effort.consolidate,
         );
-        validate_explicit_temperature_override(
+        validate_configured_temperature(
             "consolidation",
             "CONSOLIDATE_TEMPERATURE",
-            consolidate_temperature_override,
+            consolidation_config.temperature,
             &consolidate_temperature_resolution,
         )?;
         let opinion_merge_temperature_resolution = llm::resolve_temperature(
             llm_configs.reflect(),
-            Some(opinion_merge_config.temperature),
+            opinion_merge_config.temperature,
             reasoning_effort.opinion_merge,
         );
         let opinion_merge_determinism = llm::assess_determinism(
             llm_configs.reflect(),
-            Some(opinion_merge_config.temperature),
+            opinion_merge_config.temperature,
             reasoning_effort.opinion_merge,
         );
-        validate_explicit_temperature_override(
+        validate_configured_temperature(
             "opinion merge",
             "OPINION_MERGE_TEMPERATURE",
-            opinion_merge_temperature_override,
+            opinion_merge_config.temperature,
             &opinion_merge_temperature_resolution,
         )?;
         let reflect_temperature_resolution = llm::resolve_temperature(
             llm_configs.reflect(),
-            Some(reflect_temperature),
+            reflect_temperature,
             reasoning_effort.reflect,
         );
         let reflect_determinism = llm::assess_determinism(
             llm_configs.reflect(),
-            Some(reflect_temperature),
+            reflect_temperature,
             reasoning_effort.reflect,
         );
-        validate_explicit_temperature_override(
+        validate_configured_temperature(
             "reflect",
             "REFLECT_TEMPERATURE",
-            reflect_temperature_override,
+            reflect_temperature,
             &reflect_temperature_resolution,
         )?;
         if let Some(requirement) = self.determinism_requirement {
@@ -668,18 +673,18 @@ impl RuntimeBuilder {
     }
 }
 
-fn validate_explicit_temperature_override(
+fn validate_configured_temperature(
     stage: &str,
     env_name: &str,
-    explicit_override: Option<f32>,
+    configured_temperature: Option<f32>,
     resolution: &llm::TemperatureResolution,
 ) -> Result<()> {
-    if explicit_override.is_some()
+    if configured_temperature.is_some()
         && let Some(reason) = resolution.unsupported_reason()
     {
         return Err(Error::Configuration(format!(
             "{env_name} requested {requested} for {stage}, but {reason}",
-            requested = explicit_override.unwrap_or_default()
+            requested = configured_temperature.unwrap_or_default()
         )));
     }
 
@@ -792,7 +797,7 @@ mod tests {
             Some(ReasoningEffort::None),
         );
 
-        let err = validate_explicit_temperature_override(
+        let err = validate_configured_temperature(
             "reflect",
             "REFLECT_TEMPERATURE",
             Some(0.0),
@@ -805,23 +810,23 @@ mod tests {
     }
 
     #[test]
-    fn default_unsupported_temperature_is_not_rejected() {
+    fn absent_temperature_is_not_rejected() {
         let resolution = llm::resolve_temperature(
             &openai_client("gpt-5.4-mini"),
-            Some(crate::reflect::REFLECT_TEMPERATURE),
+            None,
             Some(ReasoningEffort::None),
         );
 
-        validate_explicit_temperature_override("reflect", "REFLECT_TEMPERATURE", None, &resolution)
+        validate_configured_temperature("reflect", "REFLECT_TEMPERATURE", None, &resolution)
             .unwrap();
         assert_eq!(resolution.effective(), None);
     }
 
     #[test]
-    fn best_effort_requirement_rejects_unsupported_assessment() {
+    fn low_variance_requirement_rejects_unsupported_assessment() {
         let err = validate_determinism_requirement(
             "reflect",
-            DeterminismRequirement::BestEffort,
+            DeterminismRequirement::LowVariance,
             &DeterminismAssessment {
                 support: llm::DeterminismSupport::Unsupported,
                 reason: Some("temperature 0 not effective".into()),
@@ -829,17 +834,17 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(err.to_string().contains("best_effort"));
+        assert!(err.to_string().contains("low_variance"));
     }
 
     #[test]
-    fn best_effort_requirement_allows_best_effort_assessment() {
+    fn low_variance_requirement_allows_low_variance_assessment() {
         validate_determinism_requirement(
             "reflect",
-            DeterminismRequirement::BestEffort,
+            DeterminismRequirement::LowVariance,
             &DeterminismAssessment {
-                support: llm::DeterminismSupport::BestEffort,
-                reason: Some("provider supports best-effort low variance".into()),
+                support: llm::DeterminismSupport::LowVariance,
+                reason: Some("provider supports low variance".into()),
             },
         )
         .unwrap();

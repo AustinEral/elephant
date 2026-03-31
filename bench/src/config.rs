@@ -37,13 +37,11 @@ impl BenchConfig {
             Ok(raw) => {
                 let value = raw.trim().to_ascii_lowercase();
                 let requirement = match value.as_str() {
-                    "best_effort" | "best-effort" | "1" | "true" | "yes" | "on" => {
-                        DeterminismRequirement::BestEffort
-                    }
+                    "low_variance" => DeterminismRequirement::LowVariance,
                     "strong" => DeterminismRequirement::Strong,
                     _ => {
                         return Err(ConfigError::configuration(format!(
-                            "BENCH_DETERMINISM_REQUIREMENT must be one of: best_effort, strong; got: {raw}"
+                            "BENCH_DETERMINISM_REQUIREMENT must be one of: low_variance, strong; got: {raw}"
                         )));
                     }
                 };
@@ -386,16 +384,16 @@ mod tests {
     }
 
     #[test]
-    fn parses_best_effort_requirement() {
+    fn parses_low_variance_requirement() {
         let _guard = env_lock().lock().unwrap();
         unsafe {
-            env::set_var("BENCH_DETERMINISM_REQUIREMENT", "best_effort");
+            env::set_var("BENCH_DETERMINISM_REQUIREMENT", "low_variance");
         }
 
         let config = BenchConfig::from_env().unwrap();
         assert_eq!(
             config.determinism_requirement(),
-            Some(DeterminismRequirement::BestEffort)
+            Some(DeterminismRequirement::LowVariance)
         );
 
         unsafe {

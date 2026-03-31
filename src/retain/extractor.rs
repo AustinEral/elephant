@@ -16,8 +16,8 @@ use crate::types::{ExtractedFact, ExtractionInput};
 pub struct ExtractionConfig {
     /// Total number of attempts for malformed structured output from the extractor LLM.
     pub structured_output_max_attempts: usize,
-    /// Sampling temperature for fact extraction.
-    pub temperature: f32,
+    /// Explicit sampling-temperature override for fact extraction.
+    pub temperature: Option<f32>,
     /// Reasoning effort override for extraction, if supported.
     pub reasoning_effort: Option<ReasoningEffort>,
 }
@@ -26,7 +26,7 @@ impl Default for ExtractionConfig {
     fn default() -> Self {
         Self {
             structured_output_max_attempts: 3,
-            temperature: EXTRACT_TEMPERATURE,
+            temperature: None,
             reasoning_effort: None,
         }
     }
@@ -52,8 +52,6 @@ pub struct LlmFactExtractor {
 
 /// Base extraction prompt template.
 pub const EXTRACT_PROMPT_TEMPLATE: &str = include_str!("../../prompts/extract_facts.txt");
-/// Extraction temperature.
-pub const EXTRACT_TEMPERATURE: f32 = 0.1;
 /// Extraction output cap.
 pub const EXTRACT_MAX_TOKENS: usize = 4096;
 
@@ -110,13 +108,15 @@ impl FactExtractor for LlmFactExtractor {
     async fn extract(&self, input: &ExtractionInput) -> Result<Vec<ExtractedFact>> {
         let (system, user_msg) = Self::render_prompt(input);
 
-        let req = CompletionRequest::builder()
+        let mut req = CompletionRequest::builder()
             .system(system)
             .message(Message::user(user_msg))
-            .temperature(self.config.temperature)
             .reasoning_effort_opt(self.config.reasoning_effort)
-            .max_tokens(EXTRACT_MAX_TOKENS)
-            .build();
+            .max_tokens(EXTRACT_MAX_TOKENS);
+        if let Some(temperature) = self.config.temperature {
+            req = req.temperature(temperature);
+        }
+        let req = req.build();
 
         complete_structured_with_retries(
             self.llm.as_ref(),

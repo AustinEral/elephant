@@ -31,21 +31,12 @@ pub struct DefaultOpinionMerger {
 }
 
 /// Static configuration for opinion merging.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct OpinionMergeConfig {
-    /// Sampling temperature for opinion merge classification.
-    pub temperature: f32,
+    /// Explicit sampling-temperature override for opinion merge classification.
+    pub temperature: Option<f32>,
     /// Reasoning effort override for opinion merge classification, if supported.
     pub reasoning_effort: Option<ReasoningEffort>,
-}
-
-impl Default for OpinionMergeConfig {
-    fn default() -> Self {
-        Self {
-            temperature: MERGE_TEMPERATURE,
-            reasoning_effort: None,
-        }
-    }
 }
 
 impl DefaultOpinionMerger {
@@ -83,8 +74,6 @@ struct MergeResponse {
 
 /// Opinion merge prompt template.
 pub const MERGE_PROMPT: &str = include_str!("../../prompts/merge_opinions.txt");
-/// Opinion merge temperature.
-pub const MERGE_TEMPERATURE: f32 = 0.3;
 /// Opinion merge output cap.
 pub const MERGE_MAX_TOKENS: usize = 1024;
 
@@ -156,12 +145,14 @@ impl OpinionMerger for DefaultOpinionMerger {
 
             let prompt = MERGE_PROMPT.replace("{opinions}", &opinions_text);
 
-            let request = CompletionRequest::builder()
+            let mut request = CompletionRequest::builder()
                 .message(Message::user(prompt))
                 .max_tokens(MERGE_MAX_TOKENS)
-                .temperature(self.config.temperature)
-                .reasoning_effort_opt(self.config.reasoning_effort)
-                .build();
+                .reasoning_effort_opt(self.config.reasoning_effort);
+            if let Some(temperature) = self.config.temperature {
+                request = request.temperature(temperature);
+            }
+            let request = request.build();
 
             let resp: MergeResponse = complete_structured(self.llm.as_ref(), request).await?;
 

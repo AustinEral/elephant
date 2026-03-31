@@ -13,8 +13,8 @@ pub enum DeterminismSupport {
     Unknown,
     /// The provider/model offers a strong determinism contract for this setup.
     Strong,
-    /// The setup is only suitable for best-effort low-variance benchmarking.
-    BestEffort,
+    /// The setup is only suitable for low-variance benchmarking.
+    LowVariance,
     /// The setup is not suitable for deterministic/low-variance benchmarking.
     Unsupported,
 }
@@ -30,9 +30,9 @@ pub struct DeterminismAssessment {
 }
 
 impl DeterminismAssessment {
-    fn best_effort(reason: impl Into<String>) -> Self {
+    fn low_variance(reason: impl Into<String>) -> Self {
         Self {
-            support: DeterminismSupport::BestEffort,
+            support: DeterminismSupport::LowVariance,
             reason: Some(reason.into()),
         }
     }
@@ -47,9 +47,9 @@ impl DeterminismAssessment {
     /// Return whether this assessment satisfies the requested requirement.
     pub fn satisfies(&self, requirement: DeterminismRequirement) -> bool {
         match requirement {
-            DeterminismRequirement::BestEffort => matches!(
+            DeterminismRequirement::LowVariance => matches!(
                 self.support,
-                DeterminismSupport::Strong | DeterminismSupport::BestEffort
+                DeterminismSupport::Strong | DeterminismSupport::LowVariance
             ),
             DeterminismRequirement::Strong => self.support == DeterminismSupport::Strong,
         }
@@ -60,8 +60,8 @@ impl DeterminismAssessment {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DeterminismRequirement {
-    /// Allow best-effort low-variance setups.
-    BestEffort,
+    /// Require a low-variance benchmark setup.
+    LowVariance,
     /// Require a strong determinism contract.
     Strong,
 }
@@ -70,7 +70,7 @@ impl DeterminismRequirement {
     /// Return the stable config label.
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::BestEffort => "best_effort",
+            Self::LowVariance => "low_variance",
             Self::Strong => "strong",
         }
     }
@@ -231,21 +231,21 @@ pub fn assess_determinism_for_target(
     match provider {
         Provider::OpenAi => {
             if model.starts_with("gpt-5.1") || model.starts_with("gpt-5.2") {
-                return DeterminismAssessment::best_effort(format!(
+                return DeterminismAssessment::low_variance(format!(
                     "openai/{model} accepts temperature=0 only with reasoning_effort=none, but OpenAI does not guarantee deterministic outputs"
                 ));
             }
-            DeterminismAssessment::best_effort(format!(
+            DeterminismAssessment::low_variance(format!(
                 "openai/{model} accepts temperature=0, but OpenAI does not guarantee deterministic outputs"
             ))
         }
-        Provider::Anthropic => DeterminismAssessment::best_effort(format!(
+        Provider::Anthropic => DeterminismAssessment::low_variance(format!(
             "anthropic/{model} supports temperature=0, but Anthropic docs note outputs are not fully deterministic"
         )),
-        Provider::Gemini => DeterminismAssessment::best_effort(format!(
+        Provider::Gemini => DeterminismAssessment::low_variance(format!(
             "gemini/{model} supports temperature=0, but Google docs describe outputs as mostly deterministic and warn of degraded behavior"
         )),
-        Provider::Vertex => DeterminismAssessment::best_effort(format!(
+        Provider::Vertex => DeterminismAssessment::low_variance(format!(
             "vertex/{model} supports temperature=0, but Google docs describe outputs as mostly deterministic and warn of degraded behavior"
         )),
     }
@@ -360,14 +360,14 @@ mod tests {
     }
 
     #[test]
-    fn determinism_assessment_marks_anthropic_best_effort() {
+    fn determinism_assessment_marks_anthropic_low_variance() {
         let assessment = assess_determinism_for_target(
             Provider::Anthropic,
             "claude-sonnet-4-5",
             Some(0.0),
             None,
         );
-        assert_eq!(assessment.support, DeterminismSupport::BestEffort);
+        assert_eq!(assessment.support, DeterminismSupport::LowVariance);
     }
 
     #[test]

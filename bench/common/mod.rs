@@ -63,13 +63,13 @@ mod tests {
     }
 
     #[test]
-    fn parses_best_effort_requirement_from_env() {
+    fn parses_low_variance_requirement_from_env() {
         let _guard = env_lock().lock().unwrap();
         unsafe {
-            env::set_var("BENCH_DETERMINISM_REQUIREMENT", "best_effort");
+            env::set_var("BENCH_DETERMINISM_REQUIREMENT", "low_variance");
         }
         let parsed = benchmark_determinism_requirement_from_env().unwrap();
-        assert_eq!(parsed, Some(DeterminismRequirement::BestEffort));
+        assert_eq!(parsed, Some(DeterminismRequirement::LowVariance));
         unsafe {
             env::remove_var("BENCH_DETERMINISM_REQUIREMENT");
         }

@@ -38,8 +38,8 @@ pub struct ConsolidationConfig {
     pub recall_budget: usize,
     /// Total number of attempts for malformed structured output from the consolidator LLM.
     pub structured_output_max_attempts: usize,
-    /// Sampling temperature for observation consolidation.
-    pub temperature: f32,
+    /// Explicit sampling-temperature override for observation consolidation.
+    pub temperature: Option<f32>,
     /// Reasoning effort override for observation consolidation, if supported.
     pub reasoning_effort: Option<ReasoningEffort>,
 }
@@ -51,7 +51,7 @@ impl Default for ConsolidationConfig {
             max_tokens: 4096,
             recall_budget: 512,
             structured_output_max_attempts: 3,
-            temperature: CONSOLIDATE_TEMPERATURE,
+            temperature: None,
             reasoning_effort: None,
         }
     }
@@ -135,9 +135,6 @@ struct ConsolidateAction {
 
 /// Observation consolidation prompt template.
 pub const CONSOLIDATE_PROMPT: &str = include_str!("../../prompts/consolidate_topics.txt");
-/// Consolidation temperature.
-pub const CONSOLIDATE_TEMPERATURE: f32 = 0.3;
-
 /// Format a temporal range as a pipe-separated suffix for consolidation prompts.
 /// Returns e.g. `" | occurred: 2022-01-01 to 2022-12-31"` or empty string if no range.
 fn format_temporal_suffix(tr: Option<&TemporalRange>) -> String {
@@ -298,12 +295,14 @@ impl DefaultConsolidator {
                 .replace("{facts}", &facts_text)
                 .replace("{observations}", &obs_text);
 
-            let request = CompletionRequest::builder()
+            let mut request = CompletionRequest::builder()
                 .message(Message::user(prompt))
                 .max_tokens(self.config.max_tokens)
-                .temperature(self.config.temperature)
-                .reasoning_effort_opt(self.config.reasoning_effort)
-                .build();
+                .reasoning_effort_opt(self.config.reasoning_effort);
+            if let Some(temperature) = self.config.temperature {
+                request = request.temperature(temperature);
+            }
+            let request = request.build();
 
             let resp: ConsolidateResponse = complete_structured_with_retries(
                 self.llm.as_ref(),
