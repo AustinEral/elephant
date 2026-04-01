@@ -659,29 +659,24 @@ fn resolve_config_resolve_config(overrides: CliOverrides) -> Result<RunConfig, S
         profile,
         ..RunConfig::default()
     };
-    if let Some(path) = overrides.config_path {
-        config.config_path = Some(path);
-    }
+    overrides.apply(&mut config);
     Ok(config)
 }
 
 fn validate_config_resolve_overrides(overrides: &CliOverrides) -> Result<(), String> {
-    if overrides.dataset.is_some()
-        || overrides.output.is_some()
-        || overrides.tag.is_some()
+    if overrides.output.is_some()
         || !overrides.instances.is_empty()
         || overrides.session_limit.is_some()
         || overrides.instance_limit.is_some()
         || overrides.instance_offset.is_some()
         || overrides.ingest_format.is_some()
         || overrides.consolidation.is_some()
-        || overrides.instance_jobs.is_some()
         || overrides.judge_model.is_some()
         || overrides.allow_overwrite
         || overrides.resume
     {
         return Err(
-            "`config-resolve` only accepts --profile, --config, and --secrets-env-file".into(),
+            "`config-resolve` only accepts --profile, --config, --dataset, --tag, --instance-jobs, and --secrets-env-file".into(),
         );
     }
     Ok(())
@@ -1876,6 +1871,16 @@ async fn main() {
                 eprintln!("failed to resolve benchmark config: {err}");
                 std::process::exit(1);
             });
+            let resolved = resolved
+                .with_cli_execution_overrides(
+                    config.dataset_override.as_deref(),
+                    config.tag.as_deref(),
+                    config.instance_jobs_override,
+                )
+                .unwrap_or_else(|err| {
+                    eprintln!("failed to apply execution overrides to benchmark config: {err}");
+                    std::process::exit(1);
+                });
             apply_resolved_fresh_config(&mut config, &resolved).unwrap_or_else(|err| {
                 eprintln!("failed to apply resolved benchmark config: {err}");
                 std::process::exit(1);
@@ -1901,6 +1906,16 @@ async fn main() {
                         std::process::exit(1);
                     });
             }
+            resolved = resolved
+                .with_cli_execution_overrides(
+                    config.dataset_override.as_deref(),
+                    config.tag.as_deref(),
+                    config.instance_jobs_override,
+                )
+                .unwrap_or_else(|err| {
+                    eprintln!("failed to apply execution overrides to benchmark config: {err}");
+                    std::process::exit(1);
+                });
             Some(resolved)
         }
         BenchCommand::ConfigResolve => {
@@ -1914,6 +1929,16 @@ async fn main() {
                 eprintln!("failed to resolve benchmark config: {err}");
                 std::process::exit(1);
             });
+            let resolved = resolved
+                .with_cli_execution_overrides(
+                    config.dataset_override.as_deref(),
+                    config.tag.as_deref(),
+                    config.instance_jobs_override,
+                )
+                .unwrap_or_else(|err| {
+                    eprintln!("failed to apply execution overrides to benchmark config: {err}");
+                    std::process::exit(1);
+                });
             println!("{}", resolved.to_pretty_redacted_json());
             return;
         }
@@ -2916,25 +2941,15 @@ mod tests {
         let dataset_path = PathBuf::from("data/longmemeval_s_cleaned.json");
         let output_dir = temp_path("results");
         fs::create_dir_all(&output_dir).unwrap();
-        let embedding_model_path = temp_path("embedding.onnx");
-        let reranker_model_path = temp_path("reranker.onnx");
         let overlay = format!(
             concat!(
                 "database_url = \"postgres://localhost/elephant\"\n",
                 "dataset_path = \"{}\"\n",
                 "output_dir = \"{}\"\n",
-                "instance_jobs = 4\n",
-                "llm_timeout_secs = 30\n",
-                "embedding_model_path = \"{}\"\n",
-                "embedding_max_seq_len = 512\n",
-                "reranker_model_path = \"{}\"\n",
-                "reranker_max_seq_len = 512\n",
-                "judge_timeout_secs = 30\n"
+                "instance_jobs = 4\n"
             ),
             dataset_path.display(),
             output_dir.display(),
-            embedding_model_path.display(),
-            reranker_model_path.display(),
         );
         write_temp_file("execution.toml", &overlay)
     }

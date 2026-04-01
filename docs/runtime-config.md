@@ -2,9 +2,9 @@
 
 This document is the full runtime env reference for running the Elephant server.
 
-Root [`.env.example`](/home/austin/elephant/.env.example) is intentionally short and onboarding-sized. It shows the common startup path. This file covers the rest of the runtime surface.
+Root [`.env.example`](../.env.example) is intentionally short and onboarding-sized. It shows the common startup path. This file covers the rest of the runtime surface.
 
-Benchmark configuration is separate. Benchmarks do not use the root runtime `.env`; see [bench/README.md](/home/austin/elephant/bench/README.md).
+Benchmark configuration is separate. Benchmarks do not use the root runtime `.env`; see [`bench/README.md`](../bench/README.md).
 
 ## Server
 

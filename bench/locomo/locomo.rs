@@ -1350,9 +1350,7 @@ fn resolve_config_resolve_config(overrides: CliOverrides) -> Result<RunConfig, S
         profile,
         ..RunConfig::default()
     };
-    if let Some(path) = overrides.config_path {
-        config.config_path = Some(path);
-    }
+    overrides.apply(&mut config);
     Ok(config)
 }
 
@@ -1723,23 +1721,19 @@ fn parse_usize_arg(raw: Option<&String>, flag: &str) -> Result<usize, String> {
 }
 
 fn validate_config_resolve_overrides(overrides: &CliOverrides) -> Result<(), String> {
-    if overrides.dataset.is_some()
-        || overrides.output.is_some()
-        || overrides.tag.is_some()
+    if overrides.output.is_some()
         || !overrides.conversations.is_empty()
         || overrides.session_limit.is_some()
         || overrides.question_limit.is_some()
         || overrides.ingest.is_some()
         || overrides.consolidation.is_some()
-        || overrides.conversation_jobs.is_some()
-        || overrides.question_jobs.is_some()
         || overrides.judge_model.is_some()
         || overrides.publish_run_id.is_some()
         || overrides.publish_include_debug
         || overrides.allow_overwrite
     {
         return Err(
-            "`config-resolve` only accepts --profile, --config, and --secrets-env-file".into(),
+            "`config-resolve` only accepts --profile, --config, --dataset, --tag, --conversation-jobs, --question-jobs, and --secrets-env-file".into(),
         );
     }
     Ok(())
@@ -3695,6 +3689,17 @@ async fn main() {
             secrets_env_file.as_deref(),
         ) {
             Ok(resolved) => {
+                let resolved = resolved
+                    .with_cli_execution_overrides(
+                        config.dataset_override.as_deref(),
+                        config.tag.as_deref(),
+                        config.conversation_jobs_override,
+                        config.question_jobs_override,
+                    )
+                    .unwrap_or_else(|err| {
+                        eprintln!("failed to apply execution overrides to benchmark config: {err}");
+                        std::process::exit(1);
+                    });
                 println!("{}", resolved.to_pretty_redacted_json());
                 return;
             }
@@ -3723,6 +3728,17 @@ async fn main() {
             .with_judge_model_override(config.judge_model.as_deref())
             .unwrap_or_else(|err| {
                 eprintln!("failed to apply judge override to benchmark config: {err}");
+                std::process::exit(1);
+            });
+        let resolved = resolved
+            .with_cli_execution_overrides(
+                config.dataset_override.as_deref(),
+                config.tag.as_deref(),
+                config.conversation_jobs_override,
+                config.question_jobs_override,
+            )
+            .unwrap_or_else(|err| {
+                eprintln!("failed to apply execution overrides to benchmark config: {err}");
                 std::process::exit(1);
             });
         if matches!(command, BenchCommand::Run | BenchCommand::Ingest) {

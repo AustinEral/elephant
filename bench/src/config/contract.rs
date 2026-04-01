@@ -313,6 +313,8 @@ pub(crate) struct RerankerContract {
     pub(crate) provider: RerankerProviderKind,
     #[serde(default)]
     pub(crate) model: Option<String>,
+    #[serde(default)]
+    pub(crate) api_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
