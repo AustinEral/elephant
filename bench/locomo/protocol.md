@@ -163,5 +163,8 @@ These fields are preserved as provenance but do not block merge:
 - commit
 - dirty-worktree state
 - question and conversation concurrency
+- local routing target metadata such as `runtime_target` / `judge_target`
+
+`contract_hash` is a benchmark-claim compatibility hash, not a full transport identity hash. Local routing target metadata is intentionally recorded as execution provenance outside the contract hash.
 
 If any of those differ, the merge is rejected instead of silently producing a misleading aggregate.

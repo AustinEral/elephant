@@ -1691,6 +1691,54 @@ question_jobs = 2
     }
 
     #[test]
+    fn contract_hash_ignores_local_routing_targets_but_execution_records_them() {
+        let _guard = env_lock().lock().unwrap();
+        let profile = temp_path("profile.toml");
+        let overlay_a = temp_path("overlay-a.toml");
+        let overlay_b = temp_path("overlay-b.toml");
+        let dataset = temp_path("dataset.json");
+        let secrets = temp_path("secrets.env");
+
+        write_file(&profile, &sample_profile());
+        write_file(&dataset, r#"{"sample":"ok"}"#);
+        write_file(&overlay_a, &sample_overlay(&dataset));
+        let overlay_b_raw = format!(
+            r#"
+database_url = "postgres://bench:bench@localhost/elephant"
+dataset_path = "{}"
+conversation_jobs = 1
+question_jobs = 4
+
+[runtime_target]
+base_url = "https://vertex-proxy.example.com"
+
+[judge_target]
+base_url = "https://judge-proxy.example.com"
+"#,
+            dataset.display()
+        );
+        write_file(&overlay_b, &overlay_b_raw);
+        write_file(
+            &secrets,
+            "ELEPHANT_BENCH_RUNTIME_API_KEY=runtime-secret\nELEPHANT_BENCH_JUDGE_API_KEY=judge-secret\n",
+        );
+
+        let a = resolve_locomo_bench_config(&profile, Some(&overlay_a), Some(&secrets)).unwrap();
+        let b = resolve_locomo_bench_config(&profile, Some(&overlay_b), Some(&secrets)).unwrap();
+
+        assert_eq!(a.contract_hash(), b.contract_hash());
+        assert_ne!(a.redacted_execution_json(), b.redacted_execution_json());
+        assert_eq!(
+            b.redacted_execution_json()["runtime_target"]["base_url"],
+            serde_json::Value::String("https://vertex-proxy.example.com".into())
+        );
+        assert_eq!(
+            b.redacted_execution_json()["judge_target"]["base_url"],
+            serde_json::Value::String("https://judge-proxy.example.com".into())
+        );
+    }
+
+    #[test]
     fn cli_dataset_override_updates_execution_and_contract_hash() {
         let _guard = env_lock().lock().unwrap();
         let profile = temp_path("profile.toml");
