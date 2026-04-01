@@ -3,7 +3,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::env;
 use std::fs;
-use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
@@ -31,8 +30,8 @@ use elephant::consolidation::ConsolidationProgress;
 use elephant::metrics::{LlmStage, MetricsCollector, StageUsage, with_scoped_collector};
 use elephant::types::ReflectQuery;
 use elephant_bench::{
-    BenchHarnessBuilder, BenchRuntime, BenchRuntimeMetadata, BenchRuntimePromptHashes,
-    BenchRuntimeTuning,
+    BenchJudgeConfig, BenchRuntime, BenchRuntimeMetadata, BenchRuntimePromptHashes,
+    BenchRuntimeTuning, resolve_longmemeval_bench_config,
 };
 
 // --- Judge prompts ---
@@ -42,15 +41,6 @@ const JUDGE_TEMPORAL: &str = include_str!("prompts/judge_temporal.txt");
 const JUDGE_KNOWLEDGE_UPDATE: &str = include_str!("prompts/judge_knowledge_update.txt");
 const JUDGE_PREFERENCE: &str = include_str!("prompts/judge_preference.txt");
 const JUDGE_ABSTENTION: &str = include_str!("prompts/judge_abstention.txt");
-
-fn reflect_budget_tokens() -> usize {
-    match env::var("LONGMEMEVAL_REFLECT_BUDGET_TOKENS") {
-        Ok(value) => value.parse::<usize>().unwrap_or_else(|_| {
-            panic!("LONGMEMEVAL_REFLECT_BUDGET_TOKENS must be a positive integer, got: {value}")
-        }),
-        Err(_) => 4096,
-    }
-}
 
 /// Select the appropriate judge prompt template for a given question instance.
 fn select_judge_prompt(instance: &dataset::LongMemEvalInstance) -> &'static str {
@@ -87,23 +77,6 @@ fn judge_prompt_hash() -> String {
     common::fnv1a64_hex(&combined)
 }
 
-/// Resolve the judge overrides from config + env, defaulting to OpenAI `gpt-4o` per EVAL-01.
-fn resolve_judge_overrides(config: &RunConfig) -> common::judge::JudgeOverrides {
-    if config.judge_model.is_some() {
-        return common::judge::JudgeOverrides {
-            provider: None,
-            model: config.judge_model.clone(),
-        };
-    }
-    if env::var("JUDGE_MODEL").is_ok() {
-        return common::judge::JudgeOverrides::default();
-    }
-    common::judge::JudgeOverrides {
-        provider: Some(elephant::llm::Provider::OpenAi),
-        model: Some("gpt-4o".into()),
-    }
-}
-
 // --- CLI ---
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +85,7 @@ enum BenchCommand {
     Ingest,
     Qa,
     Merge,
+    ConfigResolve,
 }
 
 impl BenchCommand {
@@ -121,6 +95,7 @@ impl BenchCommand {
             Self::Ingest => "ingest",
             Self::Qa => "qa",
             Self::Merge => "merge",
+            Self::ConfigResolve => "config-resolve",
         }
     }
 }
@@ -143,8 +118,13 @@ impl RunProfile {
         }
     }
 
+    fn contract_path(self) -> PathBuf {
+        PathBuf::from(format!("bench/longmemeval/profiles/{}.toml", self.as_str()))
+    }
+
+    #[cfg(test)]
     fn config_path(self) -> PathBuf {
-        PathBuf::from(format!("bench/longmemeval/profiles/{}.json", self.as_str()))
+        self.contract_path()
     }
 }
 
@@ -163,71 +143,11 @@ impl FromStr for RunProfile {
     }
 }
 
-// --- Config structs ---
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct FileRunConfig {
-    #[serde(default)]
-    dataset: Option<PathBuf>,
-    #[serde(default)]
-    output: Option<PathBuf>,
-    #[serde(default)]
-    tag: Option<String>,
-    #[serde(default)]
-    instances: Vec<String>,
-    #[serde(default)]
-    session_limit: Option<usize>,
-    #[serde(default)]
-    instance_limit: Option<usize>,
-    #[serde(default)]
-    ingest_format: Option<IngestFormat>,
-    #[serde(default)]
-    consolidation: Option<ConsolidationMode>,
-    #[serde(default)]
-    instance_jobs: Option<usize>,
-    #[serde(default)]
-    judge_model: Option<String>,
-}
-
-impl FileRunConfig {
-    fn apply(self, config: &mut RunConfig) {
-        if let Some(dataset) = self.dataset {
-            config.dataset = dataset;
-        }
-        if let Some(output) = self.output {
-            config.output = Some(output);
-        }
-        if let Some(tag) = self.tag {
-            config.tag = Some(tag);
-        }
-        if !self.instances.is_empty() {
-            config.instances = self.instances;
-        }
-        if let Some(limit) = self.session_limit {
-            config.session_limit = Some(limit);
-        }
-        if let Some(limit) = self.instance_limit {
-            config.instance_limit = Some(limit);
-        }
-        if let Some(format) = self.ingest_format {
-            config.ingest_format = format;
-        }
-        if let Some(consolidation) = self.consolidation {
-            config.consolidation = consolidation;
-        }
-        if let Some(jobs) = self.instance_jobs {
-            config.instance_jobs = jobs;
-        }
-        if let Some(judge_model) = self.judge_model {
-            config.judge_model = Some(judge_model);
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 struct RunConfig {
     profile: RunProfile,
     config_path: Option<PathBuf>,
+    dataset_override: Option<PathBuf>,
     dataset: PathBuf,
     output: Option<PathBuf>,
     tag: Option<String>,
@@ -237,6 +157,7 @@ struct RunConfig {
     instance_offset: usize,
     ingest_format: IngestFormat,
     consolidation: ConsolidationMode,
+    instance_jobs_override: Option<usize>,
     instance_jobs: usize,
     judge_model: Option<String>,
     allow_overwrite: bool,
@@ -248,6 +169,7 @@ impl Default for RunConfig {
         Self {
             profile: RunProfile::FullS,
             config_path: None,
+            dataset_override: None,
             dataset: PathBuf::from("data/longmemeval_s_cleaned.json"),
             output: None,
             tag: None,
@@ -257,6 +179,7 @@ impl Default for RunConfig {
             instance_offset: 0,
             ingest_format: IngestFormat::Text,
             consolidation: ConsolidationMode::End,
+            instance_jobs_override: None,
             instance_jobs: 1,
             judge_model: None,
             allow_overwrite: false,
@@ -283,6 +206,7 @@ struct CliOverrides {
     consolidation: Option<ConsolidationMode>,
     instance_jobs: Option<usize>,
     judge_model: Option<String>,
+    secrets_env_file: Option<PathBuf>,
     allow_overwrite: bool,
     resume: bool,
 }
@@ -290,7 +214,7 @@ struct CliOverrides {
 impl CliOverrides {
     fn apply(self, config: &mut RunConfig) {
         if let Some(dataset) = self.dataset {
-            config.dataset = dataset;
+            config.dataset_override = Some(dataset);
         }
         if let Some(output) = self.output {
             config.output = Some(output);
@@ -317,7 +241,7 @@ impl CliOverrides {
             config.consolidation = consolidation;
         }
         if let Some(jobs) = self.instance_jobs {
-            config.instance_jobs = jobs;
+            config.instance_jobs_override = Some(jobs);
         }
         if let Some(judge_model) = self.judge_model {
             config.judge_model = Some(judge_model);
@@ -340,6 +264,7 @@ struct ParsedCli {
     artifact_path: Option<PathBuf>,
     merge_artifacts: Vec<PathBuf>,
     overrides: CliOverrides,
+    secrets_env_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -348,6 +273,7 @@ struct BenchInvocation {
     artifact_path: Option<PathBuf>,
     merge_artifacts: Vec<PathBuf>,
     config: RunConfig,
+    secrets_env_file: Option<PathBuf>,
 }
 
 // --- Parsing ---
@@ -355,7 +281,9 @@ struct BenchInvocation {
 fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
     let mut overrides = CliOverrides::default();
     let command = match raw.get(1).map(String::as_str) {
-        None => return Err("expected subcommand: run, ingest, qa, or merge".into()),
+        None => {
+            return Err("expected subcommand: run, ingest, qa, merge, or config-resolve".into());
+        }
         Some("--help") | Some("-h") => {
             overrides.help = true;
             return Ok(ParsedCli {
@@ -363,15 +291,17 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
                 artifact_path: None,
                 merge_artifacts: Vec::new(),
                 overrides,
+                secrets_env_file: None,
             });
         }
         Some("run") => BenchCommand::Run,
         Some("ingest") => BenchCommand::Ingest,
         Some("qa") => BenchCommand::Qa,
         Some("merge") => BenchCommand::Merge,
+        Some("config-resolve") => BenchCommand::ConfigResolve,
         Some(other) => {
             return Err(format!(
-                "unknown subcommand: {other} (expected one of: run, ingest, qa, merge)"
+                "unknown subcommand: {other} (expected one of: run, ingest, qa, merge, config-resolve)"
             ));
         }
     };
@@ -389,6 +319,7 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
                     artifact_path: None,
                     merge_artifacts,
                     overrides,
+                    secrets_env_file: None,
                 });
             }
             Some(path) if path.starts_with('-') => {
@@ -491,6 +422,13 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
                         .clone(),
                 );
             }
+            "--secrets-env-file" => {
+                i += 1;
+                overrides.secrets_env_file =
+                    Some(PathBuf::from(raw.get(i).ok_or_else(|| {
+                        "--secrets-env-file requires a value".to_string()
+                    })?));
+            }
             "--force" => {
                 overrides.allow_overwrite = true;
             }
@@ -508,11 +446,13 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
     if matches!(command, BenchCommand::Merge) && merge_artifacts.len() < 2 {
         return Err("`merge` requires at least two input artifacts".into());
     }
+    let secrets_env_file = overrides.secrets_env_file.clone();
     Ok(ParsedCli {
         command,
         artifact_path,
         merge_artifacts,
         overrides,
+        secrets_env_file,
     })
 }
 
@@ -528,6 +468,7 @@ fn parse_args_from(raw: &[String]) -> Result<Option<BenchInvocation>, String> {
         artifact_path,
         merge_artifacts,
         overrides,
+        secrets_env_file,
     } = parse_cli_overrides(raw)?;
     if overrides.help {
         return Ok(None);
@@ -542,12 +483,14 @@ fn parse_args_from(raw: &[String]) -> Result<Option<BenchInvocation>, String> {
             overrides,
         )?,
         BenchCommand::Merge => resolve_merge_config(overrides)?,
+        BenchCommand::ConfigResolve => resolve_config_resolve_config(overrides)?,
     };
     Ok(Some(BenchInvocation {
         command,
         artifact_path,
         merge_artifacts,
         config,
+        secrets_env_file,
     }))
 }
 
@@ -570,32 +513,76 @@ fn parse_args() -> BenchInvocation {
 
 // --- Config resolution ---
 
-fn load_json_config(path: &Path) -> Result<FileRunConfig, String> {
-    let resolved = resolve_workspace_path(path);
-    let raw = fs::read_to_string(&resolved)
-        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-    serde_json::from_str(&raw).map_err(|e| format!("failed to parse {}: {e}", path.display()))
-}
-
 fn resolve_fresh_config(overrides: CliOverrides) -> Result<RunConfig, String> {
-    if overrides.resume && overrides.allow_overwrite {
-        return Err("--resume and --force are mutually exclusive".into());
-    }
-
+    validate_fresh_overrides(&overrides)?;
     let profile = overrides.profile.unwrap_or_default();
     let mut config = RunConfig {
         profile,
         ..RunConfig::default()
     };
-    load_json_config(&profile.config_path())?.apply(&mut config);
-
-    if let Some(path) = overrides.config_path.clone() {
-        load_json_config(&path)?.apply(&mut config);
-        config.config_path = Some(path);
-    }
-
     overrides.apply(&mut config);
     Ok(config)
+}
+
+fn apply_resolved_fresh_config(
+    config: &mut RunConfig,
+    resolved: &elephant_bench::ResolvedLongMemEvalBenchConfig,
+) -> Result<(), String> {
+    config.dataset = config
+        .dataset_override
+        .clone()
+        .unwrap_or_else(|| resolved.dataset_path().to_path_buf());
+    if config.tag.is_none() {
+        config.tag = resolved.tag().map(str::to_owned);
+    }
+    config.instances = resolved.instances().to_vec();
+    config.session_limit = resolved.session_limit();
+    config.instance_limit = resolved.instance_limit();
+    config.instance_offset = resolved.instance_offset();
+    config.ingest_format = resolved.ingest_format().parse()?;
+    config.consolidation = resolved.consolidation_mode().parse()?;
+    config.instance_jobs = config
+        .instance_jobs_override
+        .unwrap_or_else(|| resolved.instance_jobs());
+    Ok(())
+}
+
+fn validate_fresh_overrides(overrides: &CliOverrides) -> Result<(), String> {
+    if overrides.resume && overrides.allow_overwrite {
+        return Err("--resume and --force are mutually exclusive".into());
+    }
+
+    let mut unsupported = Vec::new();
+    if !overrides.instances.is_empty() {
+        unsupported.push("--instance");
+    }
+    if overrides.session_limit.is_some() {
+        unsupported.push("--session-limit");
+    }
+    if overrides.instance_limit.is_some() {
+        unsupported.push("--instance-limit");
+    }
+    if overrides.instance_offset.is_some() {
+        unsupported.push("--instance-offset");
+    }
+    if overrides.ingest_format.is_some() {
+        unsupported.push("--ingest-format");
+    }
+    if overrides.consolidation.is_some() {
+        unsupported.push("--consolidation");
+    }
+    if overrides.judge_model.is_some() {
+        unsupported.push("--judge-model");
+    }
+
+    if unsupported.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "`run`/`ingest` no longer accept {}; put benchmark-contract settings in the checked-in TOML profile",
+            unsupported.join(", ")
+        ))
+    }
 }
 
 fn resolve_qa_config(artifact_path: &Path, overrides: CliOverrides) -> Result<RunConfig, String> {
@@ -603,6 +590,12 @@ fn resolve_qa_config(artifact_path: &Path, overrides: CliOverrides) -> Result<Ru
     let artifact = load_benchmark_output(artifact_path)?;
     let mut config = run_config_from_artifact(&artifact)?;
 
+    if let Some(path) = overrides.config_path {
+        config.config_path = Some(path);
+    }
+    if let Some(dataset) = overrides.dataset {
+        config.dataset = dataset;
+    }
     if let Some(output) = overrides.output {
         config.output = Some(output);
     }
@@ -629,12 +622,6 @@ fn validate_qa_overrides(overrides: &CliOverrides) -> Result<(), String> {
     let mut unsupported = Vec::new();
     if overrides.profile.is_some() {
         unsupported.push("--profile");
-    }
-    if overrides.config_path.is_some() {
-        unsupported.push("--config");
-    }
-    if overrides.dataset.is_some() {
-        unsupported.push("--dataset");
     }
     if overrides.session_limit.is_some() {
         unsupported.push("--session-limit");
@@ -663,6 +650,36 @@ fn validate_qa_overrides(overrides: &CliOverrides) -> Result<(), String> {
             unsupported.join(", ")
         ))
     }
+}
+
+fn resolve_config_resolve_config(overrides: CliOverrides) -> Result<RunConfig, String> {
+    validate_config_resolve_overrides(&overrides)?;
+    let profile = overrides.profile.unwrap_or_default();
+    let mut config = RunConfig {
+        profile,
+        ..RunConfig::default()
+    };
+    overrides.apply(&mut config);
+    Ok(config)
+}
+
+fn validate_config_resolve_overrides(overrides: &CliOverrides) -> Result<(), String> {
+    if overrides.output.is_some()
+        || !overrides.instances.is_empty()
+        || overrides.session_limit.is_some()
+        || overrides.instance_limit.is_some()
+        || overrides.instance_offset.is_some()
+        || overrides.ingest_format.is_some()
+        || overrides.consolidation.is_some()
+        || overrides.judge_model.is_some()
+        || overrides.allow_overwrite
+        || overrides.resume
+    {
+        return Err(
+            "`config-resolve` only accepts --profile, --config, --dataset, --tag, --instance-jobs, and --secrets-env-file".into(),
+        );
+    }
+    Ok(())
 }
 
 fn validate_merge_overrides(overrides: &CliOverrides) -> Result<(), String> {
@@ -741,6 +758,9 @@ fn default_output_path(
     }
 
     match command {
+        BenchCommand::ConfigResolve => {
+            PathBuf::from("bench/longmemeval/results/local/config-resolve.json")
+        }
         BenchCommand::Qa => {
             if let Some(ref tag) = config.tag {
                 PathBuf::from(format!("bench/longmemeval/results/local/{tag}.json"))
@@ -773,6 +793,9 @@ fn print_help() {
     eprintln!("  longmemeval-bench ingest [OPTIONS]");
     eprintln!("  longmemeval-bench qa <ARTIFACT.json> [OPTIONS]");
     eprintln!("  longmemeval-bench merge <A.json> <B.json> [... --out/--tag/--force]");
+    eprintln!(
+        "  longmemeval-bench config-resolve [--profile NAME] [--config PATH] [--secrets-env-file PATH]"
+    );
     eprintln!();
     eprintln!("Subcommands:");
     eprintln!("  run                              Fresh ingest, consolidate, then score QA");
@@ -783,23 +806,39 @@ fn print_help() {
     eprintln!(
         "  merge <A> <B> [...]              Merge subset artifacts into a single result file"
     );
+    eprintln!(
+        "  config-resolve                   Validate and print the resolved benchmark contract"
+    );
     eprintln!();
     eprintln!("Options:");
     eprintln!(
         "  --profile <NAME>                Named profile for `run`/`ingest` [default: full-s]"
     );
     eprintln!("                                  Profiles: smoke, full-s, full-m");
-    eprintln!("  --config <PATH>                 JSON config file for `run`/`ingest`");
     eprintln!(
-        "  --dataset <PATH>                Dataset path for `run`/`ingest` [default: data/longmemeval_s_cleaned.json]"
+        "  --config <PATH>                 TOML execution overlay for `run`/`ingest`/`qa`/`config-resolve`"
+    );
+    eprintln!(
+        "  --dataset <PATH>                Execution-only dataset path override for `run`/`ingest`/`qa`"
     );
     eprintln!("  --tag <NAME>                    Save to results/local/<tag>.json by default");
     eprintln!("  --out <PATH>                    Output results path (overrides --tag)");
-    eprintln!("  --instance <ID>                 Run one specific question instance (repeatable)");
-    eprintln!("  --ingest-format <MODE>          text | json (`run`/`ingest` only)");
-    eprintln!("  --consolidation <MODE>          end | per-session | off (`run`/`ingest` only)");
+    eprintln!(
+        "  --instance <ID>                 `qa` only; `run`/`ingest` use the profile contract"
+    );
+    eprintln!(
+        "  --ingest-format <MODE>          Not supported for `run`/`ingest`; use a profile contract"
+    );
+    eprintln!(
+        "  --consolidation <MODE>          Not supported for `run`/`ingest`; use a profile contract"
+    );
     eprintln!("  --instance-jobs <N>             Parallel instances");
-    eprintln!("  --judge-model <MODEL>           Override judge model");
+    eprintln!(
+        "  --judge-model <MODEL>           `qa` only; `run`/`ingest` use the profile contract"
+    );
+    eprintln!(
+        "  --secrets-env-file <PATH>       Benchmark secrets env file for `run`/`ingest`/`qa`/`config-resolve`"
+    );
     eprintln!("  --force                         Allow overwriting existing output files");
     eprintln!(
         "  --resume                        Resume from existing artifact (mutually exclusive with --force)"
@@ -807,10 +846,14 @@ fn print_help() {
     eprintln!();
     eprintln!("Debug slice options:");
     eprintln!(
-        "  --session-limit <N>             Limit sessions per instance (`run`/`ingest` only)"
+        "  --session-limit <N>             Not supported for `run`/`ingest`; use a profile slice"
     );
-    eprintln!("  --instance-limit <N>            Limit number of instances (`run`/`ingest` only)");
-    eprintln!("  --instance-offset <N>           Skip first N instances (`run`/`ingest` only)");
+    eprintln!(
+        "  --instance-limit <N>            Not supported for `run`/`ingest`; use a profile slice"
+    );
+    eprintln!(
+        "  --instance-offset <N>           Not supported for `run`/`ingest`; use a profile slice"
+    );
 }
 
 // --- Artifact types ---
@@ -915,6 +958,12 @@ struct BenchmarkManifest {
     prompt_hashes: BenchmarkPromptHashes,
     #[serde(default)]
     runtime_config: BenchmarkRuntimeConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    contract_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resolved_contract: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    execution: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     source_artifact: Option<SourceArtifact>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -933,7 +982,14 @@ struct BenchmarkPromptHashes {
 struct BenchmarkRuntimeConfig {
     #[serde(flatten)]
     elephant: BenchRuntimeTuning,
+    #[serde(default)]
     reflect_budget_tokens: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    judge_temperature: Option<f32>,
+    #[serde(default)]
+    judge_max_tokens: usize,
+    #[serde(default)]
+    judge_max_attempts: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1145,6 +1201,7 @@ fn run_config_from_artifact(artifact: &BenchmarkOutput) -> Result<RunConfig, Str
     Ok(RunConfig {
         profile,
         config_path: artifact.manifest.config_path.as_ref().map(PathBuf::from),
+        dataset_override: None,
         dataset: PathBuf::from(&artifact.manifest.dataset_path),
         output: None,
         tag: artifact.tag.clone(),
@@ -1154,6 +1211,7 @@ fn run_config_from_artifact(artifact: &BenchmarkOutput) -> Result<RunConfig, Str
         instance_offset: 0,
         ingest_format,
         consolidation,
+        instance_jobs_override: None,
         instance_jobs: artifact.manifest.instance_concurrency.max(1),
         judge_model: if artifact.judge_model.is_empty() {
             None
@@ -1172,10 +1230,17 @@ fn benchmark_prompt_hashes(runtime_metadata: &BenchRuntimeMetadata) -> Benchmark
     }
 }
 
-fn benchmark_runtime_config(runtime_metadata: &BenchRuntimeMetadata) -> BenchmarkRuntimeConfig {
+fn benchmark_runtime_config(
+    runtime_metadata: &BenchRuntimeMetadata,
+    resolved: &elephant_bench::ResolvedLongMemEvalBenchConfig,
+    judge_config: &BenchJudgeConfig,
+) -> BenchmarkRuntimeConfig {
     BenchmarkRuntimeConfig {
         elephant: runtime_metadata.tuning().clone(),
-        reflect_budget_tokens: reflect_budget_tokens(),
+        reflect_budget_tokens: resolved.reflect_budget_tokens(),
+        judge_temperature: judge_config.temperature(),
+        judge_max_tokens: judge_config.max_tokens(),
+        judge_max_attempts: judge_config.max_attempts(),
     }
 }
 
@@ -1517,6 +1582,12 @@ fn ensure_merge_compatible(
         other_manifest.protocol_version,
         "protocol version"
     );
+    if let (Some(left), Some(right)) = (
+        base_manifest.contract_hash.as_deref(),
+        other_manifest.contract_hash.as_deref(),
+    ) {
+        ensure_same!(left, right, "contract hash");
+    }
     ensure_same!(base_manifest.mode, other_manifest.mode, "mode");
     ensure_same!(
         base_manifest.dataset_fingerprint,
@@ -1705,6 +1776,7 @@ fn merge_artifacts(
         bundle.output.manifest.instance_concurrency
     });
     manifest.dirty_worktree = git_dirty_worktree();
+    manifest.execution = None;
     manifest.source_artifact = None;
     manifest.source_artifacts = bundles.iter().map(merge_source_artifact).collect();
 
@@ -1771,8 +1843,6 @@ fn merge_artifacts(
 
 #[tokio::main]
 async fn main() {
-    let _ = dotenvy::dotenv();
-
     // Initialize tracing so library warn!/info! calls are visible
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -1786,7 +1856,95 @@ async fn main() {
     let command = invocation.command;
     let artifact_path = invocation.artifact_path.clone();
     let merge_inputs = invocation.merge_artifacts.clone();
-    let config = invocation.config;
+    let secrets_env_file = invocation.secrets_env_file.clone();
+    let mut config = invocation.config;
+
+    let resolved_bench = match command {
+        BenchCommand::Run | BenchCommand::Ingest => {
+            let profile_path = config.profile.contract_path();
+            let resolved = resolve_longmemeval_bench_config(
+                &profile_path,
+                config.config_path.as_deref(),
+                secrets_env_file.as_deref(),
+            )
+            .unwrap_or_else(|err| {
+                eprintln!("failed to resolve benchmark config: {err}");
+                std::process::exit(1);
+            });
+            let resolved = resolved
+                .with_cli_execution_overrides(
+                    config.dataset_override.as_deref(),
+                    config.tag.as_deref(),
+                    config.instance_jobs_override,
+                )
+                .unwrap_or_else(|err| {
+                    eprintln!("failed to apply execution overrides to benchmark config: {err}");
+                    std::process::exit(1);
+                });
+            apply_resolved_fresh_config(&mut config, &resolved).unwrap_or_else(|err| {
+                eprintln!("failed to apply resolved benchmark config: {err}");
+                std::process::exit(1);
+            });
+            Some(resolved)
+        }
+        BenchCommand::Qa => {
+            let profile_path = config.profile.contract_path();
+            let mut resolved = resolve_longmemeval_bench_config(
+                &profile_path,
+                config.config_path.as_deref(),
+                secrets_env_file.as_deref(),
+            )
+            .unwrap_or_else(|err| {
+                eprintln!("failed to resolve benchmark config: {err}");
+                std::process::exit(1);
+            });
+            if config.judge_model.is_some() {
+                resolved = resolved
+                    .with_judge_model_override(config.judge_model.as_deref())
+                    .unwrap_or_else(|err| {
+                        eprintln!("failed to override judge model: {err}");
+                        std::process::exit(1);
+                    });
+            }
+            resolved = resolved
+                .with_cli_execution_overrides(
+                    config.dataset_override.as_deref(),
+                    config.tag.as_deref(),
+                    config.instance_jobs_override,
+                )
+                .unwrap_or_else(|err| {
+                    eprintln!("failed to apply execution overrides to benchmark config: {err}");
+                    std::process::exit(1);
+                });
+            Some(resolved)
+        }
+        BenchCommand::ConfigResolve => {
+            let profile_path = config.profile.contract_path();
+            let resolved = resolve_longmemeval_bench_config(
+                &profile_path,
+                config.config_path.as_deref(),
+                secrets_env_file.as_deref(),
+            )
+            .unwrap_or_else(|err| {
+                eprintln!("failed to resolve benchmark config: {err}");
+                std::process::exit(1);
+            });
+            let resolved = resolved
+                .with_cli_execution_overrides(
+                    config.dataset_override.as_deref(),
+                    config.tag.as_deref(),
+                    config.instance_jobs_override,
+                )
+                .unwrap_or_else(|err| {
+                    eprintln!("failed to apply execution overrides to benchmark config: {err}");
+                    std::process::exit(1);
+                });
+            println!("{}", resolved.to_pretty_redacted_json());
+            return;
+        }
+        BenchCommand::Merge => None,
+    };
+
     let output_path = default_output_path(command, &config, artifact_path.as_deref());
 
     // Resume validation
@@ -1841,7 +1999,7 @@ async fn main() {
     };
 
     // Validate dataset exists early
-    if !config.dataset.exists() {
+    if !resolve_workspace_path(&config.dataset).exists() {
         eprintln!(
             "Dataset not found: {}\n\nDownload the LongMemEval dataset and place it at the expected path.\nSee: https://github.com/xiaowu0162/LongMemEval",
             config.dataset.display()
@@ -1850,7 +2008,7 @@ async fn main() {
     }
 
     // Load dataset
-    let (mut instances, dataset_fingerprint) = load_dataset(&config.dataset).unwrap_or_else(|e| {
+    let (mut instances, _dataset_fingerprint) = load_dataset(&config.dataset).unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(1);
     });
@@ -1902,18 +2060,12 @@ async fn main() {
         }
     }
 
+    let resolved_bench = resolved_bench.expect("non-merge command must resolve benchmark config");
+
     // Build runtime with MetricsCollector
     let metrics = Arc::new(MetricsCollector::new());
-    let harness = BenchHarnessBuilder::from_env()
-        .unwrap_or_else(|err| {
-            eprintln!("failed to load benchmark runtime config: {err}");
-            std::process::exit(1);
-        })
-        .metrics(metrics.clone())
-        .max_pool_connections(
-            NonZeroU32::new(std::cmp::min(config.instance_jobs as u32 * 8, 80).max(1)).unwrap(),
-        )
-        .build()
+    let harness = resolved_bench
+        .build_harness(metrics.clone())
         .await
         .unwrap_or_else(|err| {
             eprintln!("failed to build runtime: {err}");
@@ -1923,6 +2075,7 @@ async fn main() {
     let determinism_requirement = harness.determinism_requirement();
     let runtime = Arc::new(harness.into_runtime());
     let consolidation_batch_size = runtime_metadata.consolidation_batch_size();
+    let reflect_budget_tokens = resolved_bench.reflect_budget_tokens();
 
     // Print config summary
     eprintln!("longmemeval-bench {}", command.as_str());
@@ -1960,9 +2113,6 @@ async fn main() {
             "  determinism:    {}",
             common::format_determinism_requirement(requirement)
         );
-    }
-    if let Some(ref judge) = config.judge_model {
-        eprintln!("  judge_model:    {judge}");
     }
     eprintln!("  instances:      {}", instances.len());
     eprintln!();
@@ -2097,15 +2247,20 @@ async fn main() {
 
     // Capture full CLI string for manifest
     let cli_command: String = env::args().collect::<Vec<_>>().join(" ");
+    let judge_config = resolved_bench.build_judge_config().unwrap_or_else(|err| {
+        eprintln!("failed to build judge config: {err}");
+        std::process::exit(1);
+    });
+    let judge_label = common::judge::judge_label(&judge_config);
 
     // Build manifest
     let manifest = BenchmarkManifest {
-        protocol_version: "2026-03-15-longmemeval-v1".into(),
+        protocol_version: resolved_bench.protocol_version().into(),
         profile: config.profile.as_str().into(),
         mode: command.as_str().into(),
         config_path: config.config_path.as_ref().map(|p| p.display().to_string()),
         dataset_path: config.dataset.display().to_string(),
-        dataset_fingerprint: dataset_fingerprint.clone(),
+        dataset_fingerprint: resolved_bench.dataset_fingerprint().into(),
         command: cli_command,
         selected_instances: if config.instances.is_empty() {
             vec![]
@@ -2119,38 +2274,29 @@ async fn main() {
         instance_limit: config.instance_limit,
         dirty_worktree: git_dirty_worktree(),
         prompt_hashes: benchmark_prompt_hashes(&runtime_metadata),
-        runtime_config: benchmark_runtime_config(&runtime_metadata),
+        runtime_config: benchmark_runtime_config(&runtime_metadata, &resolved_bench, &judge_config),
+        contract_hash: Some(resolved_bench.contract_hash().to_string()),
+        resolved_contract: Some(resolved_bench.redacted_contract_json()),
+        execution: Some(resolved_bench.redacted_execution_json()),
         source_artifact,
         source_artifacts: Vec::new(),
     };
 
     // Build judge client (only needed for Run/Qa)
-    let judge_overrides = resolve_judge_overrides(&config);
-    let judge_config = if !matches!(command, BenchCommand::Ingest) {
-        Some(common::judge::resolve_judge_config(&judge_overrides).unwrap())
-    } else {
-        None
-    };
     let judge: Option<Arc<dyn elephant::llm::LlmClient>> =
         if !matches!(command, BenchCommand::Ingest) {
             Some(
-                common::judge::build_judge_client(
-                    metrics.clone(),
-                    judge_config.as_ref().expect("judge config"),
-                )
-                .unwrap_or_else(|err| {
-                    eprintln!("failed to build judge client: {err}");
-                    std::process::exit(1);
-                }),
+                common::judge::build_judge_client(metrics.clone(), &judge_config).unwrap_or_else(
+                    |err| {
+                        eprintln!("failed to build judge client: {err}");
+                        std::process::exit(1);
+                    },
+                ),
             )
         } else {
             None
         };
-    let jl = if !matches!(command, BenchCommand::Ingest) {
-        common::judge::judge_label(judge_config.as_ref().expect("judge config"))
-    } else {
-        String::new()
-    };
+    let jl = judge_label;
 
     // Concurrent per-instance loop
     let bench_start = Instant::now();
@@ -2514,7 +2660,7 @@ async fn main() {
                     bank_id: bank_id_str.parse().unwrap(),
                     question: instance.question.clone(),
                     context: None,
-                    budget_tokens: reflect_budget_tokens(),
+                    budget_tokens: reflect_budget_tokens,
                     temporal_context: Some(instance.question_date.clone()),
                 }),
             )
@@ -2762,19 +2908,60 @@ mod tests {
     fn run_profile_config_path() {
         assert_eq!(
             RunProfile::Smoke.config_path(),
-            PathBuf::from("bench/longmemeval/profiles/smoke.json")
+            PathBuf::from("bench/longmemeval/profiles/smoke.toml")
         );
         assert_eq!(
             RunProfile::FullS.config_path(),
-            PathBuf::from("bench/longmemeval/profiles/full-s.json")
+            PathBuf::from("bench/longmemeval/profiles/full-s.toml")
         );
         assert_eq!(
             RunProfile::FullM.config_path(),
-            PathBuf::from("bench/longmemeval/profiles/full-m.json")
+            PathBuf::from("bench/longmemeval/profiles/full-m.toml")
         );
     }
 
-    // --- parse_args_from: subcommands ---
+    fn temp_path(name: &str) -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        env::temp_dir().join(format!("longmemeval-{unique}-{name}"))
+    }
+
+    fn write_temp_file(name: &str, contents: &str) -> PathBuf {
+        let path = temp_path(name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&path, contents).unwrap();
+        path
+    }
+
+    fn write_longmemeval_overlay() -> PathBuf {
+        let dataset_path = PathBuf::from("data/longmemeval_s_cleaned.json");
+        let output_dir = temp_path("results");
+        fs::create_dir_all(&output_dir).unwrap();
+        let overlay = format!(
+            concat!(
+                "database_url = \"postgres://localhost/elephant\"\n",
+                "dataset_path = \"{}\"\n",
+                "output_dir = \"{}\"\n",
+                "instance_jobs = 4\n"
+            ),
+            dataset_path.display(),
+            output_dir.display(),
+        );
+        write_temp_file("execution.toml", &overlay)
+    }
+
+    fn write_bench_secrets() -> PathBuf {
+        write_temp_file(
+            "secrets.env",
+            "ELEPHANT_BENCH_RUNTIME_API_KEY=sk-runtime\nELEPHANT_BENCH_JUDGE_API_KEY=sk-judge\n",
+        )
+    }
+
+    // --- parse_args_from / validation ---
 
     #[test]
     fn parse_run_subcommand() {
@@ -2859,8 +3046,6 @@ mod tests {
         assert!(err.contains("unknown subcommand"));
     }
 
-    // --- parse_args_from: flags ---
-
     #[test]
     fn parse_profile_smoke() {
         let raw = vec![s("bin"), s("run"), s("--profile"), s("smoke")];
@@ -2869,40 +3054,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_profile_full_s() {
-        let raw = vec![s("bin"), s("run"), s("--profile"), s("full-s")];
-        let inv = parse_args_from(&raw).unwrap().unwrap();
-        assert_eq!(inv.config.profile, RunProfile::FullS);
-    }
-
-    #[test]
-    fn parse_profile_full_m() {
-        let raw = vec![s("bin"), s("run"), s("--profile"), s("full-m")];
-        let inv = parse_args_from(&raw).unwrap().unwrap();
-        assert_eq!(inv.config.profile, RunProfile::FullM);
-    }
-
-    #[test]
-    fn parse_instance_accumulates() {
-        let raw = vec![
-            s("bin"),
-            s("run"),
-            s("--instance"),
-            s("q1"),
-            s("--instance"),
-            s("q2"),
-        ];
-        let inv = parse_args_from(&raw).unwrap().unwrap();
-        assert_eq!(inv.config.instances, vec!["q1", "q2"]);
-    }
-
-    #[test]
     fn parse_config_path() {
-        let raw = vec![s("bin"), s("run"), s("--config"), s("my.json")];
-        // This will fail because my.json doesn't exist, but we test the CLI parsing
-        // by using parse_cli_overrides directly
+        let raw = vec![s("bin"), s("run"), s("--config"), s("my.toml")];
         let parsed = parse_cli_overrides(&raw).unwrap();
-        assert_eq!(parsed.overrides.config_path, Some(PathBuf::from("my.json")));
+        assert_eq!(parsed.overrides.config_path, Some(PathBuf::from("my.toml")));
     }
 
     #[test]
@@ -2938,71 +3093,30 @@ mod tests {
     #[test]
     fn parse_resume_and_force_mutually_exclusive() {
         let raw = vec![s("bin"), s("run"), s("--resume"), s("--force")];
-        let result = parse_args_from(&raw);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("mutually exclusive"));
+        let err = parse_args_from(&raw).unwrap_err();
+        assert!(err.contains("mutually exclusive"));
     }
 
     #[test]
-    fn force_does_not_imply_resume() {
-        let config = RunConfig {
-            allow_overwrite: true,
-            resume: false,
-            ..Default::default()
-        };
-        assert!(!should_resume_run(&config));
-    }
-
-    #[test]
-    fn explicit_resume_enables_resume() {
-        let config = RunConfig {
-            allow_overwrite: false,
-            resume: true,
-            ..Default::default()
-        };
-        assert!(should_resume_run(&config));
-    }
-
-    #[test]
-    fn parse_session_limit() {
-        let raw = vec![s("bin"), s("run"), s("--session-limit"), s("5")];
-        let inv = parse_args_from(&raw).unwrap().unwrap();
-        assert_eq!(inv.config.session_limit, Some(5));
-    }
-
-    #[test]
-    fn parse_instance_limit() {
-        let raw = vec![s("bin"), s("run"), s("--instance-limit"), s("1")];
-        let inv = parse_args_from(&raw).unwrap().unwrap();
-        assert_eq!(inv.config.instance_limit, Some(1));
-    }
-
-    #[test]
-    fn parse_ingest_format_json() {
-        let raw = vec![s("bin"), s("run"), s("--ingest-format"), s("json")];
-        let inv = parse_args_from(&raw).unwrap().unwrap();
-        assert_eq!(inv.config.ingest_format, IngestFormat::Json);
-    }
-
-    #[test]
-    fn parse_consolidation_off() {
-        let raw = vec![s("bin"), s("run"), s("--consolidation"), s("off")];
-        let inv = parse_args_from(&raw).unwrap().unwrap();
-        assert_eq!(inv.config.consolidation, ConsolidationMode::Off);
+    fn parse_contract_override_flags_are_rejected_for_run() {
+        for args in [
+            vec![s("bin"), s("run"), s("--instance"), s("q1")],
+            vec![s("bin"), s("run"), s("--session-limit"), s("5")],
+            vec![s("bin"), s("run"), s("--instance-limit"), s("1")],
+            vec![s("bin"), s("run"), s("--instance-offset"), s("2")],
+            vec![s("bin"), s("run"), s("--ingest-format"), s("json")],
+            vec![s("bin"), s("run"), s("--consolidation"), s("off")],
+            vec![s("bin"), s("run"), s("--judge-model"), s("gpt-4o")],
+        ] {
+            assert!(parse_args_from(&args).is_err());
+        }
     }
 
     #[test]
     fn parse_instance_jobs() {
         let raw = vec![s("bin"), s("run"), s("--instance-jobs"), s("4")];
         let inv = parse_args_from(&raw).unwrap().unwrap();
-        assert_eq!(inv.config.instance_jobs, 4);
-    }
-
-    #[test]
-    fn parse_judge_model() {
-        let raw = vec![s("bin"), s("run"), s("--judge-model"), s("gpt-4o")];
-        let inv = parse_args_from(&raw).unwrap().unwrap();
-        assert_eq!(inv.config.judge_model, Some("gpt-4o".to_string()));
+        assert_eq!(inv.config.instance_jobs_override, Some(4));
     }
 
     #[test]
@@ -3010,8 +3124,6 @@ mod tests {
         let raw = vec![s("bin"), s("--help")];
         assert!(parse_args_from(&raw).unwrap().is_none());
     }
-
-    // --- validate_qa_overrides ---
 
     #[test]
     fn qa_rejects_profile() {
@@ -3024,71 +3136,8 @@ mod tests {
     }
 
     #[test]
-    fn qa_rejects_config() {
+    fn qa_rejects_protocol_flags() {
         let overrides = CliOverrides {
-            config_path: Some(PathBuf::from("x.json")),
-            ..CliOverrides::default()
-        };
-        let err = validate_qa_overrides(&overrides).unwrap_err();
-        assert!(err.contains("--config"));
-    }
-
-    #[test]
-    fn qa_rejects_dataset() {
-        let overrides = CliOverrides {
-            dataset: Some(PathBuf::from("data.json")),
-            ..CliOverrides::default()
-        };
-        let err = validate_qa_overrides(&overrides).unwrap_err();
-        assert!(err.contains("--dataset"));
-    }
-
-    #[test]
-    fn qa_rejects_session_limit() {
-        let overrides = CliOverrides {
-            session_limit: Some(5),
-            ..CliOverrides::default()
-        };
-        let err = validate_qa_overrides(&overrides).unwrap_err();
-        assert!(err.contains("--session-limit"));
-    }
-
-    #[test]
-    fn qa_rejects_instance_limit() {
-        let overrides = CliOverrides {
-            instance_limit: Some(1),
-            ..CliOverrides::default()
-        };
-        let err = validate_qa_overrides(&overrides).unwrap_err();
-        assert!(err.contains("--instance-limit"));
-    }
-
-    #[test]
-    fn qa_rejects_ingest_format() {
-        let overrides = CliOverrides {
-            ingest_format: Some(IngestFormat::Json),
-            ..CliOverrides::default()
-        };
-        let err = validate_qa_overrides(&overrides).unwrap_err();
-        assert!(err.contains("--ingest-format"));
-    }
-
-    #[test]
-    fn qa_rejects_consolidation() {
-        let overrides = CliOverrides {
-            consolidation: Some(ConsolidationMode::Off),
-            ..CliOverrides::default()
-        };
-        let err = validate_qa_overrides(&overrides).unwrap_err();
-        assert!(err.contains("--consolidation"));
-    }
-
-    #[test]
-    fn qa_rejects_multiple_flags() {
-        let overrides = CliOverrides {
-            profile: Some(RunProfile::Smoke),
-            config_path: Some(PathBuf::from("x.json")),
-            dataset: Some(PathBuf::from("d.json")),
             session_limit: Some(5),
             instance_limit: Some(1),
             ingest_format: Some(IngestFormat::Json),
@@ -3096,9 +3145,6 @@ mod tests {
             ..CliOverrides::default()
         };
         let err = validate_qa_overrides(&overrides).unwrap_err();
-        assert!(err.contains("--profile"));
-        assert!(err.contains("--config"));
-        assert!(err.contains("--dataset"));
         assert!(err.contains("--session-limit"));
         assert!(err.contains("--instance-limit"));
         assert!(err.contains("--ingest-format"));
@@ -3106,157 +3152,102 @@ mod tests {
     }
 
     #[test]
-    fn qa_allows_out() {
+    fn qa_allows_execution_overrides() {
         let overrides = CliOverrides {
+            config_path: Some(PathBuf::from("overlay.toml")),
+            dataset: Some(PathBuf::from("data/custom.json")),
             output: Some(PathBuf::from("out.json")),
-            ..CliOverrides::default()
-        };
-        assert!(validate_qa_overrides(&overrides).is_ok());
-    }
-
-    #[test]
-    fn qa_allows_tag() {
-        let overrides = CliOverrides {
-            tag: Some("test".into()),
-            ..CliOverrides::default()
-        };
-        assert!(validate_qa_overrides(&overrides).is_ok());
-    }
-
-    #[test]
-    fn qa_allows_instance() {
-        let overrides = CliOverrides {
+            tag: Some("tag".into()),
             instances: vec!["q1".into()],
-            ..CliOverrides::default()
-        };
-        assert!(validate_qa_overrides(&overrides).is_ok());
-    }
-
-    #[test]
-    fn qa_allows_instance_jobs() {
-        let overrides = CliOverrides {
             instance_jobs: Some(4),
-            ..CliOverrides::default()
-        };
-        assert!(validate_qa_overrides(&overrides).is_ok());
-    }
-
-    #[test]
-    fn qa_allows_judge_model() {
-        let overrides = CliOverrides {
             judge_model: Some("gpt-4o".into()),
-            ..CliOverrides::default()
-        };
-        assert!(validate_qa_overrides(&overrides).is_ok());
-    }
-
-    #[test]
-    fn qa_allows_force() {
-        let overrides = CliOverrides {
             allow_overwrite: true,
             ..CliOverrides::default()
         };
         assert!(validate_qa_overrides(&overrides).is_ok());
     }
 
-    // --- resolve_fresh_config ---
-
     #[test]
-    fn resolve_fresh_config_smoke_profile() {
-        let overrides = CliOverrides {
+    fn resolve_fresh_config_keeps_profile_and_overrides_only() {
+        let config = resolve_fresh_config(CliOverrides {
             profile: Some(RunProfile::Smoke),
+            instance_jobs: Some(8),
             ..CliOverrides::default()
-        };
-        let config = resolve_fresh_config(overrides).unwrap();
+        })
+        .unwrap();
         assert_eq!(config.profile, RunProfile::Smoke);
         assert_eq!(
             config.dataset,
             PathBuf::from("data/longmemeval_s_cleaned.json")
         );
-        assert_eq!(config.instance_limit, Some(1));
-        assert_eq!(config.ingest_format, IngestFormat::Text);
-        assert_eq!(config.consolidation, ConsolidationMode::End);
-        assert_eq!(config.instance_jobs, 1);
-    }
-
-    #[test]
-    fn resolve_fresh_config_with_config_overlay() {
-        let dir = env::temp_dir().join(format!("longmemeval-config-test-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let config_path = dir.join("overlay.json");
-        fs::write(
-            &config_path,
-            r#"{"instance_jobs": 4, "tag": "overlay-tag"}"#,
-        )
-        .unwrap();
-
-        let overrides = CliOverrides {
-            profile: Some(RunProfile::Smoke),
-            config_path: Some(config_path),
-            ..CliOverrides::default()
-        };
-        let config = resolve_fresh_config(overrides).unwrap();
-        assert_eq!(config.instance_jobs, 4);
-        assert_eq!(config.tag, Some("overlay-tag".to_string()));
-        // smoke profile's instance_limit should still apply (not overridden by overlay)
-        assert_eq!(config.instance_limit, Some(1));
-
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn resolve_fresh_config_cli_overrides_config() {
-        let dir = env::temp_dir().join(format!(
-            "longmemeval-cli-override-test-{}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&dir).unwrap();
-        let config_path = dir.join("overlay.json");
-        fs::write(&config_path, r#"{"instance_jobs": 4}"#).unwrap();
-
-        let overrides = CliOverrides {
-            profile: Some(RunProfile::Smoke),
-            config_path: Some(config_path),
-            instance_jobs: Some(8),
-            ..CliOverrides::default()
-        };
-        let config = resolve_fresh_config(overrides).unwrap();
-        // CLI override (8) should beat config file (4) and profile (1)
-        assert_eq!(config.instance_jobs, 8);
-
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn resolve_fresh_config_full_s_defaults() {
-        let overrides = CliOverrides {
-            profile: Some(RunProfile::FullS),
-            ..CliOverrides::default()
-        };
-        let config = resolve_fresh_config(overrides).unwrap();
-        assert_eq!(config.profile, RunProfile::FullS);
-        assert_eq!(
-            config.dataset,
-            PathBuf::from("data/longmemeval_s_cleaned.json")
-        );
+        assert_eq!(config.instance_jobs_override, Some(8));
         assert_eq!(config.instance_limit, None);
     }
 
     #[test]
-    fn resolve_fresh_config_full_m_defaults() {
-        let overrides = CliOverrides {
-            profile: Some(RunProfile::FullM),
+    fn apply_resolved_fresh_config_uses_contract_and_execution_defaults() {
+        let overlay_path = write_longmemeval_overlay();
+        let secrets_path = write_bench_secrets();
+        let resolved = resolve_longmemeval_bench_config(
+            &RunProfile::Smoke.contract_path(),
+            Some(&overlay_path),
+            Some(&secrets_path),
+        )
+        .unwrap();
+        let mut config = resolve_fresh_config(CliOverrides {
+            profile: Some(RunProfile::Smoke),
+            config_path: Some(overlay_path.clone()),
             ..CliOverrides::default()
-        };
-        let config = resolve_fresh_config(overrides).unwrap();
-        assert_eq!(config.profile, RunProfile::FullM);
-        assert_eq!(
-            config.dataset,
-            PathBuf::from("data/longmemeval_m_cleaned.json")
-        );
+        })
+        .unwrap();
+
+        apply_resolved_fresh_config(&mut config, &resolved).unwrap();
+
+        assert_eq!(config.dataset, resolved.dataset_path());
+        assert_eq!(config.instance_limit, Some(1));
+        assert_eq!(config.ingest_format, IngestFormat::Text);
+        assert_eq!(config.consolidation, ConsolidationMode::End);
+        assert_eq!(config.instance_jobs, 4);
+        assert_eq!(config.config_path, Some(overlay_path));
     }
 
-    // --- default_output_path ---
+    #[test]
+    fn apply_resolved_fresh_config_cli_jobs_override_beats_execution_overlay() {
+        let overlay_path = write_longmemeval_overlay();
+        let secrets_path = write_bench_secrets();
+        let resolved = resolve_longmemeval_bench_config(
+            &RunProfile::Smoke.contract_path(),
+            Some(&overlay_path),
+            Some(&secrets_path),
+        )
+        .unwrap();
+        let mut config = resolve_fresh_config(CliOverrides {
+            profile: Some(RunProfile::Smoke),
+            config_path: Some(overlay_path),
+            instance_jobs: Some(8),
+            ..CliOverrides::default()
+        })
+        .unwrap();
+
+        apply_resolved_fresh_config(&mut config, &resolved).unwrap();
+        assert_eq!(config.instance_jobs, 8);
+    }
+
+    #[test]
+    fn resolve_longmemeval_smoke_profile_contract() {
+        let overlay_path = write_longmemeval_overlay();
+        let secrets_path = write_bench_secrets();
+        let resolved = resolve_longmemeval_bench_config(
+            &RunProfile::Smoke.contract_path(),
+            Some(&overlay_path),
+            Some(&secrets_path),
+        )
+        .unwrap();
+        assert_eq!(resolved.instance_limit(), Some(1));
+        assert_eq!(resolved.ingest_format(), "text");
+        assert_eq!(resolved.consolidation_mode(), "end");
+        assert_eq!(resolved.instance_jobs(), 4);
+    }
 
     #[test]
     fn default_output_run_smoke_no_tag() {
@@ -3293,19 +3284,6 @@ mod tests {
     }
 
     #[test]
-    fn default_output_qa_with_tag() {
-        let config = RunConfig {
-            tag: Some("qa-test".into()),
-            ..RunConfig::default()
-        };
-        let artifact = PathBuf::from("results/prev.json");
-        assert_eq!(
-            default_output_path(BenchCommand::Qa, &config, Some(&artifact)),
-            PathBuf::from("bench/longmemeval/results/local/qa-test.json")
-        );
-    }
-
-    #[test]
     fn default_output_with_explicit_out() {
         let config = RunConfig {
             output: Some(PathBuf::from("custom/out.json")),
@@ -3318,47 +3296,6 @@ mod tests {
     }
 
     #[test]
-    fn default_output_run_full_s_no_tag() {
-        let config = RunConfig {
-            profile: RunProfile::FullS,
-            ..RunConfig::default()
-        };
-        assert_eq!(
-            default_output_path(BenchCommand::Run, &config, None),
-            PathBuf::from("bench/longmemeval/results/local/full-s-run.json")
-        );
-    }
-
-    // --- FileRunConfig.apply ---
-
-    #[test]
-    fn file_run_config_apply_overrides_set_fields() {
-        let file_config = FileRunConfig {
-            dataset: Some(PathBuf::from("custom.json")),
-            instance_jobs: Some(4),
-            tag: Some("mytag".into()),
-            ..FileRunConfig::default()
-        };
-        let mut config = RunConfig::default();
-        file_config.apply(&mut config);
-        assert_eq!(config.dataset, PathBuf::from("custom.json"));
-        assert_eq!(config.instance_jobs, 4);
-        assert_eq!(config.tag, Some("mytag".to_string()));
-    }
-
-    #[test]
-    fn file_run_config_apply_preserves_unset_fields() {
-        let file_config = FileRunConfig::default();
-        let mut config = RunConfig::default();
-        let original_dataset = config.dataset.clone();
-        file_config.apply(&mut config);
-        assert_eq!(config.dataset, original_dataset);
-        assert_eq!(config.instance_jobs, 1);
-    }
-
-    // --- CliOverrides.apply ---
-
-    #[test]
     fn cli_overrides_apply_overrides_set_fields() {
         let overrides = CliOverrides {
             tag: Some("cli-tag".into()),
@@ -3369,7 +3306,7 @@ mod tests {
         let mut config = RunConfig::default();
         overrides.apply(&mut config);
         assert_eq!(config.tag, Some("cli-tag".to_string()));
-        assert_eq!(config.instance_jobs, 2);
+        assert_eq!(config.instance_jobs_override, Some(2));
         assert!(config.allow_overwrite);
     }
 
@@ -3382,40 +3319,6 @@ mod tests {
         };
         overrides.apply(&mut config);
         assert_eq!(config.tag, Some("existing".to_string()));
-    }
-
-    // --- Profile JSON loading ---
-
-    #[test]
-    fn smoke_json_loads() {
-        let config = load_json_config(&RunProfile::Smoke.config_path()).unwrap();
-        assert_eq!(
-            config.dataset,
-            Some(PathBuf::from("data/longmemeval_s_cleaned.json"))
-        );
-        assert_eq!(config.instance_limit, Some(1));
-        assert_eq!(config.consolidation, Some(ConsolidationMode::End));
-    }
-
-    #[test]
-    fn full_s_json_loads() {
-        let config = load_json_config(&RunProfile::FullS.config_path()).unwrap();
-        assert_eq!(
-            config.dataset,
-            Some(PathBuf::from("data/longmemeval_s_cleaned.json"))
-        );
-        assert_eq!(config.instance_limit, None);
-        assert_eq!(config.consolidation, Some(ConsolidationMode::End));
-    }
-
-    #[test]
-    fn full_m_json_loads() {
-        let config = load_json_config(&RunProfile::FullM.config_path()).unwrap();
-        assert_eq!(
-            config.dataset,
-            Some(PathBuf::from("data/longmemeval_m_cleaned.json"))
-        );
-        assert_eq!(config.consolidation, Some(ConsolidationMode::End));
     }
 
     // --- IngestFormat / ConsolidationMode FromStr ---
@@ -3536,6 +3439,9 @@ mod tests {
             dirty_worktree: Some(false),
             prompt_hashes: BenchmarkPromptHashes::default(),
             runtime_config: BenchmarkRuntimeConfig::default(),
+            contract_hash: Some("contract123".into()),
+            resolved_contract: Some(serde_json::json!({"benchmark":"longmemeval"})),
+            execution: Some(serde_json::json!({"instance_jobs":1})),
             source_artifact: None,
             source_artifacts: Vec::new(),
         };
@@ -3544,6 +3450,7 @@ mod tests {
         assert_eq!(back.protocol_version, "2026-03-15-longmemeval-v1");
         assert_eq!(back.profile, "smoke");
         assert_eq!(back.session_limit, Some(5));
+        assert_eq!(back.contract_hash, Some("contract123".into()));
     }
 
     #[test]
@@ -4026,53 +3933,21 @@ mod tests {
     }
 
     #[test]
-    fn resolve_judge_overrides_with_config_override() {
-        let config = RunConfig {
-            judge_model: Some("claude-3".into()),
-            ..Default::default()
-        };
+    fn longmemeval_judge_override_changes_contract_hash() {
+        let overlay_path = write_longmemeval_overlay();
+        let secrets_path = write_bench_secrets();
+        let resolved = resolve_longmemeval_bench_config(
+            &RunProfile::Smoke.contract_path(),
+            Some(&overlay_path),
+            Some(&secrets_path),
+        )
+        .unwrap();
+        let overridden = resolved.with_judge_model_override(Some("gpt-4.1")).unwrap();
+        assert_ne!(resolved.contract_hash(), overridden.contract_hash());
         assert_eq!(
-            resolve_judge_overrides(&config),
-            common::judge::JudgeOverrides {
-                provider: None,
-                model: Some("claude-3".into()),
-            }
+            overridden.redacted_contract_json()["judge"]["model"],
+            serde_json::json!("gpt-4.1")
         );
-    }
-
-    #[test]
-    fn resolve_judge_overrides_default_to_openai_gpt4o() {
-        // Ensure JUDGE_MODEL is not set for this test
-        let _guard = env_guard("JUDGE_MODEL");
-        let config = RunConfig::default();
-        assert_eq!(
-            resolve_judge_overrides(&config),
-            common::judge::JudgeOverrides {
-                provider: Some(elephant::llm::Provider::OpenAi),
-                model: Some("gpt-4o".into()),
-            }
-        );
-    }
-
-    /// RAII guard that removes an env var for the test scope and restores it after.
-    struct EnvGuard {
-        key: &'static str,
-        original: Option<String>,
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            match &self.original {
-                Some(val) => unsafe { env::set_var(self.key, val) },
-                None => unsafe { env::remove_var(self.key) },
-            }
-        }
-    }
-
-    fn env_guard(key: &'static str) -> EnvGuard {
-        let original = env::var(key).ok();
-        unsafe { env::remove_var(key) };
-        EnvGuard { key, original }
     }
 
     // --- compute_accuracy ---
@@ -4299,6 +4174,9 @@ mod tests {
                 dirty_worktree: Some(false),
                 prompt_hashes: BenchmarkPromptHashes::default(),
                 runtime_config: BenchmarkRuntimeConfig::default(),
+                contract_hash: Some("contract-test".into()),
+                resolved_contract: Some(serde_json::json!({"benchmark":"longmemeval"})),
+                execution: Some(serde_json::json!({"instance_jobs":1})),
                 source_artifact: None,
                 source_artifacts: Vec::new(),
             },
@@ -4368,6 +4246,15 @@ mod tests {
         assert_eq!(merged.total_questions, 3);
         assert_eq!(merged.manifest.mode, "merge");
         assert_eq!(merged.manifest.source_artifacts.len(), 2);
+        assert_eq!(
+            merged.manifest.contract_hash.as_deref(),
+            Some("contract-test")
+        );
+        assert_eq!(
+            merged.manifest.resolved_contract,
+            Some(serde_json::json!({"benchmark":"longmemeval"}))
+        );
+        assert_eq!(merged.manifest.execution, None);
         assert_eq!(merged.tag, Some("merged".into()));
 
         // Accuracy: 2 correct out of 3
@@ -4389,6 +4276,34 @@ mod tests {
         // Banks merged
         assert_eq!(merged.banks.len(), 3);
         assert_eq!(merged.banks.get("q1").unwrap(), "bank-q1");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn merge_rejects_mismatched_contract_hashes() {
+        let dir =
+            env::temp_dir().join(format!("longmemeval-merge-contract-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+
+        let q1 = make_test_qr("q1", true);
+        let q2 = make_test_qr("q2", true);
+        let d1 = make_test_debug("q1");
+        let d2 = make_test_debug("q2");
+
+        let art_a = make_test_artifact(&dir, "a", &[q1], &[d1]);
+        let art_b = make_test_artifact(&dir, "b", &[q2], &[d2]);
+
+        let mut second = load_benchmark_output(&art_b).unwrap();
+        second.manifest.contract_hash = Some("different-contract".into());
+        fs::write(&art_b, serde_json::to_vec_pretty(&second).unwrap()).unwrap();
+
+        let out = dir.join("merged.json");
+        let err = merge_artifacts(&[art_a, art_b], &out, None).unwrap_err();
+        assert!(
+            err.contains("mismatched contract hash"),
+            "expected contract hash mismatch, got: {err}"
+        );
 
         fs::remove_dir_all(&dir).ok();
     }

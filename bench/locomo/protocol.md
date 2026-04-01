@@ -15,7 +15,7 @@ Single source of truth for all benchmark methodology. All other benchmark docs r
 
 The harness excludes Category 5 by `qa.category`, not by whether `answer` is present. This matters because the upstream `locomo10.json` contains two Category 5 rows with populated `answer` values. Result files that include `unanswerable` are not benchmark-valid leaderboard artifacts.
 
-The benchmark runs Elephant in process against the shared runtime builder. It meters stage-level LLM usage directly and defaults to session-level ingest because that is closer to Elephant's intended retention shape and closer to Hindsight-style document/session retention. `--ingest turn` remains available as an explicit provenance-focused ablation when turn-level evidence tracing matters. The CLI is profile-driven and intentionally strict: serious runs start from the `run` subcommand with `--profile full` or a checked-in `--config`. If banks have already been built, `qa <artifact>` is the supported way to skip ingest and consolidation while preserving the original bank ids.
+The benchmark runs Elephant in process against the shared runtime builder. It meters stage-level LLM usage directly and defaults to session-level ingest because that is closer to Elephant's intended retention shape and closer to Hindsight-style document/session retention. The CLI is profile-driven and intentionally strict: serious runs start from the `run` subcommand with a checked-in profile in `bench/locomo/profiles/*.toml`, an optional execution-only TOML overlay, and benchmark secrets. If banks have already been built, `qa <artifact>` is the supported way to skip ingest and consolidation while preserving the original bank ids.
 
 During QA, reflect is anchored to the latest valid session timestamp in the conversation so relative-time questions resolve against the conversation timeline rather than the machine clock.
 
@@ -27,30 +27,30 @@ Per the [LoCoMo evaluation protocol](https://arxiv.org/abs/2402.17753), images a
 
 | Component | Model | Notes |
 |---|---|---|
-| Extraction (retain) | Configurable via `LLM_MODEL` | Structured fact extraction from conversations |
+| Extraction (retain) | Configured in benchmark profile | Structured fact extraction from conversations |
 | Entity resolution | Same as extraction model | LLM verification of embedding-matched entities |
 | Consolidation | Same as extraction model | Topic-scoped observation synthesis |
-| Reflection (reflect) | Same as extraction model | Agentic retrieval + synthesis loop |
+| Reflection (reflect) | Configured in benchmark profile | Agentic retrieval + synthesis loop |
 | Embeddings | bge-small-en-v1.5 | Local ONNX, 384 dimensions |
 | Reranker | ms-marco-MiniLM-L-6-v2 | Local ONNX cross-encoder |
 
 ## Retrieval Config
 
-| Parameter | Value | Env var |
+| Parameter | Value | Contract source |
 |---|---|---|
 | Retrieval channels | 4 (semantic, keyword, graph, temporal) | — |
 | Fusion | Reciprocal Rank Fusion (RRF) | — |
-| Retriever limit | 20 per channel | `RETRIEVER_LIMIT` |
-| Max facts | 50 | `MAX_FACTS` |
-| Reranker max seq length | 512 tokens | `RERANKER_MAX_SEQ_LEN` |
+| Retriever limit | 20 per channel | `runtime.tuning.retrieval.retriever_limit` |
+| Max facts | 50 | `runtime.tuning.retrieval.max_facts` |
+| Reranker max seq length | 512 tokens | execution overlay / local default |
 
 ## Memory Config
 
-| Parameter | Value | Env var |
+| Parameter | Value | Contract source |
 |---|---|---|
-| Consolidation batch size | 8 | `CONSOLIDATION_BATCH_SIZE` |
-| Consolidation recall budget | 512 tokens | `CONSOLIDATION_RECALL_BUDGET` |
-| Consolidation timing | After all sessions ingested | `--consolidation per-session` to change |
+| Consolidation batch size | 8 | `runtime.tuning.consolidation.batch_size` |
+| Consolidation recall budget | 512 tokens | `runtime.tuning.consolidation.recall_budget` |
+| Consolidation timing | After all sessions ingested | profile `consolidation` |
 | Temporal annotations | Yes — facts include `| occurred: date` suffix | — |
 
 ## Reflect Agent Config
@@ -68,7 +68,7 @@ Per the [LoCoMo evaluation protocol](https://arxiv.org/abs/2402.17753), images a
 | Primary metric | LLM-as-judge binary accuracy (CORRECT/WRONG) |
 | Secondary metric | Token F1 (reference only, not used for ranking) |
 | Retrieval metric | Evidence recall against LoCoMo `evidence` turn refs |
-| Judge model | Configurable via `JUDGE_MODEL` (defaults to `LLM_MODEL`) |
+| Judge model | Configured in benchmark profile |
 | Judge temperature | 0 |
 | Judge prompt | [`judge_answer.txt`](judge_answer.txt) — binary correctness with tolerance for format differences |
 
@@ -102,21 +102,22 @@ Before publishing a headline benchmark number, the run must include:
 
 ```bash
 # Full benchmark (all 10 conversations, profile defaults)
-cargo run --release --bin locomo-bench -- run --profile full --tag full
-
-# Single conversation gate
-cargo run --release --bin locomo-bench -- run --profile full --conversation conv-26 --tag conv26
+cargo run --release --bin locomo-bench -- \
+  run --profile full --secrets-env-file bench/secrets.env --tag full
 
 # Smoke run
-cargo run --release --bin locomo-bench -- run --profile smoke --tag smoke
+cargo run --release --bin locomo-bench -- \
+  run --profile smoke --secrets-env-file bench/secrets.env --tag smoke
 
 # Ingest only
-cargo run --release --bin locomo-bench -- ingest --profile full --tag ingest
+cargo run --release --bin locomo-bench -- \
+  ingest --profile full --secrets-env-file bench/secrets.env --tag ingest
 
 # QA only from an ingest artifact
 cargo run --release --bin locomo-bench -- \
   qa \
   bench/locomo/results/local/ingest.json \
+  --secrets-env-file bench/secrets.env \
   --out bench/locomo/results/local/ingest-qa.json
 
 # Merge compatible subset runs into one canonical artifact
@@ -162,5 +163,8 @@ These fields are preserved as provenance but do not block merge:
 - commit
 - dirty-worktree state
 - question and conversation concurrency
+- local routing target metadata such as `runtime_target` / `judge_target`
+
+`contract_hash` is a benchmark-claim compatibility hash, not a full transport identity hash. Local routing target metadata is intentionally recorded as execution provenance outside the contract hash.
 
 If any of those differ, the merge is rejected instead of silently producing a misleading aggregate.

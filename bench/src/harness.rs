@@ -14,7 +14,7 @@ use elephant::{
     RuntimeConfig, RuntimePromptHashes, RuntimeTuning,
 };
 
-use crate::config::BenchConfig;
+use crate::env::BenchConfig;
 
 /// Serialized prompt-hash snapshot used by benchmark artifacts.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -306,13 +306,6 @@ pub struct BenchHarnessBuilder {
 }
 
 impl BenchHarnessBuilder {
-    /// Load benchmark startup config from the process environment.
-    pub fn from_env() -> Result<Self> {
-        let runtime_config = RuntimeConfig::from_env()?;
-        let bench_config = BenchConfig::from_env()?;
-        Ok(Self::new(runtime_config, bench_config))
-    }
-
     /// Create a builder from validated runtime and benchmark config.
     pub(crate) fn new(runtime_config: RuntimeConfig, bench_config: BenchConfig) -> Self {
         let determinism_requirement = bench_config.determinism_requirement();

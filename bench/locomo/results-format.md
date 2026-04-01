@@ -176,6 +176,9 @@ If merged source runs differed only in provenance-style fields, the merged manif
 
 - `profile: "mixed"` when source profile labels differed
 - `question_concurrency: 0` or `conversation_concurrency: 0` when source runs used different concurrency
+- local routing target metadata such as `runtime_target` / `judge_target`
+
+`contract_hash` identifies the benchmark claim/config contract. It intentionally does not encode local routing target metadata, which is recorded separately as execution provenance.
 
 ## Question sidecar record
 

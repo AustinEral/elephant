@@ -1,0 +1,61 @@
+schema_version = 1
+benchmark = "locomo"
+protocol_version = "2026-03-31-locomo-contract-v1"
+ingest = "session"
+consolidation = "end"
+
+[dataset]
+identifier = "locomo10"
+expected_fingerprint = "8dfd1872bfb58ab8"
+
+[slice]
+category_filter = [1, 2, 3, 4]
+conversations = ["conv-26"]
+session_limit = 1
+question_limit = 5
+
+[runtime.llm]
+provider = "openai"
+retain_model = "gpt-5.4-mini"
+reflect_model = "gpt-5.4-mini"
+
+[runtime.embedding]
+provider = "local"
+model = "bge-small-en-v1.5"
+
+[runtime.reranker]
+provider = "local"
+model = "ms-marco-MiniLM-L-6-v2"
+
+[runtime.tuning]
+reflect_budget_tokens = 4096
+dedup_threshold = 0.95
+
+[runtime.tuning.extraction]
+structured_output_max_attempts = 3
+
+[runtime.tuning.graph]
+semantic_threshold = 0.7
+temporal_max_days = 30
+enable_causal = true
+
+[runtime.tuning.consolidation]
+batch_size = 8
+max_tokens = 4096
+recall_budget = 512
+structured_output_max_attempts = 3
+
+[runtime.tuning.reflect]
+max_iterations = 8
+source_limit = 3
+enable_source_lookup = true
+
+[runtime.tuning.retrieval]
+retriever_limit = 40
+max_facts = 50
+
+[judge]
+provider = "openai"
+model = "gpt-5.4"
+max_tokens = 200
+max_attempts = 3

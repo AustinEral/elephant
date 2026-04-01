@@ -21,18 +21,6 @@ pub const JUDGE_TEMPERATURE: Option<f32> = None;
 pub const JUDGE_MAX_TOKENS: usize = 200;
 pub const JUDGE_MAX_ATTEMPTS: usize = 3;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct JudgeOverrides {
-    pub provider: Option<llm::Provider>,
-    pub model: Option<String>,
-}
-
-pub fn resolve_judge_config(
-    overrides: &JudgeOverrides,
-) -> Result<BenchJudgeConfig, elephant::ConfigError> {
-    BenchJudgeConfig::from_env(overrides.provider, overrides.model.as_deref())
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum JudgeError {
     #[error("judge error: {0}")]
@@ -62,15 +50,47 @@ pub async fn llm_judge(
     judge: &dyn LlmClient,
     rendered_prompt: &str,
 ) -> Result<(bool, String), JudgeError> {
+    llm_judge_with_policy(
+        judge,
+        JUDGE_TEMPERATURE,
+        JUDGE_MAX_TOKENS,
+        JUDGE_MAX_ATTEMPTS,
+        rendered_prompt,
+    )
+    .await
+}
+
+pub async fn llm_judge_with_config(
+    judge: &dyn LlmClient,
+    judge_config: &BenchJudgeConfig,
+    rendered_prompt: &str,
+) -> Result<(bool, String), JudgeError> {
+    llm_judge_with_policy(
+        judge,
+        judge_config.temperature(),
+        judge_config.max_tokens(),
+        judge_config.max_attempts(),
+        rendered_prompt,
+    )
+    .await
+}
+
+async fn llm_judge_with_policy(
+    judge: &dyn LlmClient,
+    temperature: Option<f32>,
+    max_tokens: usize,
+    max_attempts: usize,
+    rendered_prompt: &str,
+) -> Result<(bool, String), JudgeError> {
     let mut request = CompletionRequest::builder()
         .message(Message::user(rendered_prompt))
-        .max_tokens(JUDGE_MAX_TOKENS);
-    if let Some(temperature) = JUDGE_TEMPERATURE {
+        .max_tokens(max_tokens);
+    if let Some(temperature) = temperature {
         request = request.temperature(temperature);
     }
     let request = request.build();
 
-    for attempt in 0..JUDGE_MAX_ATTEMPTS {
+    for attempt in 0..max_attempts {
         let result = judge.complete(request.clone()).await;
         match result {
             Ok(resp) => {
@@ -84,7 +104,7 @@ pub async fn llm_judge(
                     let correct = parsed.label.eq_ignore_ascii_case("CORRECT");
                     return Ok((correct, parsed.reasoning));
                 }
-                if attempt + 1 == JUDGE_MAX_ATTEMPTS {
+                if attempt + 1 == max_attempts {
                     return Err(JudgeError::Parse(format!(
                         "could not parse judge response: {}",
                         &resp.content[..resp.content.len().min(120)]
@@ -100,10 +120,6 @@ pub async fn llm_judge(
 }
 
 /// Build an LLM client configured for judge duty.
-///
-/// Uses env var fallback chain: JUDGE_PROVIDER -> LLM_PROVIDER, JUDGE_API_KEY -> LLM_API_KEY,
-/// JUDGE_MODEL -> LLM_MODEL, and JUDGE_BASE_URL -> LLM_BASE_URL. `overrides` can replace
-/// the resolved provider and/or model.
 pub fn build_judge_client(
     metrics: Arc<MetricsCollector>,
     judge_config: &BenchJudgeConfig,

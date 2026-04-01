@@ -20,9 +20,32 @@ mkdir -p data
 cargo build --release --bin longmemeval-bench --bin longmemeval-view
 ```
 
-Same environment variables as Elephant itself (`DATABASE_URL`, `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL`, embedding/reranker vars). Optional reasoning-effort envs are also supported: `RETAIN_EXTRACT_REASONING_EFFORT`, `RETAIN_RESOLVE_REASONING_EFFORT`, `RETAIN_GRAPH_REASONING_EFFORT`, `REFLECT_REASONING_EFFORT`, `CONSOLIDATE_REASONING_EFFORT`, and `OPINION_MERGE_REASONING_EFFORT`. Optional prompt-cache envs are also supported: `LLM_PROMPT_CACHE_ENABLED`, `OPENAI_PROMPT_CACHE_KEY`, `OPENAI_PROMPT_CACHE_RETENTION`, and `ANTHROPIC_PROMPT_CACHE_TTL`; Gemini reports implicit cache hits automatically when available. Judge provider/auth/base URL follow `JUDGE_PROVIDER -> LLM_PROVIDER`, `JUDGE_API_KEY -> LLM_API_KEY`, and `JUDGE_BASE_URL -> LLM_BASE_URL`; if you do not set a judge model explicitly, LongMemEval defaults the judge to `openai/gpt-4o`. You can override that with `--judge-model` or `JUDGE_MODEL`.
+LongMemEval does not read the root runtime `.env`.
 
-For OpenAI `gpt-5.4-mini`, `REFLECT_REASONING_EFFORT=high` is a useful non-default tuning when you want stronger reflect tool use, at the cost of higher latency and token usage.
+The benchmark input surface is:
+
+- checked-in contract profile TOML in `bench/longmemeval/profiles/`
+- optional execution overlay TOML passed via `--config`
+- benchmark secrets from `bench/secrets.example.env` or process env
+
+Set up benchmark secrets separately:
+
+```bash
+cp bench/secrets.example.env bench/secrets.env
+```
+
+Fill in the keys you need:
+
+- `ELEPHANT_BENCH_RUNTIME_API_KEY`
+- `ELEPHANT_BENCH_JUDGE_API_KEY`
+- `ELEPHANT_BENCH_EMBEDDING_API_KEY` only for API-backed embeddings
+- `ELEPHANT_BENCH_RERANKER_API_KEY` only for API-backed rerankers
+
+The standard local execution defaults are:
+
+- benchmark Postgres: `postgres://postgres:postgres@localhost:5433/elephant_bench`
+- local embeddings: `models/bge-small-en-v1.5`
+- local reranker: `models/ms-marco-MiniLM-L-6-v2`
 
 Use an isolated Postgres instance for benchmark runs (see [LoCoMo README](../locomo/README.md#setup) for Docker instructions).
 
@@ -30,33 +53,33 @@ Use an isolated Postgres instance for benchmark runs (see [LoCoMo README](../loc
 
 ```bash
 # Smoke test (1 instance)
-cargo run --release --bin longmemeval-bench -- run --profile smoke --tag quick
+cargo run --release --bin longmemeval-bench -- \
+  run --profile smoke --secrets-env-file bench/secrets.env --tag quick
 
 # Full S benchmark (500 questions)
-cargo run --release --bin longmemeval-bench -- run --profile full-s --tag baseline
+cargo run --release --bin longmemeval-bench -- \
+  run --profile full-s --secrets-env-file bench/secrets.env --tag baseline
 
 # Full M benchmark (500 questions, ~500 sessions each)
-cargo run --release --bin longmemeval-bench -- run --profile full-m --tag baseline-m
+cargo run --release --bin longmemeval-bench -- \
+  run --profile full-m --secrets-env-file bench/secrets.env --tag baseline-m
 
 # Ingest only (create banks, skip QA)
-cargo run --release --bin longmemeval-bench -- ingest --profile full-s --tag ingest
+cargo run --release --bin longmemeval-bench -- \
+  ingest --profile full-s --secrets-env-file bench/secrets.env --tag ingest
 
 # QA only (reuse banks from ingest artifact)
 cargo run --release --bin longmemeval-bench -- \
   qa bench/longmemeval/results/local/ingest.json \
+  --secrets-env-file bench/secrets.env \
   --tag qa-run
 
-# Run specific instances
+# Execution-only overlay example
 cargo run --release --bin longmemeval-bench -- \
   run --profile full-s \
-  --instance q_123 --instance q_456 \
-  --tag subset
-
-# Parallel instances (4 at a time)
-cargo run --release --bin longmemeval-bench -- \
-  run --profile full-s \
-  --instance-jobs 4 \
-  --tag parallel
+  --config bench/longmemeval/configs/instance-jobs-4.toml \
+  --secrets-env-file bench/secrets.env \
+  --tag local-run
 
 # Inspect results
 cargo run --release --bin longmemeval-view -- bench/longmemeval/results/local/baseline.json
@@ -75,18 +98,16 @@ cargo run --release --bin longmemeval-view -- \
 | `ingest` | Ingest + consolidate only, no QA |
 | `qa <artifact>` | Score against existing banks from ingest artifact |
 | `--profile <name>` | `smoke` (1 instance), `full-s` (S dataset), `full-m` (M dataset) |
-| `--config <path>` | JSON overlay on top of profile |
+| `--config <path>` | TOML execution overlay on top of profile |
+| `--secrets-env-file <path>` | Benchmark secrets env file |
 | `--tag <name>` | Output stem in `results/local/` |
 | `--out <path>` | Explicit output path |
-| `--instance <id>` | Run specific question instance (repeatable) |
-| `--instance-limit <n>` | Limit number of instances |
-| `--instance-jobs <n>` | Parallel instance processing (default: 1) |
-| `--session-limit <n>` | Limit sessions ingested per instance (debug) |
-| `--ingest-format <mode>` | `text` (default) or `json` |
-| `--consolidation <mode>` | `end` (default), `per-session`, or `off` |
-| `--judge-model <model>` | Override judge model (default: gpt-4o) |
+| `--instance-jobs <n>` | Parallel instance processing from execution overlay / CLI override |
+| `--judge-model <model>` | `qa` only; changes the resolved benchmark contract for that QA pass |
 | `--dataset <path>` | Override dataset file path |
 | `--force` | Allow overwriting existing output |
+
+Contract-affecting slice, ingest, consolidation, and judge defaults live in the checked-in profile, not in ad hoc CLI flags for fresh `run` / `ingest`.
 
 ## Output artifacts
 
