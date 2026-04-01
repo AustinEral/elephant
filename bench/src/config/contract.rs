@@ -274,10 +274,6 @@ pub(crate) struct LongMemEvalSliceContract {
     pub(crate) instances: Vec<String>,
     #[serde(default)]
     pub(crate) session_limit: Option<usize>,
-    #[serde(default)]
-    pub(crate) instance_limit: Option<usize>,
-    #[serde(default)]
-    pub(crate) instance_offset: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -556,8 +552,6 @@ pub(crate) struct ResolvedLongMemEvalContract {
     pub(crate) expected_dataset_fingerprint: Option<String>,
     pub(crate) instances: Vec<String>,
     pub(crate) session_limit: Option<usize>,
-    pub(crate) instance_limit: Option<usize>,
-    pub(crate) instance_offset: usize,
     pub(crate) ingest_format: LongMemEvalIngestFormat,
     pub(crate) consolidation: LongMemEvalConsolidationMode,
     pub(crate) determinism_requirement: Option<DeterminismRequirement>,

@@ -20,6 +20,64 @@ fn default_jobs() -> usize {
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct LocomoShardOverlayFile {
+    #[serde(default)]
+    pub(crate) conversations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub(crate) struct LocomoShardExecution {
+    pub(crate) conversations: Vec<String>,
+}
+
+impl LocomoShardExecution {
+    pub(crate) fn from_overlay(overlay: Option<LocomoShardOverlayFile>) -> Self {
+        let overlay = overlay.unwrap_or_default();
+        Self {
+            conversations: overlay.conversations,
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.conversations.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LongMemEvalShardOverlayFile {
+    #[serde(default)]
+    pub(crate) instances: Vec<String>,
+    #[serde(default)]
+    pub(crate) instance_limit: Option<usize>,
+    #[serde(default)]
+    pub(crate) instance_offset: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub(crate) struct LongMemEvalShardExecution {
+    pub(crate) instances: Vec<String>,
+    pub(crate) instance_limit: Option<usize>,
+    pub(crate) instance_offset: usize,
+}
+
+impl LongMemEvalShardExecution {
+    pub(crate) fn from_overlay(overlay: Option<LongMemEvalShardOverlayFile>) -> Self {
+        let overlay = overlay.unwrap_or_default();
+        Self {
+            instances: overlay.instances,
+            instance_limit: overlay.instance_limit,
+            instance_offset: overlay.instance_offset,
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.instances.is_empty() && self.instance_limit.is_none() && self.instance_offset == 0
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ClientTargetOverlayFile {
     #[serde(default)]
     pub(crate) base_url: Option<String>,
@@ -67,6 +125,8 @@ pub(crate) struct BenchExecutionOverlayFile {
     #[serde(default)]
     pub(crate) question_jobs: Option<usize>,
     #[serde(default)]
+    pub(crate) shard: Option<LocomoShardOverlayFile>,
+    #[serde(default)]
     pub(crate) runtime_target: Option<ClientTargetOverlayFile>,
     #[serde(default)]
     pub(crate) judge_target: Option<ClientTargetOverlayFile>,
@@ -80,6 +140,7 @@ pub(crate) struct BenchExecution {
     pub(crate) conversation_jobs: usize,
     pub(crate) question_jobs: usize,
     pub(crate) database_url: String,
+    pub(crate) shard: LocomoShardExecution,
     pub(crate) runtime_target: ClientTargetExecution,
     pub(crate) judge_target: ClientTargetExecution,
 }
@@ -96,6 +157,7 @@ impl BenchExecution {
             tag: None,
             conversation_jobs: None,
             question_jobs: None,
+            shard: None,
             runtime_target: None,
             judge_target: None,
         });
@@ -109,6 +171,7 @@ impl BenchExecution {
             database_url: overlay
                 .database_url
                 .unwrap_or_else(default_bench_database_url),
+            shard: LocomoShardExecution::from_overlay(overlay.shard),
             runtime_target: ClientTargetExecution::from_overlay(overlay.runtime_target),
             judge_target: ClientTargetExecution::from_overlay(overlay.judge_target),
         }
@@ -129,6 +192,8 @@ pub(crate) struct LongMemEvalExecutionOverlayFile {
     #[serde(default)]
     pub(crate) instance_jobs: Option<usize>,
     #[serde(default)]
+    pub(crate) shard: Option<LongMemEvalShardOverlayFile>,
+    #[serde(default)]
     pub(crate) runtime_target: Option<ClientTargetOverlayFile>,
     #[serde(default)]
     pub(crate) judge_target: Option<ClientTargetOverlayFile>,
@@ -141,6 +206,7 @@ pub(crate) struct LongMemEvalExecution {
     pub(crate) tag: Option<String>,
     pub(crate) instance_jobs: usize,
     pub(crate) database_url: String,
+    pub(crate) shard: LongMemEvalShardExecution,
     pub(crate) runtime_target: ClientTargetExecution,
     pub(crate) judge_target: ClientTargetExecution,
 }
@@ -156,6 +222,7 @@ impl LongMemEvalExecution {
             output_dir: None,
             tag: None,
             instance_jobs: None,
+            shard: None,
             runtime_target: None,
             judge_target: None,
         });
@@ -170,6 +237,7 @@ impl LongMemEvalExecution {
             database_url: overlay
                 .database_url
                 .unwrap_or_else(default_bench_database_url),
+            shard: LongMemEvalShardExecution::from_overlay(overlay.shard),
             runtime_target: ClientTargetExecution::from_overlay(overlay.runtime_target),
             judge_target: ClientTargetExecution::from_overlay(overlay.judge_target),
         }

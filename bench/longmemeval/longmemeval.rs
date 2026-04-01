@@ -535,10 +535,10 @@ fn apply_resolved_fresh_config(
     if config.tag.is_none() {
         config.tag = resolved.tag().map(str::to_owned);
     }
-    config.instances = resolved.instances().to_vec();
+    config.instances = resolved.selected_instances().to_vec();
     config.session_limit = resolved.session_limit();
-    config.instance_limit = resolved.instance_limit();
-    config.instance_offset = resolved.instance_offset();
+    config.instance_limit = resolved.shard_instance_limit();
+    config.instance_offset = resolved.shard_instance_offset();
     config.ingest_format = resolved.ingest_format().parse()?;
     config.consolidation = resolved.consolidation_mode().parse()?;
     config.instance_jobs = config
@@ -553,17 +553,8 @@ fn validate_fresh_overrides(overrides: &CliOverrides) -> Result<(), String> {
     }
 
     let mut unsupported = Vec::new();
-    if !overrides.instances.is_empty() {
-        unsupported.push("--instance");
-    }
     if overrides.session_limit.is_some() {
         unsupported.push("--session-limit");
-    }
-    if overrides.instance_limit.is_some() {
-        unsupported.push("--instance-limit");
-    }
-    if overrides.instance_offset.is_some() {
-        unsupported.push("--instance-offset");
     }
     if overrides.ingest_format.is_some() {
         unsupported.push("--ingest-format");
@@ -626,12 +617,6 @@ fn validate_qa_overrides(overrides: &CliOverrides) -> Result<(), String> {
     if overrides.session_limit.is_some() {
         unsupported.push("--session-limit");
     }
-    if overrides.instance_limit.is_some() {
-        unsupported.push("--instance-limit");
-    }
-    if overrides.instance_offset.is_some() {
-        unsupported.push("--instance-offset");
-    }
     if overrides.ingest_format.is_some() {
         unsupported.push("--ingest-format");
     }
@@ -665,10 +650,7 @@ fn resolve_config_resolve_config(overrides: CliOverrides) -> Result<RunConfig, S
 
 fn validate_config_resolve_overrides(overrides: &CliOverrides) -> Result<(), String> {
     if overrides.output.is_some()
-        || !overrides.instances.is_empty()
         || overrides.session_limit.is_some()
-        || overrides.instance_limit.is_some()
-        || overrides.instance_offset.is_some()
         || overrides.ingest_format.is_some()
         || overrides.consolidation.is_some()
         || overrides.judge_model.is_some()
@@ -676,7 +658,7 @@ fn validate_config_resolve_overrides(overrides: &CliOverrides) -> Result<(), Str
         || overrides.resume
     {
         return Err(
-            "`config-resolve` only accepts --profile, --config, --dataset, --tag, --instance-jobs, and --secrets-env-file".into(),
+            "`config-resolve` only accepts --profile, --config, --dataset, --tag, --instance, --instance-limit, --instance-offset, --instance-jobs, and --secrets-env-file".into(),
         );
     }
     Ok(())
@@ -824,7 +806,7 @@ fn print_help() {
     eprintln!("  --tag <NAME>                    Save to results/local/<tag>.json by default");
     eprintln!("  --out <PATH>                    Output results path (overrides --tag)");
     eprintln!(
-        "  --instance <ID>                 `qa` only; `run`/`ingest` use the profile contract"
+        "  --instance <ID>                 Execution shard; must stay within the profile slice"
     );
     eprintln!(
         "  --ingest-format <MODE>          Not supported for `run`/`ingest`; use a profile contract"
@@ -848,12 +830,8 @@ fn print_help() {
     eprintln!(
         "  --session-limit <N>             Not supported for `run`/`ingest`; use a profile slice"
     );
-    eprintln!(
-        "  --instance-limit <N>            Not supported for `run`/`ingest`; use a profile slice"
-    );
-    eprintln!(
-        "  --instance-offset <N>           Not supported for `run`/`ingest`; use a profile slice"
-    );
+    eprintln!("  --instance-limit <N>            Execution shard window within the profile slice");
+    eprintln!("  --instance-offset <N>           Execution shard offset within the profile slice");
 }
 
 // --- Artifact types ---
@@ -1207,7 +1185,7 @@ fn run_config_from_artifact(artifact: &BenchmarkOutput) -> Result<RunConfig, Str
         tag: artifact.tag.clone(),
         instances: artifact.manifest.selected_instances.clone(),
         session_limit: artifact.manifest.session_limit,
-        instance_limit: artifact.manifest.instance_limit,
+        instance_limit: None,
         instance_offset: 0,
         ingest_format,
         consolidation,
@@ -1609,11 +1587,6 @@ fn ensure_merge_compatible(
         other_manifest.session_limit,
         "session limit"
     );
-    ensure_same!(
-        base_manifest.instance_limit,
-        other_manifest.instance_limit,
-        "instance limit"
-    );
     if serde_json::to_string(&base_manifest.prompt_hashes).ok()
         != serde_json::to_string(&other_manifest.prompt_hashes).ok()
     {
@@ -1876,6 +1849,9 @@ async fn main() {
                     config.dataset_override.as_deref(),
                     config.tag.as_deref(),
                     config.instance_jobs_override,
+                    config.instances.as_slice(),
+                    config.instance_limit,
+                    (config.instance_offset > 0).then_some(config.instance_offset),
                 )
                 .unwrap_or_else(|err| {
                     eprintln!("failed to apply execution overrides to benchmark config: {err}");
@@ -1911,6 +1887,9 @@ async fn main() {
                     config.dataset_override.as_deref(),
                     config.tag.as_deref(),
                     config.instance_jobs_override,
+                    config.instances.as_slice(),
+                    config.instance_limit,
+                    (config.instance_offset > 0).then_some(config.instance_offset),
                 )
                 .unwrap_or_else(|err| {
                     eprintln!("failed to apply execution overrides to benchmark config: {err}");
@@ -1934,6 +1913,9 @@ async fn main() {
                     config.dataset_override.as_deref(),
                     config.tag.as_deref(),
                     config.instance_jobs_override,
+                    config.instances.as_slice(),
+                    config.instance_limit,
+                    (config.instance_offset > 0).then_some(config.instance_offset),
                 )
                 .unwrap_or_else(|err| {
                     eprintln!("failed to apply execution overrides to benchmark config: {err}");
@@ -2042,6 +2024,11 @@ async fn main() {
     if let Some(limit) = config.instance_limit {
         instances.truncate(limit);
     }
+
+    let selected_instance_ids = instances
+        .iter()
+        .map(|inst| inst.question_id.clone())
+        .collect::<Vec<_>>();
 
     // QA mode: validate all selected instances have bank_ids
     if matches!(command, BenchCommand::Qa) {
@@ -2262,11 +2249,7 @@ async fn main() {
         dataset_path: config.dataset.display().to_string(),
         dataset_fingerprint: resolved_bench.dataset_fingerprint().into(),
         command: cli_command,
-        selected_instances: if config.instances.is_empty() {
-            vec![]
-        } else {
-            config.instances.clone()
-        },
+        selected_instances: selected_instance_ids,
         ingest_format: config.ingest_format.as_str().into(),
         instance_concurrency: config.instance_jobs,
         consolidation_strategy: config.consolidation.as_str().into(),
@@ -3100,15 +3083,23 @@ mod tests {
     #[test]
     fn parse_contract_override_flags_are_rejected_for_run() {
         for args in [
-            vec![s("bin"), s("run"), s("--instance"), s("q1")],
             vec![s("bin"), s("run"), s("--session-limit"), s("5")],
-            vec![s("bin"), s("run"), s("--instance-limit"), s("1")],
-            vec![s("bin"), s("run"), s("--instance-offset"), s("2")],
             vec![s("bin"), s("run"), s("--ingest-format"), s("json")],
             vec![s("bin"), s("run"), s("--consolidation"), s("off")],
             vec![s("bin"), s("run"), s("--judge-model"), s("gpt-4o")],
         ] {
             assert!(parse_args_from(&args).is_err());
+        }
+    }
+
+    #[test]
+    fn parse_shard_override_flags_are_allowed_for_run() {
+        for args in [
+            vec![s("bin"), s("run"), s("--instance"), s("q1")],
+            vec![s("bin"), s("run"), s("--instance-limit"), s("1")],
+            vec![s("bin"), s("run"), s("--instance-offset"), s("2")],
+        ] {
+            assert!(parse_args_from(&args).is_ok());
         }
     }
 
@@ -3139,14 +3130,12 @@ mod tests {
     fn qa_rejects_protocol_flags() {
         let overrides = CliOverrides {
             session_limit: Some(5),
-            instance_limit: Some(1),
             ingest_format: Some(IngestFormat::Json),
             consolidation: Some(ConsolidationMode::Off),
             ..CliOverrides::default()
         };
         let err = validate_qa_overrides(&overrides).unwrap_err();
         assert!(err.contains("--session-limit"));
-        assert!(err.contains("--instance-limit"));
         assert!(err.contains("--ingest-format"));
         assert!(err.contains("--consolidation"));
     }
@@ -3204,7 +3193,8 @@ mod tests {
         apply_resolved_fresh_config(&mut config, &resolved).unwrap();
 
         assert_eq!(config.dataset, resolved.dataset_path());
-        assert_eq!(config.instance_limit, Some(1));
+        assert_eq!(config.instances, vec!["e47becba".to_string()]);
+        assert_eq!(config.instance_limit, None);
         assert_eq!(config.ingest_format, IngestFormat::Text);
         assert_eq!(config.consolidation, ConsolidationMode::End);
         assert_eq!(config.instance_jobs, 4);
@@ -3243,7 +3233,8 @@ mod tests {
             Some(&secrets_path),
         )
         .unwrap();
-        assert_eq!(resolved.instance_limit(), Some(1));
+        assert_eq!(resolved.instances(), &["e47becba".to_string()]);
+        assert_eq!(resolved.shard_instance_limit(), None);
         assert_eq!(resolved.ingest_format(), "text");
         assert_eq!(resolved.consolidation_mode(), "end");
         assert_eq!(resolved.instance_jobs(), 4);

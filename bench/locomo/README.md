@@ -110,9 +110,9 @@ Reusable local configs can live alongside the benchmark in `bench/locomo/configs
 Profiles and configs are intentionally different:
 
 - profiles are canonical benchmark contracts, like `full`, `smoke`, and `legacy-raw`
-- configs are small execution overlays that change only machine-local knobs on top of a profile
+- configs are small execution overlays that change machine-local knobs and worker shard scope on top of a profile
 
-In practice, use `--profile full` as the base benchmark contract and use `--config` only for operator convenience, like changing question parallelism.
+In practice, use `--profile full` as the base benchmark contract and use `--config` only for operator convenience, local routing, or worker sharding, like changing question parallelism or selecting a conversation subset for one worker.
 
 The CLI is intentionally strict. Old flag aliases were removed so benchmark commands stay unambiguous.
 
@@ -190,6 +190,7 @@ Use `publish` after that to stage a public bundle with `summary.json` plus gzipp
 | `publish <artifact>` | Export a publishable bundle with `index.json`, `summary.json`, and `questions.jsonl.gz` |
 | `--profile <name>` | Load a versioned benchmark profile (`full`, `smoke`, `legacy-raw`) |
 | `--config <path>` | Apply a TOML execution overlay on top of the selected profile |
+| `--conversation <id>` | Execution-only shard selector within the profile slice |
 | `--secrets-env-file <path>` | Load benchmark API keys from a separate benchmark secrets env file |
 | `--tag <name>` | Name the output stem in `results/local/` by default |
 | `--run-id <name>` | Set the published run id for `publish` |
@@ -198,7 +199,7 @@ Use `publish` after that to stage a public bundle with `summary.json` plus gzipp
 
 Fresh `run`, `ingest`, and `merge` outputs now refuse to overwrite existing summary/sidecar files unless you pass `--force`. `qa` also refuses to overwrite when `--tag` resolves to an existing file; pass `--force` to override.
 
-Contract-affecting slice/ingest/consolidation settings live in the checked-in profile, not in ad hoc CLI flags.
+Contract-affecting slice/ingest/consolidation settings live in the checked-in profile. Execution-time sharding, like `--conversation`, stays outside the contract hash.
 
 ## Merge constraints
 

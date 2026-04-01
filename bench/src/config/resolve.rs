@@ -24,8 +24,8 @@ use super::contract::{
     ResolvedLocomoContract, ResolvedLongMemEvalContract, RuntimeContract,
 };
 use super::execution::{
-    BenchExecution, BenchExecutionOverlayFile, ClientTargetExecution, LongMemEvalExecution,
-    LongMemEvalExecutionOverlayFile,
+    BenchExecution, BenchExecutionOverlayFile, ClientTargetExecution, LocomoShardExecution,
+    LongMemEvalExecution, LongMemEvalExecutionOverlayFile, LongMemEvalShardExecution,
 };
 use super::secrets::{BenchSecrets, RedactedBenchSecrets};
 
@@ -64,6 +64,20 @@ impl ResolvedBenchConfig {
     /// Return the selected conversation slice for this resolved contract.
     pub fn conversations(&self) -> &[String] {
         &self.contract.conversations
+    }
+
+    /// Return the execution-side conversation shard for this resolved config.
+    pub fn shard_conversations(&self) -> &[String] {
+        &self.execution.shard.conversations
+    }
+
+    /// Return the effective conversation selection for this resolved run.
+    pub fn selected_conversations(&self) -> &[String] {
+        if self.execution.shard.conversations.is_empty() {
+            &self.contract.conversations
+        } else {
+            &self.execution.shard.conversations
+        }
     }
 
     /// Return the optional session limit for this resolved contract.
@@ -216,6 +230,7 @@ impl ResolvedBenchConfig {
         tag: Option<&str>,
         conversation_jobs: Option<usize>,
         question_jobs: Option<usize>,
+        shard_conversations: &[String],
     ) -> Result<Self> {
         let mut resolved = self.clone();
         if let Some(dataset_path) = dataset_path {
@@ -230,7 +245,11 @@ impl ResolvedBenchConfig {
         if let Some(question_jobs) = question_jobs {
             resolved.execution.question_jobs = question_jobs;
         }
+        if !shard_conversations.is_empty() {
+            resolved.execution.shard.conversations = shard_conversations.to_vec();
+        }
         validate_execution(&resolved.execution)?;
+        validate_locomo_execution_shard(&resolved.contract, &resolved.execution.shard)?;
         if dataset_path.is_some() {
             resolved.contract.dataset_fingerprint = load_dataset_fingerprint(
                 &resolved.execution.dataset_path,
@@ -291,19 +310,33 @@ impl ResolvedLongMemEvalBenchConfig {
         &self.contract.instances
     }
 
+    /// Return the execution-side instance shard for this resolved config.
+    pub fn shard_instances(&self) -> &[String] {
+        &self.execution.shard.instances
+    }
+
+    /// Return the effective selected instance ids for this resolved run.
+    pub fn selected_instances(&self) -> &[String] {
+        if self.execution.shard.instances.is_empty() {
+            &self.contract.instances
+        } else {
+            &self.execution.shard.instances
+        }
+    }
+
     /// Return the optional session limit for this resolved contract.
     pub fn session_limit(&self) -> Option<usize> {
         self.contract.session_limit
     }
 
-    /// Return the optional instance limit for this resolved contract.
-    pub fn instance_limit(&self) -> Option<usize> {
-        self.contract.instance_limit
+    /// Return the optional execution-side instance limit for this resolved run.
+    pub fn shard_instance_limit(&self) -> Option<usize> {
+        self.execution.shard.instance_limit
     }
 
-    /// Return the instance offset for this resolved contract.
-    pub fn instance_offset(&self) -> usize {
-        self.contract.instance_offset
+    /// Return the execution-side instance offset for this resolved run.
+    pub fn shard_instance_offset(&self) -> usize {
+        self.execution.shard.instance_offset
     }
 
     /// Return the resolved ingest format.
@@ -434,6 +467,9 @@ impl ResolvedLongMemEvalBenchConfig {
         dataset_path: Option<&Path>,
         tag: Option<&str>,
         instance_jobs: Option<usize>,
+        shard_instances: &[String],
+        shard_instance_limit: Option<usize>,
+        shard_instance_offset: Option<usize>,
     ) -> Result<Self> {
         let mut resolved = self.clone();
         if let Some(dataset_path) = dataset_path {
@@ -445,7 +481,17 @@ impl ResolvedLongMemEvalBenchConfig {
         if let Some(instance_jobs) = instance_jobs {
             resolved.execution.instance_jobs = instance_jobs;
         }
+        if !shard_instances.is_empty() {
+            resolved.execution.shard.instances = shard_instances.to_vec();
+        }
+        if shard_instance_limit.is_some() {
+            resolved.execution.shard.instance_limit = shard_instance_limit;
+        }
+        if let Some(shard_instance_offset) = shard_instance_offset {
+            resolved.execution.shard.instance_offset = shard_instance_offset;
+        }
         validate_longmemeval_execution(&resolved.execution)?;
+        validate_longmemeval_execution_shard(&resolved.contract, &resolved.execution.shard)?;
         if dataset_path.is_some() {
             resolved.contract.dataset_fingerprint = load_dataset_fingerprint(
                 &resolved.execution.dataset_path,
@@ -501,6 +547,8 @@ struct RedactedBenchExecution<'a> {
     question_jobs: usize,
     database_url: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    shard: Option<&'a LocomoShardExecution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     runtime_target: Option<&'a ClientTargetExecution>,
     #[serde(skip_serializing_if = "Option::is_none")]
     judge_target: Option<&'a ClientTargetExecution>,
@@ -515,6 +563,7 @@ impl<'a> From<&'a BenchExecution> for RedactedBenchExecution<'a> {
             conversation_jobs: value.conversation_jobs,
             question_jobs: value.question_jobs,
             database_url: "<redacted>",
+            shard: (!value.shard.is_empty()).then_some(&value.shard),
             runtime_target: (!value.runtime_target.is_empty()).then_some(&value.runtime_target),
             judge_target: (!value.judge_target.is_empty()).then_some(&value.judge_target),
         }
@@ -529,6 +578,8 @@ struct RedactedLongMemEvalExecution<'a> {
     instance_jobs: usize,
     database_url: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    shard: Option<&'a LongMemEvalShardExecution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     runtime_target: Option<&'a ClientTargetExecution>,
     #[serde(skip_serializing_if = "Option::is_none")]
     judge_target: Option<&'a ClientTargetExecution>,
@@ -542,6 +593,7 @@ impl<'a> From<&'a LongMemEvalExecution> for RedactedLongMemEvalExecution<'a> {
             tag: value.tag.as_deref(),
             instance_jobs: value.instance_jobs,
             database_url: "<redacted>",
+            shard: (!value.shard.is_empty()).then_some(&value.shard),
             runtime_target: (!value.runtime_target.is_empty()).then_some(&value.runtime_target),
             judge_target: (!value.judge_target.is_empty()).then_some(&value.judge_target),
         }
@@ -598,6 +650,8 @@ pub fn resolve_locomo_bench_config(
         judge_prompt_hash: judge_prompt_hash(),
     };
 
+    validate_locomo_execution_shard(&resolved_contract, &execution.shard)?;
+
     let contract_hash = contract_hash_for(&resolved_contract)?;
 
     let resolved = ResolvedBenchConfig {
@@ -652,8 +706,6 @@ pub fn resolve_longmemeval_bench_config(
         expected_dataset_fingerprint: profile.dataset.expected_fingerprint,
         instances: profile.slice.instances,
         session_limit: profile.slice.session_limit,
-        instance_limit: profile.slice.instance_limit,
-        instance_offset: profile.slice.instance_offset,
         ingest_format: profile.ingest_format,
         consolidation: profile.consolidation,
         determinism_requirement: profile.determinism_requirement,
@@ -661,6 +713,8 @@ pub fn resolve_longmemeval_bench_config(
         judge: profile.judge,
         judge_prompt_hash: longmemeval_judge_prompt_hash(),
     };
+
+    validate_longmemeval_execution_shard(&resolved_contract, &execution.shard)?;
 
     let contract_hash = contract_hash_for(&resolved_contract)?;
 
@@ -965,11 +1019,6 @@ fn validate_longmemeval_profile(profile: &LongMemEvalContractFile) -> Result<()>
             "slice.session_limit must be greater than 0 if set",
         ));
     }
-    if matches!(profile.slice.instance_limit, Some(0)) {
-        return Err(ConfigError::configuration(
-            "slice.instance_limit must be greater than 0 if set",
-        ));
-    }
     validate_runtime_contract(&profile.runtime)?;
     validate_judge_contract(&profile.judge)?;
     Ok(())
@@ -1036,6 +1085,7 @@ fn validate_execution(execution: &BenchExecution) -> Result<()> {
     validate_nonblank("execution.database_url", &execution.database_url)?;
     validate_client_target("execution.runtime_target", &execution.runtime_target)?;
     validate_client_target("execution.judge_target", &execution.judge_target)?;
+    validate_locomo_execution_shard_shape(&execution.shard)?;
     if execution.conversation_jobs == 0 {
         return Err(ConfigError::configuration(
             "execution.conversation_jobs must be greater than 0",
@@ -1053,6 +1103,7 @@ fn validate_longmemeval_execution(execution: &LongMemEvalExecution) -> Result<()
     validate_nonblank("execution.database_url", &execution.database_url)?;
     validate_client_target("execution.runtime_target", &execution.runtime_target)?;
     validate_client_target("execution.judge_target", &execution.judge_target)?;
+    validate_longmemeval_execution_shard_shape(&execution.shard)?;
     if execution.instance_jobs == 0 {
         return Err(ConfigError::configuration(
             "execution.instance_jobs must be greater than 0",
@@ -1080,6 +1131,93 @@ fn validate_client_target(name: &str, target: &ClientTargetExecution) -> Result<
     }
     if let Some(vertex_location) = target.vertex_location.as_deref() {
         validate_nonblank(&format!("{name}.vertex_location"), vertex_location)?;
+    }
+    Ok(())
+}
+
+fn validate_locomo_execution_shard_shape(shard: &LocomoShardExecution) -> Result<()> {
+    ensure_unique_nonblank_ids("execution.shard.conversations", &shard.conversations)
+}
+
+fn validate_locomo_execution_shard(
+    contract: &ResolvedLocomoContract,
+    shard: &LocomoShardExecution,
+) -> Result<()> {
+    validate_locomo_execution_shard_shape(shard)?;
+    if contract.conversations.is_empty() || shard.conversations.is_empty() {
+        return Ok(());
+    }
+
+    let allowed = contract
+        .conversations
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::HashSet<_>>();
+    let invalid = shard
+        .conversations
+        .iter()
+        .filter(|id| !allowed.contains(id.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    if invalid.is_empty() {
+        Ok(())
+    } else {
+        Err(ConfigError::configuration(format!(
+            "execution.shard.conversations must be a subset of the contract slice; invalid ids: {}",
+            invalid.join(", ")
+        )))
+    }
+}
+
+fn validate_longmemeval_execution_shard_shape(shard: &LongMemEvalShardExecution) -> Result<()> {
+    ensure_unique_nonblank_ids("execution.shard.instances", &shard.instances)?;
+    if matches!(shard.instance_limit, Some(0)) {
+        return Err(ConfigError::configuration(
+            "execution.shard.instance_limit must be greater than 0 if set",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_longmemeval_execution_shard(
+    contract: &ResolvedLongMemEvalContract,
+    shard: &LongMemEvalShardExecution,
+) -> Result<()> {
+    validate_longmemeval_execution_shard_shape(shard)?;
+    if contract.instances.is_empty() || shard.instances.is_empty() {
+        return Ok(());
+    }
+
+    let allowed = contract
+        .instances
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::HashSet<_>>();
+    let invalid = shard
+        .instances
+        .iter()
+        .filter(|id| !allowed.contains(id.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    if invalid.is_empty() {
+        Ok(())
+    } else {
+        Err(ConfigError::configuration(format!(
+            "execution.shard.instances must be a subset of the contract slice; invalid ids: {}",
+            invalid.join(", ")
+        )))
+    }
+}
+
+fn ensure_unique_nonblank_ids(name: &str, ids: &[String]) -> Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    for id in ids {
+        validate_nonblank(name, id)?;
+        if !seen.insert(id.as_str()) {
+            return Err(ConfigError::configuration(format!(
+                "{name} must not contain duplicates: {id}"
+            )));
+        }
     }
     Ok(())
 }
@@ -1759,7 +1897,7 @@ base_url = "https://judge-proxy.example.com"
         let resolved =
             resolve_locomo_bench_config(&profile, Some(&overlay), Some(&secrets)).unwrap();
         let overridden = resolved
-            .with_cli_execution_overrides(Some(&dataset_b), Some("cli-tag"), Some(7), Some(3))
+            .with_cli_execution_overrides(Some(&dataset_b), Some("cli-tag"), Some(7), Some(3), &[])
             .unwrap();
 
         assert_ne!(resolved.contract_hash(), overridden.contract_hash());
@@ -1771,6 +1909,203 @@ base_url = "https://judge-proxy.example.com"
             overridden.redacted_execution_json()["dataset_path"],
             serde_json::Value::String(dataset_b.display().to_string())
         );
+    }
+
+    #[test]
+    fn contract_hash_ignores_locomo_shard_scope_but_execution_records_it() {
+        let _guard = env_lock().lock().unwrap();
+        let profile = temp_path("profile.toml");
+        let overlay = temp_path("overlay.toml");
+        let dataset = temp_path("dataset.json");
+        let secrets = temp_path("secrets.env");
+
+        write_file(&profile, &sample_profile());
+        write_file(&dataset, r#"{"sample":"ok"}"#);
+        write_file(&overlay, &sample_overlay(&dataset));
+        write_file(
+            &secrets,
+            "ELEPHANT_BENCH_RUNTIME_API_KEY=runtime-secret\nELEPHANT_BENCH_JUDGE_API_KEY=judge-secret\n",
+        );
+
+        let resolved =
+            resolve_locomo_bench_config(&profile, Some(&overlay), Some(&secrets)).unwrap();
+        let overridden = resolved
+            .with_cli_execution_overrides(None, None, None, None, &["conv-26".to_string()])
+            .unwrap();
+
+        assert_eq!(resolved.contract_hash(), overridden.contract_hash());
+        assert_ne!(
+            resolved.redacted_execution_json(),
+            overridden.redacted_execution_json()
+        );
+        assert_eq!(
+            overridden.redacted_execution_json()["shard"]["conversations"],
+            serde_json::json!(["conv-26"])
+        );
+    }
+
+    #[test]
+    fn locomo_shard_conversations_must_stay_within_contract_slice() {
+        let _guard = env_lock().lock().unwrap();
+        let profile = temp_path("profile.toml");
+        let overlay = temp_path("overlay.toml");
+        let dataset = temp_path("dataset.json");
+        let secrets = temp_path("secrets.env");
+
+        write_file(&profile, &sample_profile());
+        write_file(&dataset, r#"{"sample":"ok"}"#);
+        write_file(&overlay, &sample_overlay(&dataset));
+        write_file(
+            &secrets,
+            "ELEPHANT_BENCH_RUNTIME_API_KEY=runtime-secret\nELEPHANT_BENCH_JUDGE_API_KEY=judge-secret\n",
+        );
+
+        let err = resolve_locomo_bench_config(&profile, Some(&overlay), Some(&secrets))
+            .unwrap()
+            .with_cli_execution_overrides(None, None, None, None, &["conv-99".to_string()])
+            .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("execution.shard.conversations must be a subset")
+        );
+    }
+
+    #[test]
+    fn longmemeval_shard_scope_is_execution_only() {
+        let _guard = env_lock().lock().unwrap();
+        let profile = temp_path("long-profile.toml");
+        let overlay = temp_path("long-overlay.toml");
+        let dataset = temp_path("long-dataset.json");
+        let secrets = temp_path("long-secrets.env");
+        write_file(
+            &profile,
+            r#"
+schema_version = 1
+benchmark = "longmemeval"
+protocol_version = "2026-03-31-longmemeval-contract-v1"
+ingest_format = "text"
+consolidation = "end"
+
+[dataset]
+identifier = "longmemeval-s"
+
+[slice]
+instances = ["q1", "q2"]
+
+[runtime.llm]
+provider = "openai"
+retain_model = "gpt-5.4-mini"
+reflect_model = "gpt-5.4-mini"
+
+[runtime.embedding]
+provider = "local"
+model = "bge-small-en-v1.5"
+
+[runtime.reranker]
+provider = "none"
+
+[judge]
+provider = "openai"
+model = "gpt-5.4"
+"#,
+        );
+        write_file(&dataset, r#"{"sample":"ok"}"#);
+        write_file(
+            &overlay,
+            format!(
+                r#"
+database_url = "postgres://bench:bench@localhost/elephant"
+dataset_path = "{}"
+"#,
+                dataset.display()
+            )
+            .as_str(),
+        );
+        write_file(
+            &secrets,
+            "ELEPHANT_BENCH_RUNTIME_API_KEY=runtime-secret\nELEPHANT_BENCH_JUDGE_API_KEY=judge-secret\n",
+        );
+
+        let resolved =
+            resolve_longmemeval_bench_config(&profile, Some(&overlay), Some(&secrets)).unwrap();
+        let overridden = resolved
+            .with_cli_execution_overrides(None, None, None, &["q1".to_string()], Some(1), None)
+            .unwrap();
+
+        assert_eq!(resolved.contract_hash(), overridden.contract_hash());
+        assert_eq!(overridden.selected_instances(), &["q1".to_string()]);
+        assert_eq!(overridden.shard_instance_limit(), Some(1));
+        assert_eq!(
+            overridden.redacted_execution_json()["shard"]["instances"],
+            serde_json::json!(["q1"])
+        );
+    }
+
+    #[test]
+    fn longmemeval_overlay_shard_offset_survives_without_cli_override() {
+        let _guard = env_lock().lock().unwrap();
+        let profile = temp_path("long-offset-profile.toml");
+        let overlay = temp_path("long-offset-overlay.toml");
+        let dataset = temp_path("long-offset-dataset.json");
+        let secrets = temp_path("long-offset-secrets.env");
+        write_file(
+            &profile,
+            r#"
+schema_version = 1
+benchmark = "longmemeval"
+protocol_version = "2026-03-31-longmemeval-contract-v1"
+ingest_format = "text"
+consolidation = "end"
+
+[dataset]
+identifier = "longmemeval-s"
+
+[runtime.llm]
+provider = "openai"
+retain_model = "gpt-5.4-mini"
+reflect_model = "gpt-5.4-mini"
+
+[runtime.embedding]
+provider = "local"
+model = "bge-small-en-v1.5"
+
+[runtime.reranker]
+provider = "none"
+
+[judge]
+provider = "openai"
+model = "gpt-5.4"
+"#,
+        );
+        write_file(&dataset, r#"{"sample":"ok"}"#);
+        write_file(
+            &overlay,
+            format!(
+                r#"
+database_url = "postgres://bench:bench@localhost/elephant"
+dataset_path = "{}"
+
+[shard]
+instance_offset = 1
+"#,
+                dataset.display()
+            )
+            .as_str(),
+        );
+        write_file(
+            &secrets,
+            "ELEPHANT_BENCH_RUNTIME_API_KEY=runtime-secret\nELEPHANT_BENCH_JUDGE_API_KEY=judge-secret\n",
+        );
+
+        let resolved =
+            resolve_longmemeval_bench_config(&profile, Some(&overlay), Some(&secrets)).unwrap();
+        let overridden = resolved
+            .with_cli_execution_overrides(None, None, None, &[], None, None)
+            .unwrap();
+
+        assert_eq!(resolved.shard_instance_offset(), 1);
+        assert_eq!(overridden.shard_instance_offset(), 1);
     }
 
     #[test]

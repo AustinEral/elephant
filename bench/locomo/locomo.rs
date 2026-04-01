@@ -1166,6 +1166,9 @@ impl CliOverrides {
         if let Some(tag) = self.tag {
             config.tag = Some(tag);
         }
+        if !self.conversations.is_empty() {
+            config.conversations = self.conversations;
+        }
         if let Some(jobs) = self.conversation_jobs {
             config.conversation_jobs_override = Some(jobs);
         }
@@ -1271,7 +1274,7 @@ fn apply_resolved_fresh_config(
     if config.tag.is_none() {
         config.tag = resolved.tag().map(str::to_owned);
     }
-    config.conversations = resolved.conversations().to_vec();
+    config.conversations = resolved.selected_conversations().to_vec();
     config.session_limit = resolved.session_limit();
     config.question_limit = resolved.question_limit();
     config.ingest = resolved.ingest_mode().parse()?;
@@ -1287,9 +1290,6 @@ fn apply_resolved_fresh_config(
 
 fn validate_fresh_overrides(overrides: &CliOverrides) -> Result<(), String> {
     let mut unsupported = Vec::new();
-    if !overrides.conversations.is_empty() {
-        unsupported.push("--conversation");
-    }
     if overrides.session_limit.is_some() {
         unsupported.push("--session-limit");
     }
@@ -1722,7 +1722,6 @@ fn parse_usize_arg(raw: Option<&String>, flag: &str) -> Result<usize, String> {
 
 fn validate_config_resolve_overrides(overrides: &CliOverrides) -> Result<(), String> {
     if overrides.output.is_some()
-        || !overrides.conversations.is_empty()
         || overrides.session_limit.is_some()
         || overrides.question_limit.is_some()
         || overrides.ingest.is_some()
@@ -1733,7 +1732,7 @@ fn validate_config_resolve_overrides(overrides: &CliOverrides) -> Result<(), Str
         || overrides.allow_overwrite
     {
         return Err(
-            "`config-resolve` only accepts --profile, --config, --dataset, --tag, --conversation-jobs, --question-jobs, and --secrets-env-file".into(),
+            "`config-resolve` only accepts --profile, --config, --dataset, --tag, --conversation, --conversation-jobs, --question-jobs, and --secrets-env-file".into(),
         );
     }
     Ok(())
@@ -2637,7 +2636,7 @@ fn print_help() {
     eprintln!("  --tag <NAME>                    Save to results/local/<tag>.json by default");
     eprintln!("  --out <PATH>                    Output results path (overrides --tag)");
     eprintln!(
-        "  --conversation <ID>             Not supported for `run`/`ingest`; use a profile slice"
+        "  --conversation <ID>             Execution shard; must stay within the profile slice"
     );
     eprintln!(
         "  --ingest <MODE>                 Not supported for `run`/`ingest`; use a profile contract"
@@ -2656,10 +2655,10 @@ fn print_help() {
     eprintln!();
     eprintln!("Debug slice options:");
     eprintln!(
-        "  --session-limit <N>             Not supported for `run`/`ingest`; use a profile slice"
+        "  --session-limit <N>             Not supported for `run`/`ingest`; keep it in the profile slice"
     );
     eprintln!(
-        "  --question-limit <N>            Not supported for `run`/`ingest`; use a profile slice"
+        "  --question-limit <N>            Not supported for `run`/`ingest`; keep it in the profile slice"
     );
 }
 
@@ -3695,6 +3694,7 @@ async fn main() {
                         config.tag.as_deref(),
                         config.conversation_jobs_override,
                         config.question_jobs_override,
+                        config.conversations.as_slice(),
                     )
                     .unwrap_or_else(|err| {
                         eprintln!("failed to apply execution overrides to benchmark config: {err}");
@@ -3736,6 +3736,7 @@ async fn main() {
                 config.tag.as_deref(),
                 config.conversation_jobs_override,
                 config.question_jobs_override,
+                config.conversations.as_slice(),
             )
             .unwrap_or_else(|err| {
                 eprintln!("failed to apply execution overrides to benchmark config: {err}");
@@ -3913,6 +3914,11 @@ async fn main() {
         }
     }
 
+    let selected_conversation_ids = dataset
+        .iter()
+        .map(|entry| entry.sample_id.clone())
+        .collect::<Vec<_>>();
+
     let metrics = Arc::new(MetricsCollector::new());
     metrics.extend_snapshot(&existing_stage_metrics);
     let (runtime_metadata, determinism_requirement, runtime, judge_config, judge, judge_label) =
@@ -4022,7 +4028,7 @@ async fn main() {
             .as_ref()
             .map(|resolved| resolved.category_filter().to_vec())
             .unwrap_or_else(|| vec![1, 2, 3, 4]),
-        selected_conversations: config.conversations.clone(),
+        selected_conversations: selected_conversation_ids,
         image_policy: config.ingest.image_policy().into(),
         ingestion_granularity: config.ingest.ingestion_granularity().into(),
         question_concurrency: config.question_jobs,

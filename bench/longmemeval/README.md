@@ -99,6 +99,9 @@ cargo run --release --bin longmemeval-view -- \
 | `qa <artifact>` | Score against existing banks from ingest artifact |
 | `--profile <name>` | `smoke` (1 instance), `full-s` (S dataset), `full-m` (M dataset) |
 | `--config <path>` | TOML execution overlay on top of profile |
+| `--instance <id>` | Execution-only shard selector within the profile slice |
+| `--instance-limit <n>` | Execution-only shard window within the profile slice |
+| `--instance-offset <n>` | Execution-only shard offset within the profile slice |
 | `--secrets-env-file <path>` | Benchmark secrets env file |
 | `--tag <name>` | Output stem in `results/local/` |
 | `--out <path>` | Explicit output path |
@@ -107,7 +110,7 @@ cargo run --release --bin longmemeval-view -- \
 | `--dataset <path>` | Override dataset file path |
 | `--force` | Allow overwriting existing output |
 
-Contract-affecting slice, ingest, consolidation, and judge defaults live in the checked-in profile, not in ad hoc CLI flags for fresh `run` / `ingest`.
+Contract-affecting slice, ingest, consolidation, and judge defaults live in the checked-in profile. Execution-time shard controls stay outside the contract hash.
 
 ## Output artifacts
 
