@@ -146,6 +146,11 @@ impl ResolvedBenchConfig {
     }
 
     /// Return a cloned resolved config with an explicit judge-model override applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the override is blank or if the overridden judge config
+    /// fails validation.
     pub fn with_judge_model_override(&self, judge_model: Option<&str>) -> Result<Self> {
         let Some(judge_model) = judge_model else {
             return Ok(self.clone());
@@ -171,6 +176,11 @@ impl ResolvedBenchConfig {
     }
 
     /// Build a typed runtime config from the resolved contract, execution, and secrets.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the resolved runtime provider, model stack, or tuning is
+    /// invalid or incomplete.
     pub fn build_runtime_config(&self) -> Result<RuntimeConfig> {
         build_runtime_config_from_parts(
             &self.contract.runtime,
@@ -180,11 +190,21 @@ impl ResolvedBenchConfig {
     }
 
     /// Build a typed benchmark judge config from the resolved contract, execution, and secrets.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the resolved judge provider, model, or credentials are
+    /// invalid or incomplete.
     pub fn build_judge_config(&self) -> Result<BenchJudgeConfig> {
         build_judge_config_from_parts(&self.contract.judge, &self.secrets)
     }
 
     /// Return a cloned resolved config with CLI execution-only overrides applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the updated execution settings are invalid or if a
+    /// dataset override does not match the declared dataset fingerprint.
     pub fn with_cli_execution_overrides(
         &self,
         dataset_path: Option<&Path>,
@@ -218,6 +238,11 @@ impl ResolvedBenchConfig {
     }
 
     /// Build a benchmark harness from the resolved runtime contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if runtime construction fails or if the benchmark harness
+    /// cannot be initialized from the resolved config.
     pub async fn build_harness(
         &self,
         metrics: Arc<MetricsCollector>,
@@ -335,6 +360,11 @@ impl ResolvedLongMemEvalBenchConfig {
     }
 
     /// Return a cloned resolved config with an explicit judge-model override applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the override is blank or if the overridden judge config
+    /// fails validation.
     pub fn with_judge_model_override(&self, judge_model: Option<&str>) -> Result<Self> {
         let Some(judge_model) = judge_model else {
             return Ok(self.clone());
@@ -360,6 +390,11 @@ impl ResolvedLongMemEvalBenchConfig {
     }
 
     /// Build a typed runtime config from the resolved contract, execution, and secrets.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the resolved runtime provider, model stack, or tuning is
+    /// invalid or incomplete.
     pub fn build_runtime_config(&self) -> Result<RuntimeConfig> {
         build_runtime_config_from_parts(
             &self.contract.runtime,
@@ -369,11 +404,21 @@ impl ResolvedLongMemEvalBenchConfig {
     }
 
     /// Build a typed benchmark judge config from the resolved contract, execution, and secrets.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the resolved judge provider, model, or credentials are
+    /// invalid or incomplete.
     pub fn build_judge_config(&self) -> Result<BenchJudgeConfig> {
         build_judge_config_from_parts(&self.contract.judge, &self.secrets)
     }
 
     /// Return a cloned resolved config with CLI execution-only overrides applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the updated execution settings are invalid or if a
+    /// dataset override does not match the declared dataset fingerprint.
     pub fn with_cli_execution_overrides(
         &self,
         dataset_path: Option<&Path>,
@@ -403,6 +448,11 @@ impl ResolvedLongMemEvalBenchConfig {
     }
 
     /// Build a benchmark harness from the resolved runtime contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if runtime construction fails or if the benchmark harness
+    /// cannot be initialized from the resolved config.
     pub async fn build_harness(
         &self,
         metrics: Arc<MetricsCollector>,
@@ -477,12 +527,18 @@ impl<'a> From<&'a LongMemEvalExecution> for RedactedLongMemEvalExecution<'a> {
 }
 
 /// Resolve a checked-in LoCoMo profile, optional execution overlay, and benchmark secrets.
+///
+/// # Errors
+///
+/// Returns an error if the profile or overlay cannot be loaded, if the canonical
+/// profile fails explicitness linting, if secrets are invalid, or if the resolved
+/// runtime and judge configs fail validation.
 pub fn resolve_locomo_bench_config(
     profile_path: &Path,
     execution_overlay_path: Option<&Path>,
     secrets_env_file: Option<&Path>,
 ) -> Result<ResolvedBenchConfig> {
-    let profile = load_toml::<LocomoContractFile>(profile_path)?;
+    let profile = load_contract_toml::<LocomoContractFile>(profile_path, BenchmarkKind::Locomo)?;
     validate_profile(&profile)?;
     let overlay = execution_overlay_path
         .map(load_toml::<BenchExecutionOverlayFile>)
@@ -535,12 +591,19 @@ pub fn resolve_locomo_bench_config(
 }
 
 /// Resolve a checked-in LongMemEval profile, optional execution overlay, and benchmark secrets.
+///
+/// # Errors
+///
+/// Returns an error if the profile or overlay cannot be loaded, if the canonical
+/// profile fails explicitness linting, if secrets are invalid, or if the resolved
+/// runtime and judge configs fail validation.
 pub fn resolve_longmemeval_bench_config(
     profile_path: &Path,
     execution_overlay_path: Option<&Path>,
     secrets_env_file: Option<&Path>,
 ) -> Result<ResolvedLongMemEvalBenchConfig> {
-    let profile = load_toml::<LongMemEvalContractFile>(profile_path)?;
+    let profile =
+        load_contract_toml::<LongMemEvalContractFile>(profile_path, BenchmarkKind::LongMemEval)?;
     validate_longmemeval_profile(&profile)?;
     let overlay = execution_overlay_path
         .map(load_toml::<LongMemEvalExecutionOverlayFile>)
@@ -630,6 +693,141 @@ fn load_toml<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     toml::from_str(&raw).map_err(|error| {
         ConfigError::configuration(format!("failed to parse {}: {error}", path.display()))
     })
+}
+
+fn load_contract_toml<T: serde::de::DeserializeOwned>(
+    path: &Path,
+    benchmark_kind: BenchmarkKind,
+) -> Result<T> {
+    let resolved = resolve_workspace_path(path);
+    let raw = fs::read_to_string(&resolved).map_err(|error| {
+        ConfigError::configuration(format!("failed to read {}: {error}", path.display()))
+    })?;
+    lint_canonical_contract_file(path, &raw, benchmark_kind)?;
+    toml::from_str(&raw).map_err(|error| {
+        ConfigError::configuration(format!("failed to parse {}: {error}", path.display()))
+    })
+}
+
+fn lint_canonical_contract_file(
+    path: &Path,
+    raw: &str,
+    benchmark_kind: BenchmarkKind,
+) -> Result<()> {
+    if !is_checked_in_profile_path(path) {
+        return Ok(());
+    }
+
+    let parsed = toml::from_str::<toml::Value>(raw).map_err(|error| {
+        ConfigError::configuration(format!(
+            "failed to parse {} while linting canonical profile explicitness: {error}",
+            path.display()
+        ))
+    })?;
+
+    let mut required = vec![
+        "schema_version",
+        "benchmark",
+        "protocol_version",
+        "dataset.identifier",
+        "dataset.expected_fingerprint",
+        "runtime.llm.provider",
+        "runtime.llm.retain_model",
+        "runtime.llm.reflect_model",
+        "runtime.embedding.provider",
+        "runtime.embedding.model",
+        "runtime.reranker.provider",
+        "judge.provider",
+        "judge.model",
+        "judge.max_tokens",
+        "judge.max_attempts",
+        "runtime.tuning.reflect_budget_tokens",
+        "runtime.tuning.dedup_threshold",
+        "runtime.tuning.extraction.structured_output_max_attempts",
+        "runtime.tuning.graph.semantic_threshold",
+        "runtime.tuning.graph.temporal_max_days",
+        "runtime.tuning.graph.enable_causal",
+        "runtime.tuning.consolidation.batch_size",
+        "runtime.tuning.consolidation.max_tokens",
+        "runtime.tuning.consolidation.recall_budget",
+        "runtime.tuning.consolidation.structured_output_max_attempts",
+        "runtime.tuning.reflect.max_iterations",
+        "runtime.tuning.reflect.source_limit",
+        "runtime.tuning.reflect.enable_source_lookup",
+        "runtime.tuning.retrieval.retriever_limit",
+        "runtime.tuning.retrieval.max_facts",
+    ];
+    match benchmark_kind {
+        BenchmarkKind::Locomo => {
+            required.extend(["ingest", "consolidation", "slice.category_filter"]);
+        }
+        BenchmarkKind::LongMemEval => {
+            required.extend(["ingest_format", "consolidation"]);
+        }
+    }
+
+    let mut missing = required
+        .into_iter()
+        .filter(|field| !toml_path_exists(&parsed, field))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+
+    if toml_path_str(&parsed, "runtime.reranker.provider")
+        .is_some_and(|provider| provider != "none")
+        && !toml_path_exists(&parsed, "runtime.reranker.model")
+    {
+        missing.push("runtime.reranker.model".to_string());
+    }
+
+    if toml_path_str(&parsed, "runtime.reranker.provider") == Some("api")
+        && !toml_path_exists(&parsed, "runtime.reranker.api_url")
+    {
+        missing.push("runtime.reranker.api_url".to_string());
+    }
+
+    if toml_path_str(&parsed, "runtime.embedding.provider") == Some("openai")
+        && !toml_path_exists(&parsed, "runtime.embedding.dimensions")
+    {
+        missing.push("runtime.embedding.dimensions".to_string());
+    }
+
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    missing.sort();
+    missing.dedup();
+    Err(ConfigError::configuration(format!(
+        "canonical benchmark profile {} must explicitly set: {}",
+        path.display(),
+        missing.join(", ")
+    )))
+}
+
+fn is_checked_in_profile_path(path: &Path) -> bool {
+    let parts = path
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .collect::<Vec<_>>();
+    parts
+        .windows(3)
+        .any(|window| window[0] == "bench" && window[2] == "profiles")
+}
+
+fn toml_path_exists(value: &toml::Value, dotted_path: &str) -> bool {
+    toml_lookup(value, dotted_path).is_some()
+}
+
+fn toml_path_str<'a>(value: &'a toml::Value, dotted_path: &str) -> Option<&'a str> {
+    toml_lookup(value, dotted_path)?.as_str()
+}
+
+fn toml_lookup<'a>(value: &'a toml::Value, dotted_path: &str) -> Option<&'a toml::Value> {
+    let mut current = value;
+    for segment in dotted_path.split('.') {
+        current = current.get(segment)?;
+    }
+    Some(current)
 }
 
 fn default_locomo_dataset_path(identifier: &str) -> Result<std::path::PathBuf> {
@@ -1442,5 +1640,104 @@ question_jobs = 2
             default_longmemeval_dataset_path("longmemeval-m").unwrap(),
             PathBuf::from("data/longmemeval_m_cleaned.json")
         );
+    }
+
+    #[test]
+    fn canonical_profile_lint_rejects_missing_explicit_contract_fields() {
+        let raw = r#"
+schema_version = 1
+benchmark = "locomo"
+
+[dataset]
+identifier = "locomo10"
+expected_fingerprint = "8dfd1872bfb58ab8"
+
+[slice]
+category_filter = [1, 2, 3, 4]
+
+[runtime.llm]
+provider = "openai"
+retain_model = "gpt-5.4-mini"
+reflect_model = "gpt-5.4-mini"
+
+[runtime.embedding]
+provider = "local"
+model = "bge-small-en-v1.5"
+
+[runtime.reranker]
+provider = "none"
+
+[runtime.tuning]
+reflect_budget_tokens = 4096
+dedup_threshold = 0.95
+
+[runtime.tuning.extraction]
+structured_output_max_attempts = 3
+
+[runtime.tuning.graph]
+semantic_threshold = 0.7
+temporal_max_days = 30
+enable_causal = true
+
+[runtime.tuning.consolidation]
+batch_size = 8
+max_tokens = 4096
+recall_budget = 512
+structured_output_max_attempts = 3
+
+[runtime.tuning.reflect]
+max_iterations = 8
+source_limit = 3
+enable_source_lookup = true
+
+[runtime.tuning.retrieval]
+retriever_limit = 40
+max_facts = 50
+
+[judge]
+provider = "openai"
+model = "gpt-5.4"
+max_tokens = 200
+max_attempts = 3
+"#;
+
+        let err = lint_canonical_contract_file(
+            Path::new("bench/locomo/profiles/test.toml"),
+            raw,
+            BenchmarkKind::Locomo,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("must explicitly set"));
+        assert!(err.to_string().contains("ingest"));
+        assert!(err.to_string().contains("consolidation"));
+    }
+
+    #[test]
+    fn noncanonical_profile_path_skips_explicitness_lint() {
+        let raw = r#"
+[runtime.llm]
+provider = "openai"
+retain_model = "gpt-5.4-mini"
+reflect_model = "gpt-5.4-mini"
+
+[runtime.embedding]
+provider = "local"
+model = "bge-small-en-v1.5"
+
+[runtime.reranker]
+provider = "none"
+
+[judge]
+provider = "openai"
+model = "gpt-5.4"
+"#;
+
+        lint_canonical_contract_file(
+            Path::new("/tmp/local-profile.toml"),
+            raw,
+            BenchmarkKind::Locomo,
+        )
+        .unwrap();
     }
 }
