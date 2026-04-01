@@ -495,7 +495,8 @@ pub fn resolve_locomo_bench_config(
     validate_execution(&execution)?;
     let secrets = BenchSecrets::load(secrets_env_file)?;
 
-    let dataset_bytes = fs::read(&execution.dataset_path).map_err(|error| {
+    let dataset_path = resolve_workspace_path(&execution.dataset_path);
+    let dataset_bytes = fs::read(&dataset_path).map_err(|error| {
         ConfigError::configuration(format!(
             "failed to read dataset {}: {error}",
             execution.dataset_path.display()
@@ -560,7 +561,8 @@ pub fn resolve_longmemeval_bench_config(
     validate_longmemeval_execution(&execution)?;
     let secrets = BenchSecrets::load(secrets_env_file)?;
 
-    let dataset_bytes = fs::read(&execution.dataset_path).map_err(|error| {
+    let dataset_path = resolve_workspace_path(&execution.dataset_path);
+    let dataset_bytes = fs::read(&dataset_path).map_err(|error| {
         ConfigError::configuration(format!(
             "failed to read dataset {}: {error}",
             execution.dataset_path.display()
@@ -628,7 +630,18 @@ fn load_toml<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
 }
 
 fn resolve_workspace_path(path: &Path) -> std::path::PathBuf {
-    if path.is_absolute() || !path.starts_with("bench") {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+
+    let Some(first) = path.components().next() else {
+        return path.to_path_buf();
+    };
+    let anchor_to_workspace = matches!(
+        first.as_os_str().to_str(),
+        Some("bench" | "data" | "models")
+    );
+    if !anchor_to_workspace {
         return path.to_path_buf();
     }
 
@@ -1067,10 +1080,9 @@ fn build_embedding_config<E: ExecutionConfigRef>(
                     "execution.embedding_model_path must be set for runtime.embedding.provider=local",
                 )
             })?;
-            Ok(
-                EmbeddingConfig::local(path.display().to_string())
-                    .with_max_seq_len(execution.embedding_max_seq_len()),
-            )
+            let resolved_path = resolve_workspace_path(path);
+            Ok(EmbeddingConfig::local(resolved_path.display().to_string())
+                .with_max_seq_len(execution.embedding_max_seq_len()))
         }
         super::contract::EmbeddingProviderKind::OpenAi => {
             let api_key = secrets.embedding_api_key().ok_or_else(|| {
@@ -1104,10 +1116,9 @@ fn build_reranker_config<E: ExecutionConfigRef>(
                     "execution.reranker_model_path must be set for runtime.reranker.provider=local",
                 )
             })?;
-            Ok(
-                RerankerConfig::local(path.display().to_string())
-                    .with_max_seq_len(execution.reranker_max_seq_len()),
-            )
+            let resolved_path = resolve_workspace_path(path);
+            Ok(RerankerConfig::local(resolved_path.display().to_string())
+                .with_max_seq_len(execution.reranker_max_seq_len()))
         }
         RerankerProviderKind::Api => {
             let api_key = secrets.reranker_api_key().ok_or_else(|| {
@@ -1125,10 +1136,8 @@ fn build_reranker_config<E: ExecutionConfigRef>(
                     "runtime.reranker.model must be set for runtime.reranker.provider=api",
                 )
             })?;
-            Ok(
-                RerankerConfig::api(api_key, api_url, model)
-                    .with_max_seq_len(execution.reranker_max_seq_len()),
-            )
+            Ok(RerankerConfig::api(api_key, api_url, model)
+                .with_max_seq_len(execution.reranker_max_seq_len()))
         }
     }
 }
@@ -1215,10 +1224,16 @@ fn judge_prompt_hash() -> String {
 
 fn longmemeval_judge_prompt_hash() -> String {
     let mut combined = String::new();
-    combined.push_str(include_str!("../../longmemeval/prompts/judge_abstention.txt"));
+    combined.push_str(include_str!(
+        "../../longmemeval/prompts/judge_abstention.txt"
+    ));
     combined.push_str(include_str!("../../longmemeval/prompts/judge_factual.txt"));
-    combined.push_str(include_str!("../../longmemeval/prompts/judge_knowledge_update.txt"));
-    combined.push_str(include_str!("../../longmemeval/prompts/judge_preference.txt"));
+    combined.push_str(include_str!(
+        "../../longmemeval/prompts/judge_knowledge_update.txt"
+    ));
+    combined.push_str(include_str!(
+        "../../longmemeval/prompts/judge_preference.txt"
+    ));
     combined.push_str(include_str!("../../longmemeval/prompts/judge_temporal.txt"));
     fnv1a64_hex(combined.as_bytes())
 }

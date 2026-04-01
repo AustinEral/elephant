@@ -33,28 +33,34 @@ curl -o data/locomo10.json \
 cargo build --release --bin locomo-bench --bin view
 ```
 
-The runner uses the same environment variables as Elephant itself:
+LoCoMo does not read the root runtime `.env`.
 
-- `DATABASE_URL`
-- `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL`
-- `RETAIN_LLM_MODEL`, `REFLECT_LLM_MODEL` if split models are desired
-- optional reasoning-effort envs:
-  - `RETAIN_EXTRACT_REASONING_EFFORT`
-  - `RETAIN_RESOLVE_REASONING_EFFORT`
-  - `RETAIN_GRAPH_REASONING_EFFORT`
-  - `REFLECT_REASONING_EFFORT`
-  - `CONSOLIDATE_REASONING_EFFORT`
-  - `OPINION_MERGE_REASONING_EFFORT`
-- optional prompt-cache envs:
-  - `LLM_PROMPT_CACHE_ENABLED`
-  - `OPENAI_PROMPT_CACHE_KEY`
-  - `OPENAI_PROMPT_CACHE_RETENTION`
-  - `ANTHROPIC_PROMPT_CACHE_TTL`
-- embedding and reranker env vars
+The benchmark input surface is:
 
-Judge env vars remain independently overridable through `JUDGE_*`.
+- checked-in contract profile TOML in `bench/locomo/profiles/`
+- optional execution overlay TOML passed via `--config`
+- benchmark secrets from `bench/secrets.example.env` or process env
 
-For OpenAI `gpt-5.4-mini`, `REFLECT_REASONING_EFFORT=high` is a useful non-default benchmark tuning when you want stronger reflect tool use, at the cost of higher latency and token usage.
+Benchmark secrets are namespaced and separate from the runtime server:
+
+```bash
+cp bench/secrets.example.env bench/secrets.env
+```
+
+Fill in the keys you need:
+
+- `ELEPHANT_BENCH_RUNTIME_API_KEY`
+- `ELEPHANT_BENCH_JUDGE_API_KEY`
+- `ELEPHANT_BENCH_EMBEDDING_API_KEY` only for API-backed embeddings
+- `ELEPHANT_BENCH_RERANKER_API_KEY` only for API-backed rerankers
+
+The standard local execution defaults are:
+
+- benchmark Postgres: `postgres://postgres:postgres@localhost:5433/elephant_bench`
+- local embeddings: `models/bge-small-en-v1.5`
+- local reranker: `models/ms-marco-MiniLM-L-6-v2`
+
+Use `--config` only when you need to change execution/provenance settings such as dataset path, output path, concurrency, or local model/database locations.
 
 For benchmark hygiene, use an isolated Postgres instance instead of your normal development database. Docker is the easiest option:
 
@@ -67,9 +73,9 @@ docker run -d \
   -p 5433:5432 \
   -v elephant-bench-pgdata:/var/lib/postgresql/data \
   pgvector/pgvector:pg16
-
-export DATABASE_URL=postgres://postgres:postgres@localhost:5433/elephant_bench
 ```
+
+That matches the default benchmark execution database URL, so no extra runtime env is needed if you use the standard local benchmark setup.
 
 Using a named volume makes the benchmark database persistent:
 
@@ -97,14 +103,14 @@ Results layout is split by purpose:
 - final merged artifacts should be promoted intentionally to `bench/locomo/results/canonical/`
 - historical artifacts live in `bench/locomo/results/archive/legacy-v0/`
 
-The serious runner surface is now profile-driven. Versioned profile files live in `bench/locomo/profiles/`, and `--config <path>` can layer additional JSON overrides on top.
+The serious runner surface is profile-driven. Versioned profile files live in `bench/locomo/profiles/`, and `--config <path>` layers an execution-only TOML overlay on top.
 
 Reusable local configs can live alongside the benchmark in `bench/locomo/configs/`.
 
 Profiles and configs are intentionally different:
 
-- profiles are canonical benchmark shapes, like `full`, `smoke`, and `legacy-raw`
-- configs are small local overlays that change only a few knobs on top of a profile
+- profiles are canonical benchmark contracts, like `full`, `smoke`, and `legacy-raw`
+- configs are small execution overlays that change only machine-local knobs on top of a profile
 
 In practice, use `--profile full` as the base benchmark contract and use `--config` only for operator convenience, like changing question parallelism.
 
@@ -114,33 +120,30 @@ The CLI is intentionally strict. Old flag aliases were removed so benchmark comm
 
 ```bash
 # Quick smoke test
-cargo run --release --bin locomo-bench -- run --profile smoke --tag quick
+cargo run --release --bin locomo-bench -- \
+  run --profile smoke --secrets-env-file bench/secrets.env --tag quick
 
 # Full benchmark
-cargo run --release --bin locomo-bench -- run --profile full --tag baseline
-
-# Single conversation gate
 cargo run --release --bin locomo-bench -- \
-  run \
-  --profile full \
-  --conversation conv-26 \
-  --tag conv26
+  run --profile full --secrets-env-file bench/secrets.env --tag baseline
 
 # Ingest only
-cargo run --release --bin locomo-bench -- ingest --profile full --tag ingest
+cargo run --release --bin locomo-bench -- \
+  ingest --profile full --secrets-env-file bench/secrets.env --tag ingest
 
 # QA only from existing banks
 cargo run --release --bin locomo-bench -- \
   qa \
   bench/locomo/results/local/ingest.json \
+  --secrets-env-file bench/secrets.env \
   --out bench/locomo/results/local/ingest-qa.json
 
-# Single conversation with 5 question workers
+# Execution-only overlay with 5 question workers
 cargo run --release --bin locomo-bench -- \
   run \
   --profile full \
-  --config bench/locomo/configs/question-jobs-5.json \
-  --conversation conv-26 \
+  --config bench/locomo/configs/question-jobs-5.toml \
+  --secrets-env-file bench/secrets.env \
   --tag conv-26-q5
 
 # Merge disjoint subset artifacts into one canonical result
@@ -186,20 +189,16 @@ Use `publish` after that to stage a public bundle with `summary.json` plus gzipp
 | `merge <artifact>...` | Combine compatible subset artifacts into one canonical summary + sidecars |
 | `publish <artifact>` | Export a publishable bundle with `index.json`, `summary.json`, and `questions.jsonl.gz` |
 | `--profile <name>` | Load a versioned benchmark profile (`full`, `smoke`, `legacy-raw`) |
-| `--config <path>` | Apply JSON overrides on top of the selected profile |
+| `--config <path>` | Apply a TOML execution overlay on top of the selected profile |
+| `--secrets-env-file <path>` | Load benchmark API keys from a separate benchmark secrets env file |
 | `--tag <name>` | Name the output stem in `results/local/` by default |
-| `--conversation <id>` | Run a specific conversation; repeat to run an explicit set |
-| `--ingest <mode>` | Choose ingest mode: `turn`, `session` (default), or `raw-json` |
-| `--consolidation <mode>` | Control consolidation timing: `end`, `per-session`, or `off` |
-| `--conversation-jobs <n>` | Parallel conversations |
-| `--question-jobs <n>` | Parallel questions per conversation |
 | `--run-id <name>` | Set the published run id for `publish` |
 | `--include-debug` | Also export `debug.jsonl.gz` for `publish` |
-| `--session-limit <n>` | Debug-only session slice |
-| `--question-limit <n>` | Debug-only question slice |
 | `--force` | Allow overwriting an existing output path and sidecars |
 
 Fresh `run`, `ingest`, and `merge` outputs now refuse to overwrite existing summary/sidecar files unless you pass `--force`. `qa` also refuses to overwrite when `--tag` resolves to an existing file; pass `--force` to override.
+
+Contract-affecting slice/ingest/consolidation settings live in the checked-in profile, not in ad hoc CLI flags.
 
 ## Merge constraints
 
@@ -208,6 +207,7 @@ Fresh `run`, `ingest`, and `merge` outputs now refuse to overwrite existing summ
 The input artifacts must match on:
 
 - dataset fingerprint
+- contract hash
 - protocol version
 - mode
 - ingest mode and consolidation mode

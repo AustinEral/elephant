@@ -159,7 +159,8 @@ pub fn validate_dataset(instances: &[LongMemEvalInstance]) -> Result<(), Vec<Val
 /// When the file is not found, returns a helpful error message with download
 /// instructions for the HuggingFace dataset.
 pub fn load_dataset(path: &Path) -> Result<(Vec<LongMemEvalInstance>, String), String> {
-    if !path.exists() {
+    let resolved = common::io::resolve_workspace_path(path);
+    if !resolved.exists() {
         return Err(format!(
             "Dataset file not found: {}\n\n\
              Download from HuggingFace:\n\
@@ -173,7 +174,7 @@ pub fn load_dataset(path: &Path) -> Result<(Vec<LongMemEvalInstance>, String), S
     }
 
     let raw_bytes =
-        fs::read(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+        fs::read(&resolved).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
 
     let fingerprint = format!("{:016x}", common::fnv1a64(&raw_bytes));
 

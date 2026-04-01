@@ -135,11 +135,11 @@ Requires Postgres 16 + pgvector, ONNX Runtime 1.23, and local models for embeddi
 cargo run --release
 ```
 
-Full config reference in [`.env.example`](.env.example). `LLM_PROVIDER` supports `anthropic`, `openai`, `gemini`, and `vertex`. `openai` uses the OpenAI Responses API. `gemini` and `vertex` both use Gemini's native `generateContent` API, with `vertex` targeting Google Cloud Vertex AI project/location endpoints.
+Runtime config reference is in [docs/runtime-config.md](docs/runtime-config.md). Root [`.env.example`](.env.example) is intentionally short and onboarding-sized. `LLM_PROVIDER` supports `anthropic`, `openai`, `gemini`, and `vertex`. `openai` uses the OpenAI Responses API. `gemini` and `vertex` both use Gemini's native `generateContent` API, with `vertex` targeting Google Cloud Vertex AI project/location endpoints.
 
 Optional prompt caching is supported for Anthropic and OpenAI Responses. Enable it with `LLM_PROMPT_CACHE_ENABLED=1`; OpenAI also supports optional `OPENAI_PROMPT_CACHE_KEY` and `OPENAI_PROMPT_CACHE_RETENTION` (`in_memory` or `24h`), and Anthropic supports `ANTHROPIC_PROMPT_CACHE_TTL`. Gemini reports implicit cache hits automatically when the API provides them.
 
-The server can also run background consolidation after successful `retain` calls. See `SERVER_AUTO_CONSOLIDATION`, `SERVER_AUTO_CONSOLIDATION_MIN_FACTS`, `SERVER_AUTO_CONSOLIDATION_COOLDOWN_SECS`, and `SERVER_AUTO_CONSOLIDATION_MERGE_OPINIONS` in [`.env.example`](.env.example).
+The server can also run background consolidation after successful `retain` calls. See [docs/runtime-config.md](docs/runtime-config.md) for the full server/runtime env surface.
 
 ## How It Works
 

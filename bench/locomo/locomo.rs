@@ -3851,7 +3851,8 @@ async fn main() {
         )
     };
 
-    if !config.dataset.exists() {
+    let resolved_dataset_path = resolve_workspace_path(&config.dataset);
+    if !resolved_dataset_path.exists() {
         eprintln!("Dataset not found: {}", config.dataset.display());
         eprintln!("Download it:");
         eprintln!("  mkdir -p data");
@@ -3861,7 +3862,7 @@ async fn main() {
         std::process::exit(1);
     }
 
-    let raw_bytes = fs::read(&config.dataset).expect("failed to read dataset");
+    let raw_bytes = fs::read(&resolved_dataset_path).expect("failed to read dataset");
     let mut dataset: Vec<LocomoEntry> =
         serde_json::from_slice(&raw_bytes).expect("failed to parse dataset");
 

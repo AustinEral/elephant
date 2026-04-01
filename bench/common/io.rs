@@ -3,9 +3,20 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-/// Resolve logical `bench/...` paths against the workspace root.
+/// Resolve logical repo-relative benchmark paths against the workspace root.
 pub fn resolve_workspace_path(path: &Path) -> PathBuf {
-    if path.is_absolute() || !path.starts_with("bench") {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+
+    let Some(first) = path.components().next() else {
+        return path.to_path_buf();
+    };
+    let anchor_to_workspace = matches!(
+        first.as_os_str().to_str(),
+        Some("bench" | "data" | "models")
+    );
+    if !anchor_to_workspace {
         return path.to_path_buf();
     }
 
@@ -83,21 +94,34 @@ mod tests {
 
     #[test]
     fn resolve_workspace_path_rewrites_logical_bench_paths() {
-        let resolved = resolve_workspace_path(Path::new("bench/locomo/profiles/smoke.json"));
+        let resolved = resolve_workspace_path(Path::new("bench/locomo/profiles/smoke.toml"));
         let expected = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
-            .join("bench/locomo/profiles/smoke.json");
+            .join("bench/locomo/profiles/smoke.toml");
         assert_eq!(resolved, expected);
     }
 
     #[test]
-    fn resolve_workspace_path_leaves_non_bench_paths_unchanged() {
-        let relative = Path::new("data/example.json");
-        assert_eq!(resolve_workspace_path(relative), relative);
+    fn resolve_workspace_path_rewrites_repo_relative_data_and_model_paths() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        assert_eq!(
+            resolve_workspace_path(Path::new("data/longmemeval_s_cleaned.json")),
+            workspace_root.join("data/longmemeval_s_cleaned.json")
+        );
+        assert_eq!(
+            resolve_workspace_path(Path::new("models/bge-small-en-v1.5")),
+            workspace_root.join("models/bge-small-en-v1.5")
+        );
+    }
 
+    #[test]
+    fn resolve_workspace_path_leaves_non_bench_paths_unchanged() {
         let absolute = std::env::temp_dir().join("elephant-absolute-test.json");
         assert_eq!(resolve_workspace_path(&absolute), absolute);
+
+        let other_relative = Path::new("tmp/example.json");
+        assert_eq!(resolve_workspace_path(other_relative), other_relative);
     }
 
     #[test]

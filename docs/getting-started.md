@@ -15,7 +15,7 @@ If you only want to try Elephant quickly, use Docker.
 - Docker, if using the Docker path
 - `jq`, if you want to copy the quickstart commands exactly
 
-Supported LLM providers are documented in [`.env.example`](../.env.example).
+Supported LLM providers and the full runtime env surface are documented in [runtime-config.md](runtime-config.md).
 
 ## Option 1: Docker Quickstart
 
@@ -185,7 +185,7 @@ The server will print:
 - REST API URL
 - MCP URL
 
-By default, the server also evaluates background observation consolidation after successful `retain` calls. This does not block the retain response. You can tune or disable that behavior in [`.env.example`](../.env.example).
+By default, the server also evaluates background observation consolidation after successful `retain` calls. This does not block the retain response. You can tune or disable that behavior in [runtime-config.md](runtime-config.md).
 
 You can then use the same `BANK_ID` example flow shown in the Docker quickstart.
 
@@ -193,5 +193,5 @@ You can then use the same `BANK_ID` example flow shown in the Docker quickstart.
 
 - Architecture overview: [architecture.md](architecture.md)
 - Benchmark workflow: [../bench/locomo/README.md](../bench/locomo/README.md)
-- Config reference: [../.env.example](../.env.example)
+- Config reference: [runtime-config.md](runtime-config.md)
 - Tests and deeper setup: [../tests/README.md](../tests/README.md)

@@ -157,7 +157,7 @@ At minimum, configure:
 - embedding backend
 - reranker backend
 
-Start from [.env.example](../.env.example) and fill in only the provider path you actually intend to use.
+Start from [.env.example](../.env.example) and use [runtime-config.md](runtime-config.md) for the full runtime env reference.
 
 ### Run the server
 

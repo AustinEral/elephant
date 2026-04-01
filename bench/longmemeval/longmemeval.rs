@@ -281,7 +281,9 @@ struct BenchInvocation {
 fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
     let mut overrides = CliOverrides::default();
     let command = match raw.get(1).map(String::as_str) {
-        None => return Err("expected subcommand: run, ingest, qa, merge, or config-resolve".into()),
+        None => {
+            return Err("expected subcommand: run, ingest, qa, merge, or config-resolve".into());
+        }
         Some("--help") | Some("-h") => {
             overrides.help = true;
             return Ok(ParsedCli {
@@ -422,10 +424,10 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
             }
             "--secrets-env-file" => {
                 i += 1;
-                overrides.secrets_env_file = Some(PathBuf::from(
-                    raw.get(i)
-                        .ok_or_else(|| "--secrets-env-file requires a value".to_string())?,
-                ));
+                overrides.secrets_env_file =
+                    Some(PathBuf::from(raw.get(i).ok_or_else(|| {
+                        "--secrets-env-file requires a value".to_string()
+                    })?));
             }
             "--force" => {
                 overrides.allow_overwrite = true;
@@ -796,7 +798,9 @@ fn print_help() {
     eprintln!("  longmemeval-bench ingest [OPTIONS]");
     eprintln!("  longmemeval-bench qa <ARTIFACT.json> [OPTIONS]");
     eprintln!("  longmemeval-bench merge <A.json> <B.json> [... --out/--tag/--force]");
-    eprintln!("  longmemeval-bench config-resolve [--profile NAME] [--config PATH] [--secrets-env-file PATH]");
+    eprintln!(
+        "  longmemeval-bench config-resolve [--profile NAME] [--config PATH] [--secrets-env-file PATH]"
+    );
     eprintln!();
     eprintln!("Subcommands:");
     eprintln!("  run                              Fresh ingest, consolidate, then score QA");
@@ -807,34 +811,54 @@ fn print_help() {
     eprintln!(
         "  merge <A> <B> [...]              Merge subset artifacts into a single result file"
     );
-    eprintln!("  config-resolve                   Validate and print the resolved benchmark contract");
+    eprintln!(
+        "  config-resolve                   Validate and print the resolved benchmark contract"
+    );
     eprintln!();
     eprintln!("Options:");
     eprintln!(
         "  --profile <NAME>                Named profile for `run`/`ingest` [default: full-s]"
     );
     eprintln!("                                  Profiles: smoke, full-s, full-m");
-    eprintln!("  --config <PATH>                 TOML execution overlay for `run`/`ingest`/`qa`/`config-resolve`");
+    eprintln!(
+        "  --config <PATH>                 TOML execution overlay for `run`/`ingest`/`qa`/`config-resolve`"
+    );
     eprintln!(
         "  --dataset <PATH>                Execution-only dataset path override for `run`/`ingest`/`qa`"
     );
     eprintln!("  --tag <NAME>                    Save to results/local/<tag>.json by default");
     eprintln!("  --out <PATH>                    Output results path (overrides --tag)");
-    eprintln!("  --instance <ID>                 `qa` only; `run`/`ingest` use the profile contract");
-    eprintln!("  --ingest-format <MODE>          Not supported for `run`/`ingest`; use a profile contract");
-    eprintln!("  --consolidation <MODE>          Not supported for `run`/`ingest`; use a profile contract");
+    eprintln!(
+        "  --instance <ID>                 `qa` only; `run`/`ingest` use the profile contract"
+    );
+    eprintln!(
+        "  --ingest-format <MODE>          Not supported for `run`/`ingest`; use a profile contract"
+    );
+    eprintln!(
+        "  --consolidation <MODE>          Not supported for `run`/`ingest`; use a profile contract"
+    );
     eprintln!("  --instance-jobs <N>             Parallel instances");
-    eprintln!("  --judge-model <MODEL>           `qa` only; `run`/`ingest` use the profile contract");
-    eprintln!("  --secrets-env-file <PATH>       Benchmark secrets env file for `run`/`ingest`/`qa`/`config-resolve`");
+    eprintln!(
+        "  --judge-model <MODEL>           `qa` only; `run`/`ingest` use the profile contract"
+    );
+    eprintln!(
+        "  --secrets-env-file <PATH>       Benchmark secrets env file for `run`/`ingest`/`qa`/`config-resolve`"
+    );
     eprintln!("  --force                         Allow overwriting existing output files");
     eprintln!(
         "  --resume                        Resume from existing artifact (mutually exclusive with --force)"
     );
     eprintln!();
     eprintln!("Debug slice options:");
-    eprintln!("  --session-limit <N>             Not supported for `run`/`ingest`; use a profile slice");
-    eprintln!("  --instance-limit <N>            Not supported for `run`/`ingest`; use a profile slice");
-    eprintln!("  --instance-offset <N>           Not supported for `run`/`ingest`; use a profile slice");
+    eprintln!(
+        "  --session-limit <N>             Not supported for `run`/`ingest`; use a profile slice"
+    );
+    eprintln!(
+        "  --instance-limit <N>            Not supported for `run`/`ingest`; use a profile slice"
+    );
+    eprintln!(
+        "  --instance-offset <N>           Not supported for `run`/`ingest`; use a profile slice"
+    );
 }
 
 // --- Artifact types ---
@@ -1950,7 +1974,7 @@ async fn main() {
     };
 
     // Validate dataset exists early
-    if !config.dataset.exists() {
+    if !resolve_workspace_path(&config.dataset).exists() {
         eprintln!(
             "Dataset not found: {}\n\nDownload the LongMemEval dataset and place it at the expected path.\nSee: https://github.com/xiaowu0162/LongMemEval",
             config.dataset.display()
@@ -2237,11 +2261,12 @@ async fn main() {
     let judge: Option<Arc<dyn elephant::llm::LlmClient>> =
         if !matches!(command, BenchCommand::Ingest) {
             Some(
-                common::judge::build_judge_client(metrics.clone(), &judge_config)
-                .unwrap_or_else(|err| {
-                    eprintln!("failed to build judge client: {err}");
-                    std::process::exit(1);
-                }),
+                common::judge::build_judge_client(metrics.clone(), &judge_config).unwrap_or_else(
+                    |err| {
+                        eprintln!("failed to build judge client: {err}");
+                        std::process::exit(1);
+                    },
+                ),
             )
         } else {
             None
@@ -2888,7 +2913,7 @@ mod tests {
     }
 
     fn write_longmemeval_overlay() -> PathBuf {
-        let dataset_path = write_temp_file("dataset.json", "{}");
+        let dataset_path = PathBuf::from("data/longmemeval_s_cleaned.json");
         let output_dir = temp_path("results");
         fs::create_dir_all(&output_dir).unwrap();
         let embedding_model_path = temp_path("embedding.onnx");
@@ -3136,7 +3161,10 @@ mod tests {
         })
         .unwrap();
         assert_eq!(config.profile, RunProfile::Smoke);
-        assert_eq!(config.dataset, PathBuf::from("data/longmemeval_s_cleaned.json"));
+        assert_eq!(
+            config.dataset,
+            PathBuf::from("data/longmemeval_s_cleaned.json")
+        );
         assert_eq!(config.instance_jobs_override, Some(8));
         assert_eq!(config.instance_limit, None);
     }
@@ -4203,7 +4231,10 @@ mod tests {
         assert_eq!(merged.total_questions, 3);
         assert_eq!(merged.manifest.mode, "merge");
         assert_eq!(merged.manifest.source_artifacts.len(), 2);
-        assert_eq!(merged.manifest.contract_hash.as_deref(), Some("contract-test"));
+        assert_eq!(
+            merged.manifest.contract_hash.as_deref(),
+            Some("contract-test")
+        );
         assert_eq!(
             merged.manifest.resolved_contract,
             Some(serde_json::json!({"benchmark":"longmemeval"}))
