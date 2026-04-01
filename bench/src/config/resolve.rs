@@ -24,7 +24,7 @@ use super::contract::{
     ResolvedLocomoContract, ResolvedLongMemEvalContract, RuntimeContract,
 };
 use super::execution::{
-    BenchExecution, BenchExecutionOverlayFile, LongMemEvalExecution,
+    BenchExecution, BenchExecutionOverlayFile, ClientTargetExecution, LongMemEvalExecution,
     LongMemEvalExecutionOverlayFile,
 };
 use super::secrets::{BenchSecrets, RedactedBenchSecrets};
@@ -185,6 +185,7 @@ impl ResolvedBenchConfig {
         build_runtime_config_from_parts(
             &self.contract.runtime,
             &self.execution.database_url,
+            &self.execution.runtime_target,
             &self.secrets,
         )
     }
@@ -196,7 +197,11 @@ impl ResolvedBenchConfig {
     /// Returns an error if the resolved judge provider, model, or credentials are
     /// invalid or incomplete.
     pub fn build_judge_config(&self) -> Result<BenchJudgeConfig> {
-        build_judge_config_from_parts(&self.contract.judge, &self.secrets)
+        build_judge_config_from_parts(
+            &self.contract.judge,
+            &self.execution.judge_target,
+            &self.secrets,
+        )
     }
 
     /// Return a cloned resolved config with CLI execution-only overrides applied.
@@ -399,6 +404,7 @@ impl ResolvedLongMemEvalBenchConfig {
         build_runtime_config_from_parts(
             &self.contract.runtime,
             &self.execution.database_url,
+            &self.execution.runtime_target,
             &self.secrets,
         )
     }
@@ -410,7 +416,11 @@ impl ResolvedLongMemEvalBenchConfig {
     /// Returns an error if the resolved judge provider, model, or credentials are
     /// invalid or incomplete.
     pub fn build_judge_config(&self) -> Result<BenchJudgeConfig> {
-        build_judge_config_from_parts(&self.contract.judge, &self.secrets)
+        build_judge_config_from_parts(
+            &self.contract.judge,
+            &self.execution.judge_target,
+            &self.secrets,
+        )
     }
 
     /// Return a cloned resolved config with CLI execution-only overrides applied.
@@ -490,6 +500,10 @@ struct RedactedBenchExecution<'a> {
     conversation_jobs: usize,
     question_jobs: usize,
     database_url: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runtime_target: Option<&'a ClientTargetExecution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    judge_target: Option<&'a ClientTargetExecution>,
 }
 
 impl<'a> From<&'a BenchExecution> for RedactedBenchExecution<'a> {
@@ -501,6 +515,8 @@ impl<'a> From<&'a BenchExecution> for RedactedBenchExecution<'a> {
             conversation_jobs: value.conversation_jobs,
             question_jobs: value.question_jobs,
             database_url: "<redacted>",
+            runtime_target: (!value.runtime_target.is_empty()).then_some(&value.runtime_target),
+            judge_target: (!value.judge_target.is_empty()).then_some(&value.judge_target),
         }
     }
 }
@@ -512,6 +528,10 @@ struct RedactedLongMemEvalExecution<'a> {
     tag: Option<&'a str>,
     instance_jobs: usize,
     database_url: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runtime_target: Option<&'a ClientTargetExecution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    judge_target: Option<&'a ClientTargetExecution>,
 }
 
 impl<'a> From<&'a LongMemEvalExecution> for RedactedLongMemEvalExecution<'a> {
@@ -522,6 +542,8 @@ impl<'a> From<&'a LongMemEvalExecution> for RedactedLongMemEvalExecution<'a> {
             tag: value.tag.as_deref(),
             instance_jobs: value.instance_jobs,
             database_url: "<redacted>",
+            runtime_target: (!value.runtime_target.is_empty()).then_some(&value.runtime_target),
+            judge_target: (!value.judge_target.is_empty()).then_some(&value.judge_target),
         }
     }
 }
@@ -967,11 +989,6 @@ fn validate_runtime_contract(runtime: &RuntimeContract) -> Result<()> {
             }
         }
     }
-    if matches!(runtime.llm.provider, ProviderKind::Vertex) {
-        return Err(ConfigError::configuration(
-            "benchmark contracts do not support runtime.llm.provider=vertex; use a supported provider/model benchmark contract instead",
-        ));
-    }
     match runtime.reranker.provider {
         RerankerProviderKind::None => {}
         RerankerProviderKind::Local => {
@@ -1012,16 +1029,13 @@ fn validate_judge_contract(judge: &JudgeContract) -> Result<()> {
             "judge.max_attempts must be greater than 0",
         ));
     }
-    if matches!(judge.provider, ProviderKind::Vertex) {
-        return Err(ConfigError::configuration(
-            "benchmark contracts do not support judge.provider=vertex; use a supported provider/model benchmark contract instead",
-        ));
-    }
     Ok(())
 }
 
 fn validate_execution(execution: &BenchExecution) -> Result<()> {
     validate_nonblank("execution.database_url", &execution.database_url)?;
+    validate_client_target("execution.runtime_target", &execution.runtime_target)?;
+    validate_client_target("execution.judge_target", &execution.judge_target)?;
     if execution.conversation_jobs == 0 {
         return Err(ConfigError::configuration(
             "execution.conversation_jobs must be greater than 0",
@@ -1037,6 +1051,8 @@ fn validate_execution(execution: &BenchExecution) -> Result<()> {
 
 fn validate_longmemeval_execution(execution: &LongMemEvalExecution) -> Result<()> {
     validate_nonblank("execution.database_url", &execution.database_url)?;
+    validate_client_target("execution.runtime_target", &execution.runtime_target)?;
+    validate_client_target("execution.judge_target", &execution.judge_target)?;
     if execution.instance_jobs == 0 {
         return Err(ConfigError::configuration(
             "execution.instance_jobs must be greater than 0",
@@ -1055,12 +1071,26 @@ fn validate_nonblank(name: &str, value: &str) -> Result<()> {
     }
 }
 
+fn validate_client_target(name: &str, target: &ClientTargetExecution) -> Result<()> {
+    if let Some(base_url) = target.base_url.as_deref() {
+        validate_nonblank(&format!("{name}.base_url"), base_url)?;
+    }
+    if let Some(vertex_project) = target.vertex_project.as_deref() {
+        validate_nonblank(&format!("{name}.vertex_project"), vertex_project)?;
+    }
+    if let Some(vertex_location) = target.vertex_location.as_deref() {
+        validate_nonblank(&format!("{name}.vertex_location"), vertex_location)?;
+    }
+    Ok(())
+}
+
 fn build_runtime_config_from_parts(
     runtime: &RuntimeContract,
     database_url: &str,
+    runtime_target: &ClientTargetExecution,
     secrets: &BenchSecrets,
 ) -> Result<RuntimeConfig> {
-    let llm = build_runtime_llm_config(runtime, secrets)?;
+    let llm = build_runtime_llm_config(runtime, runtime_target, secrets)?;
     let embedding = build_embedding_config(runtime, secrets)?;
     let reranker = build_reranker_config(runtime, secrets)?;
     let tuning = &runtime.tuning;
@@ -1117,16 +1147,17 @@ fn build_runtime_config_from_parts(
 
 fn build_judge_config_from_parts(
     judge: &JudgeContract,
+    judge_target: &ClientTargetExecution,
     secrets: &BenchSecrets,
 ) -> Result<BenchJudgeConfig> {
     let client = build_client_config(
         judge.provider,
         secrets.judge_api_key(),
         &judge.model,
-        None,
+        judge_target.base_url.as_deref(),
         DEFAULT_TIMEOUT_SECS,
-        None,
-        None,
+        judge_target.vertex_project.as_deref(),
+        judge_target.vertex_location.as_deref(),
     )?;
     Ok(BenchJudgeConfig::new(
         client,
@@ -1138,25 +1169,26 @@ fn build_judge_config_from_parts(
 
 fn build_runtime_llm_config(
     runtime: &RuntimeContract,
+    runtime_target: &ClientTargetExecution,
     secrets: &BenchSecrets,
 ) -> Result<LlmConfig> {
     let retain = build_client_config(
         runtime.llm.provider,
         secrets.runtime_api_key(),
         &runtime.llm.retain_model,
-        None,
+        runtime_target.base_url.as_deref(),
         DEFAULT_TIMEOUT_SECS,
-        None,
-        None,
+        runtime_target.vertex_project.as_deref(),
+        runtime_target.vertex_location.as_deref(),
     )?;
     let reflect = build_client_config(
         runtime.llm.provider,
         secrets.runtime_api_key(),
         &runtime.llm.reflect_model,
-        None,
+        runtime_target.base_url.as_deref(),
         DEFAULT_TIMEOUT_SECS,
-        None,
-        None,
+        runtime_target.vertex_project.as_deref(),
+        runtime_target.vertex_location.as_deref(),
     )?;
     Ok(LlmConfig::new(retain, reflect))
 }
@@ -1245,6 +1277,16 @@ fn build_client_config(
 
     match provider {
         ProviderKind::Anthropic => {
+            if base_url.is_some() {
+                return Err(ConfigError::configuration(
+                    "base_url is not supported for provider=anthropic",
+                ));
+            }
+            if vertex_project.is_some() || vertex_location.is_some() {
+                return Err(ConfigError::configuration(
+                    "vertex_project and vertex_location are only supported for provider=vertex",
+                ));
+            }
             let mut config = AnthropicConfig::new(api_key, model).map_err(ConfigError::from)?;
             config = config
                 .with_timeout_secs(nonzero_timeout(timeout_secs)?)
@@ -1252,6 +1294,11 @@ fn build_client_config(
             Ok(ClientConfig::Anthropic(config))
         }
         ProviderKind::OpenAi => {
+            if vertex_project.is_some() || vertex_location.is_some() {
+                return Err(ConfigError::configuration(
+                    "vertex_project and vertex_location are only supported for provider=vertex",
+                ));
+            }
             let mut config = OpenAiConfig::new(api_key, model).map_err(ConfigError::from)?;
             config = config
                 .with_timeout_secs(nonzero_timeout(timeout_secs)?)
@@ -1262,6 +1309,11 @@ fn build_client_config(
             Ok(ClientConfig::OpenAi(config))
         }
         ProviderKind::Gemini => {
+            if vertex_project.is_some() || vertex_location.is_some() {
+                return Err(ConfigError::configuration(
+                    "vertex_project and vertex_location are only supported for provider=vertex",
+                ));
+            }
             let mut config = GeminiConfig::new(api_key, model).map_err(ConfigError::from)?;
             config = config
                 .with_timeout_secs(nonzero_timeout(timeout_secs)?)
@@ -1471,8 +1523,12 @@ model = "gpt-5.4"
     }
 
     #[test]
-    fn vertex_runtime_provider_is_rejected_for_benchmarks() {
+    fn vertex_runtime_provider_uses_local_execution_target() {
+        let _guard = env_lock().lock().unwrap();
         let profile = temp_path("vertex-profile.toml");
+        let overlay = temp_path("vertex-overlay.toml");
+        let dataset = temp_path("dataset.json");
+        let secrets = temp_path("vertex-secrets.env");
         write_file(
             &profile,
             r#"
@@ -1488,8 +1544,74 @@ category_filter = [1, 2, 3, 4]
 
 [runtime.llm]
 provider = "vertex"
-retain_model = "gemini-2.5-pro"
-reflect_model = "gemini-2.5-pro"
+retain_model = "gemini-2.5-flash"
+reflect_model = "gemini-2.5-flash"
+
+[runtime.embedding]
+provider = "local"
+model = "bge-small-en-v1.5"
+
+[runtime.reranker]
+provider = "none"
+
+[judge]
+provider = "vertex"
+model = "gemini-2.5-flash"
+"#,
+        );
+        write_file(&dataset, r#"{"sample":"ok"}"#);
+        let overlay_raw = format!(
+            r#"
+database_url = "postgres://bench:bench@localhost/elephant"
+dataset_path = "{}"
+
+[runtime_target]
+vertex_project = "bench-runtime-project"
+vertex_location = "us-central1"
+
+[judge_target]
+vertex_project = "bench-judge-project"
+"#,
+            dataset.display()
+        );
+        write_file(&overlay, &overlay_raw);
+        write_file(
+            &secrets,
+            "ELEPHANT_BENCH_RUNTIME_API_KEY=runtime-secret\nELEPHANT_BENCH_JUDGE_API_KEY=judge-secret\n",
+        );
+
+        let resolved =
+            resolve_locomo_bench_config(&profile, Some(&overlay), Some(&secrets)).unwrap();
+        let printed = resolved.to_pretty_redacted_json();
+        assert!(printed.contains("\"runtime_target\""));
+        assert!(printed.contains("bench-runtime-project"));
+        assert!(printed.contains("bench-judge-project"));
+    }
+
+    #[test]
+    fn vertex_provider_requires_local_project() {
+        let _guard = env_lock().lock().unwrap();
+        let profile = temp_path("vertex-missing-project.toml");
+        let overlay = temp_path("vertex-missing-project-overlay.toml");
+        let dataset = temp_path("dataset.json");
+        let secrets = temp_path("vertex-missing-project-secrets.env");
+        write_file(
+            &profile,
+            r#"
+schema_version = 1
+benchmark = "locomo"
+protocol_version = "2026-03-31-locomo-contract-v1"
+
+[dataset]
+identifier = "locomo10"
+
+[slice]
+category_filter = [1, 2, 3, 4]
+
+[runtime.llm]
+provider = "vertex"
+retain_model = "gemini-2.5-flash"
+reflect_model = "gemini-2.5-flash"
 
 [runtime.embedding]
 provider = "local"
@@ -1503,47 +1625,20 @@ provider = "openai"
 model = "gpt-5.4"
 "#,
         );
-
-        let err = resolve_locomo_bench_config(&profile, None, None).unwrap_err();
-        assert!(err.to_string().contains("runtime.llm.provider=vertex"));
-    }
-
-    #[test]
-    fn vertex_judge_provider_is_rejected_for_benchmarks() {
-        let profile = temp_path("vertex-judge-profile.toml");
-        write_file(
-            &profile,
+        write_file(&dataset, r#"{"sample":"ok"}"#);
+        let overlay_raw = format!(
             r#"
-schema_version = 1
-benchmark = "locomo"
-protocol_version = "2026-03-31-locomo-contract-v1"
-
-[dataset]
-identifier = "locomo10"
-
-[slice]
-category_filter = [1, 2, 3, 4]
-
-[runtime.llm]
-provider = "openai"
-retain_model = "gpt-5.4-mini"
-reflect_model = "gpt-5.4-mini"
-
-[runtime.embedding]
-provider = "local"
-model = "bge-small-en-v1.5"
-
-[runtime.reranker]
-provider = "none"
-
-[judge]
-provider = "vertex"
-model = "gemini-2.5-pro"
+database_url = "postgres://bench:bench@localhost/elephant"
+dataset_path = "{}"
 "#,
+            dataset.display()
         );
+        write_file(&overlay, &overlay_raw);
+        write_file(&secrets, "ELEPHANT_BENCH_RUNTIME_API_KEY=runtime-secret\n");
 
-        let err = resolve_locomo_bench_config(&profile, None, None).unwrap_err();
-        assert!(err.to_string().contains("judge.provider=vertex"));
+        let err =
+            resolve_locomo_bench_config(&profile, Some(&overlay), Some(&secrets)).unwrap_err();
+        assert!(err.to_string().contains("vertex_project must be set"));
     }
 
     #[test]

@@ -18,6 +18,39 @@ fn default_jobs() -> usize {
     1
 }
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ClientTargetOverlayFile {
+    #[serde(default)]
+    pub(crate) base_url: Option<String>,
+    #[serde(default)]
+    pub(crate) vertex_project: Option<String>,
+    #[serde(default)]
+    pub(crate) vertex_location: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub(crate) struct ClientTargetExecution {
+    pub(crate) base_url: Option<String>,
+    pub(crate) vertex_project: Option<String>,
+    pub(crate) vertex_location: Option<String>,
+}
+
+impl ClientTargetExecution {
+    pub(crate) fn from_overlay(overlay: Option<ClientTargetOverlayFile>) -> Self {
+        let overlay = overlay.unwrap_or_default();
+        Self {
+            base_url: overlay.base_url,
+            vertex_project: overlay.vertex_project,
+            vertex_location: overlay.vertex_location,
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.base_url.is_none() && self.vertex_project.is_none() && self.vertex_location.is_none()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct BenchExecutionOverlayFile {
@@ -33,6 +66,10 @@ pub(crate) struct BenchExecutionOverlayFile {
     pub(crate) conversation_jobs: Option<usize>,
     #[serde(default)]
     pub(crate) question_jobs: Option<usize>,
+    #[serde(default)]
+    pub(crate) runtime_target: Option<ClientTargetOverlayFile>,
+    #[serde(default)]
+    pub(crate) judge_target: Option<ClientTargetOverlayFile>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -43,6 +80,8 @@ pub(crate) struct BenchExecution {
     pub(crate) conversation_jobs: usize,
     pub(crate) question_jobs: usize,
     pub(crate) database_url: String,
+    pub(crate) runtime_target: ClientTargetExecution,
+    pub(crate) judge_target: ClientTargetExecution,
 }
 
 impl BenchExecution {
@@ -57,6 +96,8 @@ impl BenchExecution {
             tag: None,
             conversation_jobs: None,
             question_jobs: None,
+            runtime_target: None,
+            judge_target: None,
         });
 
         Self {
@@ -68,6 +109,8 @@ impl BenchExecution {
             database_url: overlay
                 .database_url
                 .unwrap_or_else(default_bench_database_url),
+            runtime_target: ClientTargetExecution::from_overlay(overlay.runtime_target),
+            judge_target: ClientTargetExecution::from_overlay(overlay.judge_target),
         }
     }
 }
@@ -85,6 +128,10 @@ pub(crate) struct LongMemEvalExecutionOverlayFile {
     pub(crate) tag: Option<String>,
     #[serde(default)]
     pub(crate) instance_jobs: Option<usize>,
+    #[serde(default)]
+    pub(crate) runtime_target: Option<ClientTargetOverlayFile>,
+    #[serde(default)]
+    pub(crate) judge_target: Option<ClientTargetOverlayFile>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -94,6 +141,8 @@ pub(crate) struct LongMemEvalExecution {
     pub(crate) tag: Option<String>,
     pub(crate) instance_jobs: usize,
     pub(crate) database_url: String,
+    pub(crate) runtime_target: ClientTargetExecution,
+    pub(crate) judge_target: ClientTargetExecution,
 }
 
 impl LongMemEvalExecution {
@@ -107,6 +156,8 @@ impl LongMemEvalExecution {
             output_dir: None,
             tag: None,
             instance_jobs: None,
+            runtime_target: None,
+            judge_target: None,
         });
 
         Self {
@@ -119,6 +170,8 @@ impl LongMemEvalExecution {
             database_url: overlay
                 .database_url
                 .unwrap_or_else(default_bench_database_url),
+            runtime_target: ClientTargetExecution::from_overlay(overlay.runtime_target),
+            judge_target: ClientTargetExecution::from_overlay(overlay.judge_target),
         }
     }
 }

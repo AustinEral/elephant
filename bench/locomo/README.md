@@ -60,7 +60,7 @@ The standard local execution defaults are:
 - local embeddings: `models/bge-small-en-v1.5`
 - local reranker: `models/ms-marco-MiniLM-L-6-v2`
 
-Use `--config` only when you need to change execution/provenance settings such as dataset path, output path, concurrency, or local model/database locations.
+Use `--config` only when you need to change execution/provenance settings such as dataset path, output path, concurrency, the benchmark database URL, or local provider routing like `base_url` / Vertex project-location selection.
 
 For benchmark hygiene, use an isolated Postgres instance instead of your normal development database. Docker is the easiest option:
 
