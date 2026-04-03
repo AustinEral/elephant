@@ -1,2 +1,5 @@
 [mcp_servers.elephant]
 url = "http://127.0.0.1:3001/mcp"
+
+[mcp_servers.elephant.tools.reflect]
+approval_mode = "approve"

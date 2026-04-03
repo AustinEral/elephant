@@ -128,7 +128,11 @@ impl FactExtractor for LlmFactExtractor {
             |kind| {
                 matches!(
                     kind,
-                    StructuredResponseErrorKind::NoJson | StructuredResponseErrorKind::Refusal
+                    StructuredResponseErrorKind::Refusal
+                        | StructuredResponseErrorKind::Empty
+                        | StructuredResponseErrorKind::NoJson
+                        | StructuredResponseErrorKind::JsonParse
+                        | StructuredResponseErrorKind::JsonStructure
                 )
             },
         )
@@ -308,5 +312,104 @@ mod tests {
         let facts = extractor.extract(&input).await.unwrap();
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].entity_mentions, vec!["Rust"]);
+    }
+
+    #[tokio::test]
+    async fn extract_retries_json_structure_then_succeeds() {
+        let valid = serde_json::to_string(&vec![ExtractedFact {
+            content: "Rust uses ownership for memory safety".into(),
+            fact_type: FactType::World,
+            network: ExtractedNetworkType::World,
+            entity_mentions: vec!["Rust".into()],
+            temporal_range: None,
+            confidence: None,
+        }])
+        .unwrap();
+
+        let mock = MockLlmClient::new();
+        mock.push_response(
+            r#"[{
+                "content": "Rust uses ownership for memory safety",
+                "network": "world",
+                "entity_mentions": ["Rust"],
+                "temporal_range": null,
+                "confidence": null
+            }]"#,
+        );
+        mock.push_response(valid);
+
+        let extractor = LlmFactExtractor::new(Arc::new(mock.clone()), ExtractionConfig::default());
+        let input = ExtractionInput {
+            content: "Rust uses ownership for memory safety.".into(),
+            bank_id: BankId::new(),
+            context: None,
+            timestamp: chrono::Utc::now(),
+            turn_id: None,
+            custom_instructions: None,
+            speaker: None,
+        };
+
+        let facts = extractor.extract(&input).await.unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].entity_mentions, vec!["Rust"]);
+        assert_eq!(mock.remaining(), 0);
+    }
+
+    #[tokio::test]
+    async fn extract_retries_invalid_temporal_then_succeeds() {
+        let valid = serde_json::to_string(&vec![ExtractedFact {
+            content: "Caroline went biking on September 9, 2023".into(),
+            fact_type: FactType::Experience,
+            network: ExtractedNetworkType::Experience,
+            entity_mentions: vec!["Caroline".into()],
+            temporal_range: Some(crate::types::TemporalRange {
+                start: Some(chrono::NaiveDate::from_ymd_opt(2023, 9, 9)
+                    .unwrap()
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap()
+                    .and_utc()),
+                end: Some(chrono::NaiveDate::from_ymd_opt(2023, 9, 9)
+                    .unwrap()
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap()
+                    .and_utc()),
+            }),
+            confidence: None,
+        }])
+        .unwrap();
+
+        let mock = MockLlmClient::new();
+        mock.push_response(
+            r#"[
+                {
+                    "content": "Caroline had a birthday celebration",
+                    "fact_type": "experience",
+                    "network": "experience",
+                    "entity_mentions": ["Caroline"],
+                    "temporal_range": {
+                        "start": "Caroline's 17th birthday",
+                        "end": "Caroline's 17th birthday"
+                    },
+                    "confidence": null
+                }
+            ]"#,
+        );
+        mock.push_response(valid);
+
+        let extractor = LlmFactExtractor::new(Arc::new(mock.clone()), ExtractionConfig::default());
+        let input = ExtractionInput {
+            content: "Caroline had a birthday celebration and went biking.".into(),
+            bank_id: BankId::new(),
+            context: None,
+            timestamp: chrono::Utc::now(),
+            turn_id: None,
+            custom_instructions: None,
+            speaker: None,
+        };
+
+        let facts = extractor.extract(&input).await.unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].entity_mentions, vec!["Caroline"]);
+        assert_eq!(mock.remaining(), 0);
     }
 }
