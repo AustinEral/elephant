@@ -1,0 +1,5 @@
+[runtime_target]
+base_url = "https://openrouter.ai/api/v1"
+
+[judge_target]
+base_url = "https://openrouter.ai/api/v1"

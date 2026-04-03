@@ -10,8 +10,8 @@ expected_fingerprint = "1be32e546a434b8b"
 
 [runtime.llm]
 provider = "openai"
-retain_model = "gpt-5.4-mini"
-reflect_model = "gpt-5.4-mini"
+retain_model = "anthropic/claude-sonnet-4.6"
+reflect_model = "anthropic/claude-sonnet-4.6"
 
 [runtime.embedding]
 provider = "local"
@@ -50,6 +50,6 @@ max_facts = 50
 
 [judge]
 provider = "openai"
-model = "gpt-5.4"
+model = "anthropic/claude-sonnet-4.6"
 max_tokens = 200
 max_attempts = 3

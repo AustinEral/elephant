@@ -30,7 +30,7 @@ curl -o data/locomo10.json \
   https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json
 
 # Build
-cargo build --release --bin locomo-bench --bin view
+cargo build -p elephant-bench --release --bin locomo-bench --bin view
 ```
 
 LoCoMo does not read the root runtime `.env`.
@@ -174,10 +174,10 @@ cargo run --release --bin locomo-bench -- \
   --run-id 2026-03-10-series1
 
 # Inspect a canonical run
-cargo run --release --bin view -- bench/locomo/results/canonical/full.json
+cargo run -p elephant-bench --release --bin view -- bench/locomo/results/canonical/full.json
 
 # Compare two runs
-cargo run --release --bin view -- \
+cargo run -p elephant-bench --release --bin view -- \
   bench/locomo/results/canonical/baseline.json \
   bench/locomo/results/canonical/ablation.json
 ```

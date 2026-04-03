@@ -1,8 +1,8 @@
 //! View a single LongMemEval benchmark result or compare two side-by-side.
 //!
 //! Usage:
-//!     cargo run --bin longmemeval-view -- <file.json>
-//!     cargo run --bin longmemeval-view -- [--verbose] <file.json> [file2.json]
+//!     cargo run -p elephant-bench --bin longmemeval-view -- <file.json>
+//!     cargo run -p elephant-bench --bin longmemeval-view -- [--verbose] <file.json> [file2.json]
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;

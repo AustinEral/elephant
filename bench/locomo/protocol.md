@@ -128,7 +128,7 @@ cargo run --release --bin locomo-bench -- \
   --out bench/locomo/results/canonical/full.json
 
 # View results
-cargo run --release --bin view -- bench/locomo/results/canonical/full.json
+cargo run -p elephant-bench --release --bin view -- bench/locomo/results/canonical/full.json
 ```
 
 All results are saved in `bench/locomo/results/` as a summary JSON plus `*.questions.jsonl` and `*.debug.jsonl` sidecars. Schema defined in [results-format.md](results-format.md). If a benchmark is assembled from batch runs, the final merged artifact should be the one treated as canonical.

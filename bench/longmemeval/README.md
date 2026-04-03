@@ -17,7 +17,7 @@ mkdir -p data
 # Place longmemeval_s_cleaned.json and/or longmemeval_m_cleaned.json in data/
 
 # Build
-cargo build --release --bin longmemeval-bench --bin longmemeval-view
+cargo build -p elephant-bench --release --bin longmemeval-bench --bin longmemeval-view
 ```
 
 LongMemEval does not read the root runtime `.env`.
@@ -83,7 +83,7 @@ cargo run --release --bin longmemeval-bench -- \
   --tag local-run
 
 # Inspect results
-cargo run --release --bin longmemeval-view -- bench/longmemeval/results/local/baseline.json
+cargo run -p elephant-bench --release --bin longmemeval-view -- bench/longmemeval/results/local/baseline.json
 
 # Verify a shard set before merge/publication
 cargo run --release --bin longmemeval-bench -- \
@@ -98,7 +98,7 @@ cargo run --release --bin longmemeval-bench -- \
   bench/longmemeval/results/local/shard-b.json
 
 # Compare two runs
-cargo run --release --bin longmemeval-view -- \
+cargo run -p elephant-bench --release --bin longmemeval-view -- \
   bench/longmemeval/results/local/baseline.json \
   bench/longmemeval/results/local/ablation.json
 ```
@@ -159,11 +159,11 @@ Abstention questions are identified by `_abs` suffix on `question_id` and routed
 
 ```bash
 # Single result
-cargo run --release --bin longmemeval-view -- results/local/baseline.json
+cargo run -p elephant-bench --release --bin longmemeval-view -- results/local/baseline.json
 
 # With per-question table
-cargo run --release --bin longmemeval-view -- results/local/baseline.json --verbose
+cargo run -p elephant-bench --release --bin longmemeval-view -- results/local/baseline.json --verbose
 
 # Compare two runs (shows delta per category)
-cargo run --release --bin longmemeval-view -- results/local/a.json results/local/b.json
+cargo run -p elephant-bench --release --bin longmemeval-view -- results/local/a.json results/local/b.json
 ```

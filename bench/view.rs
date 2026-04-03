@@ -1,8 +1,8 @@
 //! View a single benchmark result or compare two side-by-side.
 //!
 //! Usage:
-//!     cargo run --bin view -- <file.json>
-//!     cargo run --bin view -- <file1.json> <file2.json>
+//!     cargo run -p elephant-bench --bin view -- <file.json>
+//!     cargo run -p elephant-bench --bin view -- <file1.json> <file2.json>
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::env;
