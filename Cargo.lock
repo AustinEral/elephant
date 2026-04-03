@@ -1002,6 +1002,7 @@ dependencies = [
  "dotenvy",
  "elephant",
  "flate2",
+ "ort",
  "serde",
  "serde_json",
  "sqlx",

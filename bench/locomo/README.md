@@ -57,10 +57,11 @@ Fill in the keys you need:
 The standard local execution defaults are:
 
 - benchmark Postgres: `postgres://postgres:postgres@localhost:5433/elephant_bench`
+- repo-local ONNX Runtime under `lib/onnxruntime-*/lib` is auto-detected for local embeddings/reranking
 - local embeddings: `models/bge-small-en-v1.5`
 - local reranker: `models/ms-marco-MiniLM-L-6-v2`
 
-Use `--config` only when you need to change execution/provenance settings such as dataset path, output path, concurrency, the benchmark database URL, or local provider routing like `base_url` / Vertex project-location selection.
+Use `--config` only when you need to change execution/provenance settings such as dataset path, output path, concurrency, the benchmark database URL, a custom `ort_dylib_path`, or local provider routing like `base_url` / Vertex project-location selection.
 
 For benchmark hygiene, use an isolated Postgres instance instead of your normal development database. Docker is the easiest option:
 

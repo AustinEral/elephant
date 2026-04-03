@@ -44,6 +44,7 @@ Fill in the keys you need:
 The standard local execution defaults are:
 
 - benchmark Postgres: `postgres://postgres:postgres@localhost:5433/elephant_bench`
+- repo-local ONNX Runtime under `lib/onnxruntime-*/lib` is auto-detected for local embeddings/reranking
 - local embeddings: `models/bge-small-en-v1.5`
 - local reranker: `models/ms-marco-MiniLM-L-6-v2`
 

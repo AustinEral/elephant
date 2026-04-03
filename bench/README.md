@@ -6,7 +6,7 @@ Benchmark config is separate from normal Elephant runtime config:
 
 - root `.env` is for running the Elephant server
 - benchmark behavior comes from checked-in profile TOML files
-- optional execution overlays are TOML and carry machine-local execution settings plus worker shard scope, such as dataset path, benchmark database URL, concurrency, local provider routing, or per-worker subset selection
+- optional execution overlays are TOML and carry machine-local execution settings plus worker shard scope, such as dataset path, benchmark database URL, concurrency, an optional ONNX Runtime dylib override for local models, local provider routing, or per-worker subset selection
 - benchmark secrets live in `bench/secrets.example.env`
 - each benchmark runner also exposes artifact-only `verify` and `doctor` commands for shard and publication hygiene
 

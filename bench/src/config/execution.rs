@@ -115,6 +115,8 @@ pub(crate) struct BenchExecutionOverlayFile {
     #[serde(default)]
     pub(crate) database_url: Option<String>,
     #[serde(default)]
+    pub(crate) ort_dylib_path: Option<PathBuf>,
+    #[serde(default)]
     pub(crate) dataset_path: Option<PathBuf>,
     #[serde(default)]
     pub(crate) output_dir: Option<PathBuf>,
@@ -134,6 +136,7 @@ pub(crate) struct BenchExecutionOverlayFile {
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct BenchExecution {
+    pub(crate) ort_dylib_path: Option<PathBuf>,
     pub(crate) dataset_path: PathBuf,
     pub(crate) output_dir: PathBuf,
     pub(crate) tag: Option<String>,
@@ -152,6 +155,7 @@ impl BenchExecution {
     ) -> Self {
         let overlay = overlay.unwrap_or(BenchExecutionOverlayFile {
             database_url: None,
+            ort_dylib_path: None,
             dataset_path: None,
             output_dir: None,
             tag: None,
@@ -163,6 +167,7 @@ impl BenchExecution {
         });
 
         Self {
+            ort_dylib_path: overlay.ort_dylib_path,
             dataset_path: overlay.dataset_path.unwrap_or(default_dataset_path),
             output_dir: overlay.output_dir.unwrap_or_else(default_output_dir),
             tag: overlay.tag,
@@ -184,6 +189,8 @@ pub(crate) struct LongMemEvalExecutionOverlayFile {
     #[serde(default)]
     pub(crate) database_url: Option<String>,
     #[serde(default)]
+    pub(crate) ort_dylib_path: Option<PathBuf>,
+    #[serde(default)]
     pub(crate) dataset_path: Option<PathBuf>,
     #[serde(default)]
     pub(crate) output_dir: Option<PathBuf>,
@@ -201,6 +208,7 @@ pub(crate) struct LongMemEvalExecutionOverlayFile {
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct LongMemEvalExecution {
+    pub(crate) ort_dylib_path: Option<PathBuf>,
     pub(crate) dataset_path: PathBuf,
     pub(crate) output_dir: PathBuf,
     pub(crate) tag: Option<String>,
@@ -218,6 +226,7 @@ impl LongMemEvalExecution {
     ) -> Self {
         let overlay = overlay.unwrap_or(LongMemEvalExecutionOverlayFile {
             database_url: None,
+            ort_dylib_path: None,
             dataset_path: None,
             output_dir: None,
             tag: None,
@@ -228,6 +237,7 @@ impl LongMemEvalExecution {
         });
 
         Self {
+            ort_dylib_path: overlay.ort_dylib_path,
             dataset_path: overlay.dataset_path.unwrap_or(default_dataset_path),
             output_dir: overlay
                 .output_dir
@@ -256,6 +266,7 @@ mod tests {
             execution.database_url,
             "postgres://postgres:postgres@localhost:5433/elephant_bench"
         );
+        assert_eq!(execution.ort_dylib_path, None);
         assert_eq!(execution.dataset_path, PathBuf::from("data/locomo10.json"));
     }
 
@@ -270,6 +281,7 @@ mod tests {
             execution.database_url,
             "postgres://postgres:postgres@localhost:5433/elephant_bench"
         );
+        assert_eq!(execution.ort_dylib_path, None);
         assert_eq!(
             execution.dataset_path,
             PathBuf::from("data/longmemeval_m_cleaned.json")

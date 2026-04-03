@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
 
 use serde::Serialize;
 
@@ -19,9 +20,9 @@ use crate::env::BenchJudgeConfig;
 use crate::harness::{BenchHarness, BenchHarnessBuilder};
 
 use super::contract::{
-    BenchmarkKind, JudgeContract, LocomoContractFile, LongMemEvalConsolidationMode,
-    LongMemEvalContractFile, LongMemEvalIngestFormat, ProviderKind, RerankerProviderKind,
-    ResolvedLocomoContract, ResolvedLongMemEvalContract, RuntimeContract,
+    BenchmarkKind, EmbeddingProviderKind, JudgeContract, LocomoContractFile,
+    LongMemEvalConsolidationMode, LongMemEvalContractFile, LongMemEvalIngestFormat, ProviderKind,
+    RerankerProviderKind, ResolvedLocomoContract, ResolvedLongMemEvalContract, RuntimeContract,
 };
 use super::execution::{
     BenchExecution, BenchExecutionOverlayFile, ClientTargetExecution, LocomoShardExecution,
@@ -199,6 +200,7 @@ impl ResolvedBenchConfig {
         build_runtime_config_from_parts(
             &self.contract.runtime,
             &self.execution.database_url,
+            self.execution.ort_dylib_path.as_deref(),
             &self.execution.runtime_target,
             &self.secrets,
         )
@@ -441,6 +443,7 @@ impl ResolvedLongMemEvalBenchConfig {
         build_runtime_config_from_parts(
             &self.contract.runtime,
             &self.execution.database_url,
+            self.execution.ort_dylib_path.as_deref(),
             &self.execution.runtime_target,
             &self.secrets,
         )
@@ -544,6 +547,8 @@ struct RedactedLongMemEvalResolvedBenchConfig<'a> {
 
 #[derive(Debug, Serialize)]
 struct RedactedBenchExecution<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ort_dylib_path: Option<String>,
     dataset_path: String,
     output_dir: String,
     tag: Option<&'a str>,
@@ -561,6 +566,10 @@ struct RedactedBenchExecution<'a> {
 impl<'a> From<&'a BenchExecution> for RedactedBenchExecution<'a> {
     fn from(value: &'a BenchExecution) -> Self {
         Self {
+            ort_dylib_path: value
+                .ort_dylib_path
+                .as_ref()
+                .map(|path| path.display().to_string()),
             dataset_path: value.dataset_path.display().to_string(),
             output_dir: value.output_dir.display().to_string(),
             tag: value.tag.as_deref(),
@@ -576,6 +585,8 @@ impl<'a> From<&'a BenchExecution> for RedactedBenchExecution<'a> {
 
 #[derive(Debug, Serialize)]
 struct RedactedLongMemEvalExecution<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ort_dylib_path: Option<String>,
     dataset_path: String,
     output_dir: String,
     tag: Option<&'a str>,
@@ -592,6 +603,10 @@ struct RedactedLongMemEvalExecution<'a> {
 impl<'a> From<&'a LongMemEvalExecution> for RedactedLongMemEvalExecution<'a> {
     fn from(value: &'a LongMemEvalExecution) -> Self {
         Self {
+            ort_dylib_path: value
+                .ort_dylib_path
+                .as_ref()
+                .map(|path| path.display().to_string()),
             dataset_path: value.dataset_path.display().to_string(),
             output_dir: value.output_dir.display().to_string(),
             tag: value.tag.as_deref(),
@@ -621,10 +636,12 @@ pub fn resolve_locomo_bench_config(
     let overlay = execution_overlay_path
         .map(load_toml::<BenchExecutionOverlayFile>)
         .transpose()?;
-    let execution = BenchExecution::from_overlay(
+    let mut execution = BenchExecution::from_overlay(
         overlay,
         default_locomo_dataset_path(&profile.dataset.identifier)?,
     );
+    execution.ort_dylib_path =
+        resolve_local_ort_dylib_path(&profile.runtime, execution.ort_dylib_path)?;
     validate_execution(&execution)?;
     let secrets = BenchSecrets::load(secrets_env_file)?;
 
@@ -688,10 +705,12 @@ pub fn resolve_longmemeval_bench_config(
     let overlay = execution_overlay_path
         .map(load_toml::<LongMemEvalExecutionOverlayFile>)
         .transpose()?;
-    let execution = LongMemEvalExecution::from_overlay(
+    let mut execution = LongMemEvalExecution::from_overlay(
         overlay,
         default_longmemeval_dataset_path(&profile.dataset.identifier)?,
     );
+    execution.ort_dylib_path =
+        resolve_local_ort_dylib_path(&profile.runtime, execution.ort_dylib_path)?;
     validate_longmemeval_execution(&execution)?;
     let secrets = BenchSecrets::load(secrets_env_file)?;
 
@@ -939,16 +958,19 @@ fn resolve_workspace_path(path: &Path) -> std::path::PathBuf {
     };
     let anchor_to_workspace = matches!(
         first.as_os_str().to_str(),
-        Some("bench" | "data" | "models")
+        Some("bench" | "data" | "models" | "lib")
     );
     if !anchor_to_workspace {
         return path.to_path_buf();
     }
 
+    workspace_root().join(path)
+}
+
+fn workspace_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("bench crate must live under the workspace root")
-        .join(path)
 }
 
 fn validate_profile(profile: &LocomoContractFile) -> Result<()> {
@@ -1229,9 +1251,11 @@ fn ensure_unique_nonblank_ids(name: &str, ids: &[String]) -> Result<()> {
 fn build_runtime_config_from_parts(
     runtime: &RuntimeContract,
     database_url: &str,
+    ort_dylib_path: Option<&Path>,
     runtime_target: &ClientTargetExecution,
     secrets: &BenchSecrets,
 ) -> Result<RuntimeConfig> {
+    initialize_local_ort(runtime, ort_dylib_path)?;
     let llm = build_runtime_llm_config(runtime, runtime_target, secrets)?;
     let embedding = build_embedding_config(runtime, secrets)?;
     let reranker = build_reranker_config(runtime, secrets)?;
@@ -1285,6 +1309,134 @@ fn build_runtime_config_from_parts(
             tuning.retrieval.retriever_limit,
             tuning.retrieval.max_facts,
         )?)
+}
+
+fn needs_local_ort(runtime: &RuntimeContract) -> bool {
+    runtime.embedding.provider == EmbeddingProviderKind::Local
+        || runtime.reranker.provider == RerankerProviderKind::Local
+}
+
+fn resolve_local_ort_dylib_path(
+    runtime: &RuntimeContract,
+    ort_dylib_path: Option<PathBuf>,
+) -> Result<Option<PathBuf>> {
+    if !needs_local_ort(runtime) {
+        return Ok(None);
+    }
+
+    if let Some(path) = ort_dylib_path {
+        validate_ort_dylib_path(&path)?;
+        return Ok(Some(path));
+    }
+
+    let discovered = discover_repo_local_ort_dylib_path().ok_or_else(|| {
+        ConfigError::configuration(
+            "local embeddings or reranking require ONNX Runtime; set execution.ort_dylib_path or install a repo-local ONNX Runtime under lib/onnxruntime-*/lib"
+        )
+    })?;
+    Ok(Some(discovered))
+}
+
+fn validate_ort_dylib_path(path: &Path) -> Result<()> {
+    if path.as_os_str().is_empty() {
+        return Err(ConfigError::configuration(
+            "execution.ort_dylib_path must not be blank",
+        ));
+    }
+
+    let resolved = resolve_workspace_path(path);
+    if !resolved.is_file() {
+        return Err(ConfigError::configuration(format!(
+            "execution.ort_dylib_path does not point to a file: {}",
+            resolved.display()
+        )));
+    }
+    Ok(())
+}
+
+fn discover_repo_local_ort_dylib_path() -> Option<PathBuf> {
+    let lib_root = resolve_workspace_path(Path::new("lib"));
+    let entries = fs::read_dir(lib_root).ok()?;
+    let mut candidates = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .filter_map(|dir| {
+            let name = dir.file_name()?.to_str()?;
+            if !name.starts_with("onnxruntime-") {
+                return None;
+            }
+            let dylib_dir = dir.join("lib");
+            let dylib_entries = fs::read_dir(dylib_dir).ok()?;
+            let mut dylibs = dylib_entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.is_file())
+                .filter(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(is_ort_dylib_filename)
+                })
+                .collect::<Vec<_>>();
+            dylibs.sort();
+            dylibs
+                .into_iter()
+                .next()
+                .and_then(|path| path.strip_prefix(workspace_root()).ok().map(PathBuf::from))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort();
+    candidates.into_iter().next()
+}
+
+fn is_ort_dylib_filename(name: &str) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        name.eq_ignore_ascii_case("onnxruntime.dll")
+    }
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        name == "libonnxruntime.so" || name.starts_with("libonnxruntime.so.")
+    }
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    {
+        name == "libonnxruntime.dylib" || name.starts_with("libonnxruntime.")
+    }
+}
+
+fn initialize_local_ort(runtime: &RuntimeContract, ort_dylib_path: Option<&Path>) -> Result<()> {
+    static ORT_DYLIB_INIT: OnceLock<PathBuf> = OnceLock::new();
+
+    if !needs_local_ort(runtime) {
+        return Ok(());
+    }
+
+    let ort_dylib_path = ort_dylib_path.ok_or_else(|| {
+        ConfigError::configuration(
+            "local embeddings or reranking require a resolved execution.ort_dylib_path",
+        )
+    })?;
+    let resolved = resolve_workspace_path(ort_dylib_path);
+
+    if let Some(existing) = ORT_DYLIB_INIT.get() {
+        if existing == &resolved {
+            return Ok(());
+        }
+        return Err(ConfigError::configuration(format!(
+            "ONNX Runtime was already initialized from {} and cannot be reconfigured to {} in the same benchmark process",
+            existing.display(),
+            resolved.display()
+        )));
+    }
+
+    let _ = ort::init_from(&resolved).map_err(|error| {
+        ConfigError::configuration(format!(
+            "failed to preload ONNX Runtime from {}: {error}",
+            resolved.display()
+        ))
+    })?;
+    let _ = ORT_DYLIB_INIT.set(resolved);
+    Ok(())
 }
 
 fn build_judge_config_from_parts(
@@ -1629,6 +1781,33 @@ question_jobs = 4
         assert!(printed.contains("\"contract_hash\""));
         assert!(!printed.contains("runtime-secret"));
         assert!(!printed.contains("judge-secret"));
+    }
+
+    #[test]
+    fn resolves_locomo_config_and_auto_discovers_repo_local_ort_path() {
+        let _guard = env_lock().lock().unwrap();
+
+        let profile = temp_path("profile.toml");
+        let overlay = temp_path("overlay.toml");
+        let dataset = temp_path("dataset.json");
+        let secrets = temp_path("secrets.env");
+
+        write_file(&profile, &sample_profile());
+        write_file(&dataset, r#"{"sample":"ok"}"#);
+        write_file(&overlay, &sample_overlay(&dataset));
+        write_file(
+            &secrets,
+            "ELEPHANT_BENCH_RUNTIME_API_KEY=runtime-secret\nELEPHANT_BENCH_JUDGE_API_KEY=judge-secret\n",
+        );
+
+        let resolved =
+            resolve_locomo_bench_config(&profile, Some(&overlay), Some(&secrets)).unwrap();
+
+        let expected = discover_repo_local_ort_dylib_path().unwrap();
+        assert_eq!(
+            resolved.redacted_execution_json()["ort_dylib_path"],
+            serde_json::Value::String(expected.display().to_string())
+        );
     }
 
     #[test]

@@ -14,7 +14,7 @@ pub fn resolve_workspace_path(path: &Path) -> PathBuf {
     };
     let anchor_to_workspace = matches!(
         first.as_os_str().to_str(),
-        Some("bench" | "data" | "models")
+        Some("bench" | "data" | "models" | "lib")
     );
     if !anchor_to_workspace {
         return path.to_path_buf();
@@ -112,6 +112,12 @@ mod tests {
         assert_eq!(
             resolve_workspace_path(Path::new("models/bge-small-en-v1.5")),
             workspace_root.join("models/bge-small-en-v1.5")
+        );
+        assert_eq!(
+            resolve_workspace_path(Path::new(
+                "lib/onnxruntime-linux-x64-1.23.0/lib/libonnxruntime.so.1.23.0"
+            )),
+            workspace_root.join("lib/onnxruntime-linux-x64-1.23.0/lib/libonnxruntime.so.1.23.0")
         );
     }
 
