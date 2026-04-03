@@ -315,7 +315,11 @@ impl ResolvedLongMemEvalBenchConfig {
         &self.execution.shard.instances
     }
 
-    /// Return the effective selected instance ids for this resolved run.
+    /// Return the effective explicit instance-id selection for this resolved run.
+    ///
+    /// This reflects either the canonical contract instance list or an execution-side
+    /// shard instance list. Window-based shard controls remain available through
+    /// `shard_instance_limit()` and `shard_instance_offset()`.
     pub fn selected_instances(&self) -> &[String] {
         if self.execution.shard.instances.is_empty() {
             &self.contract.instances

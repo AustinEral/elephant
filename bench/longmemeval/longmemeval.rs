@@ -929,8 +929,6 @@ struct BenchmarkManifest {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     session_limit: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    instance_limit: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     dirty_worktree: Option<bool>,
     #[serde(default)]
     prompt_hashes: BenchmarkPromptHashes,
@@ -2254,7 +2252,6 @@ async fn main() {
         instance_concurrency: config.instance_jobs,
         consolidation_strategy: config.consolidation.as_str().into(),
         session_limit: config.session_limit,
-        instance_limit: config.instance_limit,
         dirty_worktree: git_dirty_worktree(),
         prompt_hashes: benchmark_prompt_hashes(&runtime_metadata),
         runtime_config: benchmark_runtime_config(&runtime_metadata, &resolved_bench, &judge_config),
@@ -3426,7 +3423,6 @@ mod tests {
             instance_concurrency: 1,
             consolidation_strategy: "end".into(),
             session_limit: Some(5),
-            instance_limit: Some(1),
             dirty_worktree: Some(false),
             prompt_hashes: BenchmarkPromptHashes::default(),
             runtime_config: BenchmarkRuntimeConfig::default(),
@@ -3442,6 +3438,7 @@ mod tests {
         assert_eq!(back.profile, "smoke");
         assert_eq!(back.session_limit, Some(5));
         assert_eq!(back.contract_hash, Some("contract123".into()));
+        assert!(!json.contains("instance_limit"));
     }
 
     #[test]
@@ -4161,7 +4158,6 @@ mod tests {
                 instance_concurrency: 1,
                 consolidation_strategy: "end".into(),
                 session_limit: None,
-                instance_limit: None,
                 dirty_worktree: Some(false),
                 prompt_hashes: BenchmarkPromptHashes::default(),
                 runtime_config: BenchmarkRuntimeConfig::default(),
