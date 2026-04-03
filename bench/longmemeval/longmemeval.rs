@@ -596,6 +596,12 @@ fn resolve_qa_config(artifact_path: &Path, overrides: CliOverrides) -> Result<Ru
     if !overrides.instances.is_empty() {
         config.instances = overrides.instances;
     }
+    if let Some(limit) = overrides.instance_limit {
+        config.instance_limit = Some(limit);
+    }
+    if let Some(offset) = overrides.instance_offset {
+        config.instance_offset = offset;
+    }
     if let Some(jobs) = overrides.instance_jobs {
         config.instance_jobs = jobs;
     }
@@ -3145,12 +3151,70 @@ mod tests {
             output: Some(PathBuf::from("out.json")),
             tag: Some("tag".into()),
             instances: vec!["q1".into()],
+            instance_limit: Some(2),
+            instance_offset: Some(1),
             instance_jobs: Some(4),
             judge_model: Some("gpt-4o".into()),
             allow_overwrite: true,
             ..CliOverrides::default()
         };
         assert!(validate_qa_overrides(&overrides).is_ok());
+    }
+
+    #[test]
+    fn resolve_qa_config_applies_shard_window_overrides() {
+        let dir = env::temp_dir().join(format!("longmemeval-qa-config-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("artifact.json");
+
+        let output = BenchmarkOutput {
+            benchmark: "longmemeval".into(),
+            timestamp: "2026-03-15T00:00:00Z".into(),
+            commit: None,
+            tag: None,
+            retain_model: "m1".into(),
+            reflect_model: "m2".into(),
+            embedding_model: "m3".into(),
+            reranker_model: "m4".into(),
+            judge_model: String::new(),
+            consolidation_strategy: "end".into(),
+            total_questions: 3,
+            accuracy: 0.0,
+            per_category: HashMap::new(),
+            banks: HashMap::new(),
+            instance_status: HashMap::new(),
+            instance_timings: HashMap::new(),
+            manifest: BenchmarkManifest {
+                profile: "smoke".into(),
+                mode: "ingest".into(),
+                dataset_path: "data/longmemeval_s_cleaned.json".into(),
+                ingest_format: "text".into(),
+                consolidation_strategy: "end".into(),
+                instance_concurrency: 1,
+                selected_instances: vec!["q1".into(), "q2".into(), "q3".into()],
+                ..BenchmarkManifest::default()
+            },
+            artifacts: BenchmarkArtifacts::default(),
+            stage_metrics: BTreeMap::new(),
+            total_stage_usage: StageUsage::default(),
+            total_time_s: 10.0,
+        };
+        fs::write(&path, serde_json::to_string_pretty(&output).unwrap()).unwrap();
+
+        let config = resolve_qa_config(
+            &path,
+            CliOverrides {
+                instance_limit: Some(1),
+                instance_offset: Some(2),
+                ..CliOverrides::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(config.instance_limit, Some(1));
+        assert_eq!(config.instance_offset, 2);
+
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
