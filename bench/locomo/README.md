@@ -153,6 +153,12 @@ cargo run --release --bin locomo-bench -- \
   bench/locomo/results/local/batch-b.json \
   --out bench/locomo/results/canonical/full.json
 
+# Verify a shard set before merge/publication
+cargo run --release --bin locomo-bench -- \
+  verify \
+  bench/locomo/results/local/batch-a.json \
+  bench/locomo/results/local/batch-b.json
+
 # Export a Pages-friendly publish bundle from one canonical artifact
 cargo run --release --bin locomo-bench -- \
   publish \
@@ -187,6 +193,7 @@ Use `publish` after that to stage a public bundle with `summary.json` plus gzipp
 | `ingest` | Ingest and consolidate only; do not run QA |
 | `qa <artifact>` | Score QA against bank ids from an existing artifact; skips ingest and consolidation |
 | `merge <artifact>...` | Combine compatible subset artifacts into one canonical summary + sidecars |
+| `verify <artifact>...` | Validate artifact structure and shard compatibility without running the benchmark |
 | `publish <artifact>` | Export a publishable bundle with `index.json`, `summary.json`, and `questions.jsonl.gz` |
 | `--profile <name>` | Load a versioned benchmark profile (`full`, `smoke`, `legacy-raw`) |
 | `--config <path>` | Apply a TOML execution overlay on top of the selected profile |
@@ -200,6 +207,8 @@ Use `publish` after that to stage a public bundle with `summary.json` plus gzipp
 Fresh `run`, `ingest`, and `merge` outputs now refuse to overwrite existing summary/sidecar files unless you pass `--force`. `qa` also refuses to overwrite when `--tag` resolves to an existing file; pass `--force` to override.
 
 Contract-affecting slice/ingest/consolidation settings live in the checked-in profile. Execution-time sharding, like `--conversation`, stays outside the contract hash.
+
+`verify` is the first publication-hygiene command for LoCoMo. It checks artifact structure, per-artifact consistency, and multi-artifact shard compatibility before merge or publication.
 
 ## Merge constraints
 
