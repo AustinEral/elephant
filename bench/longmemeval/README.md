@@ -84,6 +84,12 @@ cargo run --release --bin longmemeval-bench -- \
 # Inspect results
 cargo run --release --bin longmemeval-view -- bench/longmemeval/results/local/baseline.json
 
+# Verify a shard set before merge/publication
+cargo run --release --bin longmemeval-bench -- \
+  verify \
+  bench/longmemeval/results/local/shard-a.json \
+  bench/longmemeval/results/local/shard-b.json
+
 # Compare two runs
 cargo run --release --bin longmemeval-view -- \
   bench/longmemeval/results/local/baseline.json \
@@ -97,6 +103,7 @@ cargo run --release --bin longmemeval-view -- \
 | `run` | Ingest + consolidate + QA (full pipeline) |
 | `ingest` | Ingest + consolidate only, no QA |
 | `qa <artifact>` | Score against existing banks from ingest artifact |
+| `verify <artifact...>` | Validate artifact structure and shard compatibility without running the benchmark |
 | `--profile <name>` | `smoke` (1 instance), `full-s` (S dataset), `full-m` (M dataset) |
 | `--config <path>` | TOML execution overlay on top of profile |
 | `--instance <id>` | Execution-only shard selector within the profile slice |
@@ -111,6 +118,8 @@ cargo run --release --bin longmemeval-view -- \
 | `--force` | Allow overwriting existing output |
 
 Contract-affecting slice, ingest, consolidation, and judge defaults live in the checked-in profile. Execution-time shard controls stay outside the contract hash.
+
+`verify` is the first publication-hygiene command. It checks artifact structure, per-artifact consistency, and multi-artifact shard compatibility for LongMemEval result artifacts.
 
 ## Output artifacts
 

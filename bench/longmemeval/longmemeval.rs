@@ -85,6 +85,7 @@ enum BenchCommand {
     Ingest,
     Qa,
     Merge,
+    Verify,
     ConfigResolve,
 }
 
@@ -95,6 +96,7 @@ impl BenchCommand {
             Self::Ingest => "ingest",
             Self::Qa => "qa",
             Self::Merge => "merge",
+            Self::Verify => "verify",
             Self::ConfigResolve => "config-resolve",
         }
     }
@@ -282,7 +284,9 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
     let mut overrides = CliOverrides::default();
     let command = match raw.get(1).map(String::as_str) {
         None => {
-            return Err("expected subcommand: run, ingest, qa, merge, or config-resolve".into());
+            return Err(
+                "expected subcommand: run, ingest, qa, merge, verify, or config-resolve".into(),
+            );
         }
         Some("--help") | Some("-h") => {
             overrides.help = true;
@@ -298,10 +302,11 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
         Some("ingest") => BenchCommand::Ingest,
         Some("qa") => BenchCommand::Qa,
         Some("merge") => BenchCommand::Merge,
+        Some("verify") => BenchCommand::Verify,
         Some("config-resolve") => BenchCommand::ConfigResolve,
         Some(other) => {
             return Err(format!(
-                "unknown subcommand: {other} (expected one of: run, ingest, qa, merge, config-resolve)"
+                "unknown subcommand: {other} (expected one of: run, ingest, qa, merge, verify, config-resolve)"
             ));
         }
     };
@@ -435,7 +440,10 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
             "--resume" => {
                 overrides.resume = true;
             }
-            value if matches!(command, BenchCommand::Merge) && !value.starts_with('-') => {
+            value
+                if matches!(command, BenchCommand::Merge | BenchCommand::Verify)
+                    && !value.starts_with('-') =>
+            {
                 merge_artifacts.push(PathBuf::from(value));
             }
             other => return Err(format!("Unknown argument: {other}")),
@@ -445,6 +453,9 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
 
     if matches!(command, BenchCommand::Merge) && merge_artifacts.len() < 2 {
         return Err("`merge` requires at least two input artifacts".into());
+    }
+    if matches!(command, BenchCommand::Verify) && merge_artifacts.is_empty() {
+        return Err("`verify` requires at least one input artifact".into());
     }
     let secrets_env_file = overrides.secrets_env_file.clone();
     Ok(ParsedCli {
@@ -483,6 +494,7 @@ fn parse_args_from(raw: &[String]) -> Result<Option<BenchInvocation>, String> {
             overrides,
         )?,
         BenchCommand::Merge => resolve_merge_config(overrides)?,
+        BenchCommand::Verify => resolve_verify_config(overrides)?,
         BenchCommand::ConfigResolve => resolve_config_resolve_config(overrides)?,
     };
     Ok(Some(BenchInvocation {
@@ -734,6 +746,72 @@ fn resolve_merge_config(overrides: CliOverrides) -> Result<RunConfig, String> {
     Ok(config)
 }
 
+fn validate_verify_overrides(overrides: &CliOverrides) -> Result<(), String> {
+    let mut unsupported = Vec::new();
+    if overrides.profile.is_some() {
+        unsupported.push("--profile");
+    }
+    if overrides.config_path.is_some() {
+        unsupported.push("--config");
+    }
+    if overrides.dataset.is_some() {
+        unsupported.push("--dataset");
+    }
+    if overrides.output.is_some() {
+        unsupported.push("--out");
+    }
+    if overrides.tag.is_some() {
+        unsupported.push("--tag");
+    }
+    if !overrides.instances.is_empty() {
+        unsupported.push("--instance");
+    }
+    if overrides.session_limit.is_some() {
+        unsupported.push("--session-limit");
+    }
+    if overrides.instance_limit.is_some() {
+        unsupported.push("--instance-limit");
+    }
+    if overrides.instance_offset.is_some() {
+        unsupported.push("--instance-offset");
+    }
+    if overrides.ingest_format.is_some() {
+        unsupported.push("--ingest-format");
+    }
+    if overrides.consolidation.is_some() {
+        unsupported.push("--consolidation");
+    }
+    if overrides.instance_jobs.is_some() {
+        unsupported.push("--instance-jobs");
+    }
+    if overrides.judge_model.is_some() {
+        unsupported.push("--judge-model");
+    }
+    if overrides.secrets_env_file.is_some() {
+        unsupported.push("--secrets-env-file");
+    }
+    if overrides.allow_overwrite {
+        unsupported.push("--force");
+    }
+    if overrides.resume {
+        unsupported.push("--resume");
+    }
+
+    if unsupported.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "`verify` only accepts artifact paths; it does not accept {}",
+            unsupported.join(", ")
+        ))
+    }
+}
+
+fn resolve_verify_config(overrides: CliOverrides) -> Result<RunConfig, String> {
+    validate_verify_overrides(&overrides)?;
+    Ok(RunConfig::default())
+}
+
 // --- Output paths ---
 
 fn default_output_path(
@@ -762,6 +840,7 @@ fn default_output_path(
             let stem = config.tag.as_deref().unwrap_or("merged");
             PathBuf::from(format!("bench/longmemeval/results/local/{stem}.json"))
         }
+        BenchCommand::Verify => PathBuf::from("bench/longmemeval/results/local/verify.json"),
         BenchCommand::Run | BenchCommand::Ingest => {
             let stem = if let Some(ref tag) = config.tag {
                 tag.clone()
@@ -781,6 +860,7 @@ fn print_help() {
     eprintln!("  longmemeval-bench ingest [OPTIONS]");
     eprintln!("  longmemeval-bench qa <ARTIFACT.json> [OPTIONS]");
     eprintln!("  longmemeval-bench merge <A.json> <B.json> [... --out/--tag/--force]");
+    eprintln!("  longmemeval-bench verify <ARTIFACT.json> [MORE.json ...]");
     eprintln!(
         "  longmemeval-bench config-resolve [--profile NAME] [--config PATH] [--secrets-env-file PATH]"
     );
@@ -793,6 +873,9 @@ fn print_help() {
     );
     eprintln!(
         "  merge <A> <B> [...]              Merge subset artifacts into a single result file"
+    );
+    eprintln!(
+        "  verify <A> [B ...]               Verify artifact structure and shard compatibility"
     );
     eprintln!(
         "  config-resolve                   Validate and print the resolved benchmark contract"
@@ -1508,6 +1591,134 @@ fn merge_source_artifact(bundle: &LoadedArtifactBundle) -> SourceArtifact {
     }
 }
 
+fn verify_artifact_bundle(bundle: &LoadedArtifactBundle) -> Result<(), String> {
+    let question_ids = bundle
+        .questions
+        .iter()
+        .map(|result| result.question_id.clone())
+        .collect::<BTreeSet<_>>();
+    if question_ids.len() != bundle.questions.len() {
+        return Err(format!(
+            "artifact {} contains duplicate question ids",
+            bundle.path.display()
+        ));
+    }
+
+    let debug_ids = bundle
+        .debug_records
+        .iter()
+        .map(|record| record.question_id.clone())
+        .collect::<BTreeSet<_>>();
+    if debug_ids.len() != bundle.debug_records.len() {
+        return Err(format!(
+            "artifact {} contains duplicate debug ids",
+            bundle.path.display()
+        ));
+    }
+    if !debug_ids.is_empty() && debug_ids != question_ids {
+        return Err(format!(
+            "artifact {} debug records do not match question ids",
+            bundle.path.display()
+        ));
+    }
+
+    let bank_ids = bundle.output.banks.keys().cloned().collect::<BTreeSet<_>>();
+    if bank_ids != question_ids {
+        return Err(format!(
+            "artifact {} bank ids do not match question ids",
+            bundle.path.display()
+        ));
+    }
+
+    let selected_ids = bundle
+        .output
+        .manifest
+        .selected_instances
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if selected_ids.len() != bundle.output.manifest.selected_instances.len() {
+        return Err(format!(
+            "artifact {} contains duplicate selected_instances",
+            bundle.path.display()
+        ));
+    }
+    if selected_ids != question_ids {
+        return Err(format!(
+            "artifact {} selected_instances do not match question ids",
+            bundle.path.display()
+        ));
+    }
+
+    if bundle.output.manifest.mode == BenchCommand::Merge.as_str() {
+        if bundle.output.manifest.execution.is_some() {
+            return Err(format!(
+                "artifact {} is a merged artifact but still has execution provenance",
+                bundle.path.display()
+            ));
+        }
+        if bundle.output.manifest.source_artifacts.is_empty() {
+            return Err(format!(
+                "artifact {} is a merged artifact but has no source_artifacts",
+                bundle.path.display()
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn verify_artifacts(input_paths: &[PathBuf]) -> Result<(), String> {
+    let bundles = input_paths
+        .iter()
+        .map(|path| load_artifact_bundle(path))
+        .collect::<Result<Vec<_>, _>>()?;
+    let base = bundles
+        .first()
+        .ok_or_else(|| "`verify` requires at least one input artifact".to_string())?;
+
+    for bundle in &bundles {
+        verify_artifact_bundle(bundle)?;
+    }
+
+    if bundles.len() > 1 {
+        for bundle in bundles.iter().skip(1) {
+            ensure_merge_compatible(base, bundle)?;
+        }
+
+        let mut seen_question_ids = BTreeSet::new();
+        for bundle in &bundles {
+            for result in &bundle.questions {
+                if !seen_question_ids.insert(result.question_id.clone()) {
+                    return Err(format!(
+                        "cannot verify shard set: duplicate question id {} across artifacts",
+                        result.question_id
+                    ));
+                }
+            }
+        }
+    }
+
+    let total_questions = bundles
+        .iter()
+        .map(|bundle| bundle.questions.len())
+        .sum::<usize>();
+    let contract_hash = base
+        .output
+        .manifest
+        .contract_hash
+        .as_deref()
+        .unwrap_or("<none>");
+    println!(
+        "Verified {} artifact{} (contract_hash: {}, total questions: {})",
+        bundles.len(),
+        if bundles.len() == 1 { "" } else { "s" },
+        contract_hash,
+        total_questions
+    );
+    Ok(())
+}
+
 fn ensure_merge_compatible(
     base: &LoadedArtifactBundle,
     other: &LoadedArtifactBundle,
@@ -1928,8 +2139,17 @@ async fn main() {
             println!("{}", resolved.to_pretty_redacted_json());
             return;
         }
+        BenchCommand::Verify => None,
         BenchCommand::Merge => None,
     };
+
+    if matches!(command, BenchCommand::Verify) {
+        if let Err(err) = verify_artifacts(&merge_inputs) {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     let output_path = default_output_path(command, &config, artifact_path.as_deref());
 
@@ -4153,6 +4373,23 @@ mod tests {
     }
 
     #[test]
+    fn parse_verify_subcommand() {
+        let raw = vec![s("bin"), s("verify"), s("a.json"), s("b.json")];
+        let parsed = parse_cli_overrides(&raw).unwrap();
+        assert_eq!(parsed.command, BenchCommand::Verify);
+        assert_eq!(parsed.merge_artifacts.len(), 2);
+        assert_eq!(parsed.merge_artifacts[0], PathBuf::from("a.json"));
+        assert_eq!(parsed.merge_artifacts[1], PathBuf::from("b.json"));
+    }
+
+    #[test]
+    fn parse_verify_requires_one_input() {
+        let raw = vec![s("bin"), s("verify")];
+        let err = parse_cli_overrides(&raw).unwrap_err();
+        assert!(err.contains("at least one"));
+    }
+
+    #[test]
     fn default_output_merge_with_tag() {
         let config = RunConfig {
             tag: Some("foo".into()),
@@ -4191,6 +4428,10 @@ mod tests {
         for q in questions {
             banks.insert(q.question_id.clone(), q.bank_id.clone());
         }
+        let selected_instances = questions
+            .iter()
+            .map(|q| q.question_id.clone())
+            .collect::<Vec<_>>();
 
         let output = BenchmarkOutput {
             benchmark: "longmemeval".into(),
@@ -4217,7 +4458,7 @@ mod tests {
                 dataset_path: "data/test.json".into(),
                 dataset_fingerprint: "test-fingerprint".into(),
                 command: "longmemeval-bench run".into(),
-                selected_instances: vec![],
+                selected_instances,
                 ingest_format: "text".into(),
                 instance_concurrency: 1,
                 consolidation_strategy: "end".into(),
@@ -4402,6 +4643,53 @@ mod tests {
         // Banks merged
         assert_eq!(merged.banks.len(), 3);
         assert_eq!(merged.banks.get("q1").unwrap(), "bank-q1");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn verify_accepts_disjoint_same_contract_shards() {
+        let dir = env::temp_dir().join(format!(
+            "longmemeval-verify-disjoint-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+
+        let art_a = make_test_artifact(
+            &dir,
+            "a",
+            &[make_test_qr("q1", true)],
+            &[make_test_debug("q1")],
+        );
+        let art_b = make_test_artifact(
+            &dir,
+            "b",
+            &[make_test_qr("q2", false)],
+            &[make_test_debug("q2")],
+        );
+
+        verify_artifacts(&[art_a, art_b]).unwrap();
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn verify_rejects_selected_instance_drift() {
+        let dir = env::temp_dir().join(format!("longmemeval-verify-drift-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+
+        let art = make_test_artifact(
+            &dir,
+            "a",
+            &[make_test_qr("q1", true)],
+            &[make_test_debug("q1")],
+        );
+        let mut output = load_benchmark_output(&art).unwrap();
+        output.manifest.selected_instances = vec!["q2".into()];
+        fs::write(&art, serde_json::to_string_pretty(&output).unwrap()).unwrap();
+
+        let err = verify_artifacts(&[art]).unwrap_err();
+        assert!(err.contains("selected_instances"));
 
         fs::remove_dir_all(&dir).ok();
     }
