@@ -86,6 +86,7 @@ enum BenchCommand {
     Qa,
     Merge,
     Verify,
+    Doctor,
     ConfigResolve,
 }
 
@@ -97,6 +98,7 @@ impl BenchCommand {
             Self::Qa => "qa",
             Self::Merge => "merge",
             Self::Verify => "verify",
+            Self::Doctor => "doctor",
             Self::ConfigResolve => "config-resolve",
         }
     }
@@ -285,7 +287,8 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
     let command = match raw.get(1).map(String::as_str) {
         None => {
             return Err(
-                "expected subcommand: run, ingest, qa, merge, verify, or config-resolve".into(),
+                "expected subcommand: run, ingest, qa, merge, verify, doctor, or config-resolve"
+                    .into(),
             );
         }
         Some("--help") | Some("-h") => {
@@ -303,10 +306,11 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
         Some("qa") => BenchCommand::Qa,
         Some("merge") => BenchCommand::Merge,
         Some("verify") => BenchCommand::Verify,
+        Some("doctor") => BenchCommand::Doctor,
         Some("config-resolve") => BenchCommand::ConfigResolve,
         Some(other) => {
             return Err(format!(
-                "unknown subcommand: {other} (expected one of: run, ingest, qa, merge, verify, config-resolve)"
+                "unknown subcommand: {other} (expected one of: run, ingest, qa, merge, verify, doctor, config-resolve)"
             ));
         }
     };
@@ -441,8 +445,10 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
                 overrides.resume = true;
             }
             value
-                if matches!(command, BenchCommand::Merge | BenchCommand::Verify)
-                    && !value.starts_with('-') =>
+                if matches!(
+                    command,
+                    BenchCommand::Merge | BenchCommand::Verify | BenchCommand::Doctor
+                ) && !value.starts_with('-') =>
             {
                 merge_artifacts.push(PathBuf::from(value));
             }
@@ -456,6 +462,9 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
     }
     if matches!(command, BenchCommand::Verify) && merge_artifacts.is_empty() {
         return Err("`verify` requires at least one input artifact".into());
+    }
+    if matches!(command, BenchCommand::Doctor) && merge_artifacts.is_empty() {
+        return Err("`doctor` requires at least one input artifact".into());
     }
     let secrets_env_file = overrides.secrets_env_file.clone();
     Ok(ParsedCli {
@@ -495,6 +504,7 @@ fn parse_args_from(raw: &[String]) -> Result<Option<BenchInvocation>, String> {
         )?,
         BenchCommand::Merge => resolve_merge_config(overrides)?,
         BenchCommand::Verify => resolve_verify_config(overrides)?,
+        BenchCommand::Doctor => resolve_doctor_config(overrides)?,
         BenchCommand::ConfigResolve => resolve_config_resolve_config(overrides)?,
     };
     Ok(Some(BenchInvocation {
@@ -746,7 +756,10 @@ fn resolve_merge_config(overrides: CliOverrides) -> Result<RunConfig, String> {
     Ok(config)
 }
 
-fn validate_verify_overrides(overrides: &CliOverrides) -> Result<(), String> {
+fn validate_artifact_check_overrides(
+    subcommand: &str,
+    overrides: &CliOverrides,
+) -> Result<(), String> {
     let mut unsupported = Vec::new();
     if overrides.profile.is_some() {
         unsupported.push("--profile");
@@ -801,14 +814,27 @@ fn validate_verify_overrides(overrides: &CliOverrides) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "`verify` only accepts artifact paths; it does not accept {}",
+            "`{subcommand}` only accepts artifact paths; it does not accept {}",
             unsupported.join(", ")
         ))
     }
 }
 
+fn validate_verify_overrides(overrides: &CliOverrides) -> Result<(), String> {
+    validate_artifact_check_overrides("verify", overrides)
+}
+
 fn resolve_verify_config(overrides: CliOverrides) -> Result<RunConfig, String> {
     validate_verify_overrides(&overrides)?;
+    Ok(RunConfig::default())
+}
+
+fn validate_doctor_overrides(overrides: &CliOverrides) -> Result<(), String> {
+    validate_artifact_check_overrides("doctor", overrides)
+}
+
+fn resolve_doctor_config(overrides: CliOverrides) -> Result<RunConfig, String> {
+    validate_doctor_overrides(&overrides)?;
     Ok(RunConfig::default())
 }
 
@@ -841,6 +867,7 @@ fn default_output_path(
             PathBuf::from(format!("bench/longmemeval/results/local/{stem}.json"))
         }
         BenchCommand::Verify => PathBuf::from("bench/longmemeval/results/local/verify.json"),
+        BenchCommand::Doctor => PathBuf::from("bench/longmemeval/results/local/doctor.json"),
         BenchCommand::Run | BenchCommand::Ingest => {
             let stem = if let Some(ref tag) = config.tag {
                 tag.clone()
@@ -861,6 +888,7 @@ fn print_help() {
     eprintln!("  longmemeval-bench qa <ARTIFACT.json> [OPTIONS]");
     eprintln!("  longmemeval-bench merge <A.json> <B.json> [... --out/--tag/--force]");
     eprintln!("  longmemeval-bench verify <ARTIFACT.json> [MORE.json ...]");
+    eprintln!("  longmemeval-bench doctor <ARTIFACT.json> [MORE.json ...]");
     eprintln!(
         "  longmemeval-bench config-resolve [--profile NAME] [--config PATH] [--secrets-env-file PATH]"
     );
@@ -876,6 +904,9 @@ fn print_help() {
     );
     eprintln!(
         "  verify <A> [B ...]               Verify artifact structure and shard compatibility"
+    );
+    eprintln!(
+        "  doctor <A> [B ...]               Check publication readiness and canonical-slice coverage"
     );
     eprintln!(
         "  config-resolve                   Validate and print the resolved benchmark contract"
@@ -1668,14 +1699,16 @@ fn verify_artifact_bundle(bundle: &LoadedArtifactBundle) -> Result<(), String> {
     Ok(())
 }
 
-fn verify_artifacts(input_paths: &[PathBuf]) -> Result<(), String> {
+fn load_verified_artifact_bundles(
+    input_paths: &[PathBuf],
+) -> Result<Vec<LoadedArtifactBundle>, String> {
     let bundles = input_paths
         .iter()
         .map(|path| load_artifact_bundle(path))
         .collect::<Result<Vec<_>, _>>()?;
     let base = bundles
         .first()
-        .ok_or_else(|| "`verify` requires at least one input artifact".to_string())?;
+        .ok_or_else(|| "at least one input artifact is required".to_string())?;
 
     for bundle in &bundles {
         verify_artifact_bundle(bundle)?;
@@ -1699,16 +1732,29 @@ fn verify_artifacts(input_paths: &[PathBuf]) -> Result<(), String> {
         }
     }
 
+    Ok(bundles)
+}
+
+fn summarize_verified_artifacts(bundles: &[LoadedArtifactBundle]) -> (usize, &str) {
     let total_questions = bundles
         .iter()
         .map(|bundle| bundle.questions.len())
         .sum::<usize>();
+    let base = bundles
+        .first()
+        .expect("verified artifact list is non-empty by construction");
     let contract_hash = base
         .output
         .manifest
         .contract_hash
         .as_deref()
         .unwrap_or("<none>");
+    (total_questions, contract_hash)
+}
+
+fn verify_artifacts(input_paths: &[PathBuf]) -> Result<(), String> {
+    let bundles = load_verified_artifact_bundles(input_paths)?;
+    let (total_questions, contract_hash) = summarize_verified_artifacts(&bundles);
     println!(
         "Verified {} artifact{} (contract_hash: {}, total questions: {})",
         bundles.len(),
@@ -1716,6 +1762,77 @@ fn verify_artifacts(input_paths: &[PathBuf]) -> Result<(), String> {
         contract_hash,
         total_questions
     );
+    Ok(())
+}
+
+fn explicit_contract_instances(bundle: &LoadedArtifactBundle) -> Option<BTreeSet<String>> {
+    let instances = bundle
+        .output
+        .manifest
+        .resolved_contract
+        .as_ref()
+        .and_then(|value| value.get("instances"))
+        .and_then(|value| value.as_array())?
+        .iter()
+        .filter_map(|value| value.as_str().map(str::to_owned))
+        .collect::<BTreeSet<_>>();
+    if instances.is_empty() {
+        None
+    } else {
+        Some(instances)
+    }
+}
+
+fn doctor_artifacts(input_paths: &[PathBuf]) -> Result<(), String> {
+    let bundles = load_verified_artifact_bundles(input_paths)?;
+    let covered_instances = bundles
+        .iter()
+        .flat_map(|bundle| bundle.output.manifest.selected_instances.iter().cloned())
+        .collect::<BTreeSet<_>>();
+    let (total_questions, contract_hash) = summarize_verified_artifacts(&bundles);
+
+    if let Some(canonical_instances) = bundles.first().and_then(explicit_contract_instances) {
+        if covered_instances != canonical_instances {
+            let missing = canonical_instances
+                .difference(&covered_instances)
+                .cloned()
+                .collect::<Vec<_>>();
+            let unexpected = covered_instances
+                .difference(&canonical_instances)
+                .cloned()
+                .collect::<Vec<_>>();
+
+            let mut details = Vec::new();
+            if !missing.is_empty() {
+                details.push(format!("missing: {}", missing.join(", ")));
+            }
+            if !unexpected.is_empty() {
+                details.push(format!("unexpected: {}", unexpected.join(", ")));
+            }
+
+            return Err(format!(
+                "canonical instance slice coverage mismatch ({})",
+                details.join("; ")
+            ));
+        }
+
+        println!(
+            "Doctor OK: {} artifact{} cover the canonical instance slice (contract_hash: {}, total questions: {})",
+            bundles.len(),
+            if bundles.len() == 1 { "" } else { "s" },
+            contract_hash,
+            total_questions
+        );
+    } else {
+        println!(
+            "Doctor OK: {} artifact{} are structurally sound and merge-compatible (contract_hash: {}, total questions: {}, coverage: not provable from explicit contract instances)",
+            bundles.len(),
+            if bundles.len() == 1 { "" } else { "s" },
+            contract_hash,
+            total_questions
+        );
+    }
+
     Ok(())
 }
 
@@ -2140,11 +2257,20 @@ async fn main() {
             return;
         }
         BenchCommand::Verify => None,
+        BenchCommand::Doctor => None,
         BenchCommand::Merge => None,
     };
 
     if matches!(command, BenchCommand::Verify) {
         if let Err(err) = verify_artifacts(&merge_inputs) {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if matches!(command, BenchCommand::Doctor) {
+        if let Err(err) = doctor_artifacts(&merge_inputs) {
             eprintln!("{err}");
             std::process::exit(1);
         }
@@ -4390,6 +4516,23 @@ mod tests {
     }
 
     #[test]
+    fn parse_doctor_subcommand() {
+        let raw = vec![s("bin"), s("doctor"), s("a.json"), s("b.json")];
+        let parsed = parse_cli_overrides(&raw).unwrap();
+        assert_eq!(parsed.command, BenchCommand::Doctor);
+        assert_eq!(parsed.merge_artifacts.len(), 2);
+        assert_eq!(parsed.merge_artifacts[0], PathBuf::from("a.json"));
+        assert_eq!(parsed.merge_artifacts[1], PathBuf::from("b.json"));
+    }
+
+    #[test]
+    fn parse_doctor_requires_one_input() {
+        let raw = vec![s("bin"), s("doctor")];
+        let err = parse_cli_overrides(&raw).unwrap_err();
+        assert!(err.contains("at least one"));
+    }
+
+    #[test]
     fn default_output_merge_with_tag() {
         let config = RunConfig {
             tag: Some("foo".into()),
@@ -4690,6 +4833,68 @@ mod tests {
 
         let err = verify_artifacts(&[art]).unwrap_err();
         assert!(err.contains("selected_instances"));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn doctor_accepts_full_explicit_instance_coverage() {
+        let dir = env::temp_dir().join(format!("longmemeval-doctor-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+
+        let art_a = make_test_artifact(
+            &dir,
+            "a",
+            &[make_test_qr("q1", true)],
+            &[make_test_debug("q1")],
+        );
+        let art_b = make_test_artifact(
+            &dir,
+            "b",
+            &[make_test_qr("q2", false)],
+            &[make_test_debug("q2")],
+        );
+        for artifact_path in [&art_a, &art_b] {
+            let mut output = load_benchmark_output(artifact_path).unwrap();
+            output.manifest.contract_hash = Some("contract-test".into());
+            output.manifest.resolved_contract = Some(serde_json::json!({
+                "benchmark": "longmemeval",
+                "instances": ["q1", "q2"]
+            }));
+            fs::write(
+                artifact_path,
+                serde_json::to_string_pretty(&output).unwrap(),
+            )
+            .unwrap();
+        }
+
+        doctor_artifacts(&[art_a, art_b]).unwrap();
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn doctor_rejects_incomplete_explicit_instance_coverage() {
+        let dir =
+            env::temp_dir().join(format!("longmemeval-doctor-missing-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+
+        let art = make_test_artifact(
+            &dir,
+            "a",
+            &[make_test_qr("q1", true)],
+            &[make_test_debug("q1")],
+        );
+        let mut output = load_benchmark_output(&art).unwrap();
+        output.manifest.contract_hash = Some("contract-test".into());
+        output.manifest.resolved_contract = Some(serde_json::json!({
+            "benchmark": "longmemeval",
+            "instances": ["q1", "q2"]
+        }));
+        fs::write(&art, serde_json::to_string_pretty(&output).unwrap()).unwrap();
+
+        let err = doctor_artifacts(&[art]).unwrap_err();
+        assert!(err.contains("canonical instance slice"));
 
         fs::remove_dir_all(&dir).ok();
     }

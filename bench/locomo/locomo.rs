@@ -956,6 +956,7 @@ enum BenchCommand {
     Qa,
     Merge,
     Verify,
+    Doctor,
     Publish,
     ConfigResolve,
 }
@@ -968,6 +969,7 @@ impl BenchCommand {
             Self::Qa => "qa",
             Self::Merge => "merge",
             Self::Verify => "verify",
+            Self::Doctor => "doctor",
             Self::Publish => "publish",
             Self::ConfigResolve => "config-resolve",
         }
@@ -1238,12 +1240,16 @@ fn parse_args_from(raw: &[String]) -> Result<Option<BenchInvocation>, String> {
         )?,
         BenchCommand::Merge => resolve_merge_config(overrides)?,
         BenchCommand::Verify => resolve_verify_config(overrides)?,
+        BenchCommand::Doctor => resolve_doctor_config(overrides)?,
         BenchCommand::Publish => resolve_publish_config(overrides)?,
         BenchCommand::ConfigResolve => resolve_config_resolve_config(overrides)?,
     };
     if !matches!(
         command,
-        BenchCommand::Publish | BenchCommand::ConfigResolve | BenchCommand::Verify
+        BenchCommand::Publish
+            | BenchCommand::ConfigResolve
+            | BenchCommand::Verify
+            | BenchCommand::Doctor
     ) {
         validate_run_config(command, &config)?;
     }
@@ -1337,7 +1343,10 @@ fn resolve_merge_config(overrides: CliOverrides) -> Result<RunConfig, String> {
     Ok(config)
 }
 
-fn validate_verify_overrides(overrides: &CliOverrides) -> Result<(), String> {
+fn validate_artifact_check_overrides(
+    subcommand: &str,
+    overrides: &CliOverrides,
+) -> Result<(), String> {
     let mut unsupported = Vec::new();
     if overrides.profile.is_some() {
         unsupported.push("--profile");
@@ -1395,14 +1404,27 @@ fn validate_verify_overrides(overrides: &CliOverrides) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "`verify` only accepts artifact paths; it does not accept {}",
+            "`{subcommand}` only accepts artifact paths; it does not accept {}",
             unsupported.join(", ")
         ))
     }
 }
 
+fn validate_verify_overrides(overrides: &CliOverrides) -> Result<(), String> {
+    validate_artifact_check_overrides("verify", overrides)
+}
+
 fn resolve_verify_config(overrides: CliOverrides) -> Result<RunConfig, String> {
     validate_verify_overrides(&overrides)?;
+    Ok(RunConfig::default())
+}
+
+fn validate_doctor_overrides(overrides: &CliOverrides) -> Result<(), String> {
+    validate_artifact_check_overrides("doctor", overrides)
+}
+
+fn resolve_doctor_config(overrides: CliOverrides) -> Result<RunConfig, String> {
+    validate_doctor_overrides(&overrides)?;
     Ok(RunConfig::default())
 }
 
@@ -1593,7 +1615,7 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
     let command = match raw.get(1).map(String::as_str) {
         None => {
             return Err(
-                "expected subcommand: run, ingest, qa, merge, verify, publish, or config-resolve"
+                "expected subcommand: run, ingest, qa, merge, verify, doctor, publish, or config-resolve"
                     .into(),
             );
         }
@@ -1612,11 +1634,12 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
         Some("qa") => BenchCommand::Qa,
         Some("merge") => BenchCommand::Merge,
         Some("verify") => BenchCommand::Verify,
+        Some("doctor") => BenchCommand::Doctor,
         Some("publish") => BenchCommand::Publish,
         Some("config-resolve") => BenchCommand::ConfigResolve,
         Some(other) => {
             return Err(format!(
-                "unknown subcommand: {other} (expected one of: run, ingest, qa, merge, verify, publish, config-resolve)"
+                "unknown subcommand: {other} (expected one of: run, ingest, qa, merge, verify, doctor, publish, config-resolve)"
             ));
         }
     };
@@ -1768,8 +1791,10 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
                     })?));
             }
             value
-                if matches!(command, BenchCommand::Merge | BenchCommand::Verify)
-                    && !value.starts_with('-') =>
+                if matches!(
+                    command,
+                    BenchCommand::Merge | BenchCommand::Verify | BenchCommand::Doctor
+                ) && !value.starts_with('-') =>
             {
                 merge_artifacts.push(PathBuf::from(value));
             }
@@ -1783,6 +1808,9 @@ fn parse_cli_overrides(raw: &[String]) -> Result<ParsedCli, String> {
     }
     if matches!(command, BenchCommand::Verify) && merge_artifacts.is_empty() {
         return Err("`verify` requires at least one input artifact".into());
+    }
+    if matches!(command, BenchCommand::Doctor) && merge_artifacts.is_empty() {
+        return Err("`doctor` requires at least one input artifact".into());
     }
     let publish_config = PublishConfig {
         run_id: overrides.publish_run_id.clone(),
@@ -2390,14 +2418,16 @@ fn verify_artifact_bundle(bundle: &LoadedArtifactBundle) -> Result<(), String> {
     Ok(())
 }
 
-fn verify_artifacts(input_paths: &[PathBuf]) -> Result<(), String> {
+fn load_verified_artifact_bundles(
+    input_paths: &[PathBuf],
+) -> Result<Vec<LoadedArtifactBundle>, String> {
     let bundles = input_paths
         .iter()
         .map(|path| load_artifact_bundle(path))
         .collect::<Result<Vec<_>, _>>()?;
     let base = bundles
         .first()
-        .ok_or_else(|| "`verify` requires at least one input artifact".to_string())?;
+        .ok_or_else(|| "at least one input artifact is required".to_string())?;
 
     for bundle in &bundles {
         verify_artifact_bundle(bundle)?;
@@ -2426,16 +2456,29 @@ fn verify_artifacts(input_paths: &[PathBuf]) -> Result<(), String> {
         }
     }
 
+    Ok(bundles)
+}
+
+fn summarize_verified_artifacts(bundles: &[LoadedArtifactBundle]) -> (usize, &str) {
     let total_questions = bundles
         .iter()
         .map(|bundle| bundle.questions.len())
         .sum::<usize>();
+    let base = bundles
+        .first()
+        .expect("verified artifact list is non-empty by construction");
     let contract_hash = base
         .output
         .manifest
         .contract_hash
         .as_deref()
         .unwrap_or("<none>");
+    (total_questions, contract_hash)
+}
+
+fn verify_artifacts(input_paths: &[PathBuf]) -> Result<(), String> {
+    let bundles = load_verified_artifact_bundles(input_paths)?;
+    let (total_questions, contract_hash) = summarize_verified_artifacts(&bundles);
     println!(
         "Verified {} artifact{} (contract_hash: {}, total questions: {})",
         bundles.len(),
@@ -2443,6 +2486,78 @@ fn verify_artifacts(input_paths: &[PathBuf]) -> Result<(), String> {
         contract_hash,
         total_questions
     );
+    Ok(())
+}
+
+fn explicit_contract_conversations(bundle: &LoadedArtifactBundle) -> Option<BTreeSet<String>> {
+    let conversations = bundle
+        .output
+        .manifest
+        .resolved_contract
+        .as_ref()
+        .and_then(|value| value.get("conversations"))
+        .and_then(|value| value.as_array())?
+        .iter()
+        .filter_map(|value| value.as_str().map(str::to_owned))
+        .collect::<BTreeSet<_>>();
+    if conversations.is_empty() {
+        None
+    } else {
+        Some(conversations)
+    }
+}
+
+fn doctor_artifacts(input_paths: &[PathBuf]) -> Result<(), String> {
+    let bundles = load_verified_artifact_bundles(input_paths)?;
+    let covered_conversations = bundles
+        .iter()
+        .flat_map(artifact_scope_ids)
+        .collect::<BTreeSet<_>>();
+    let (total_questions, contract_hash) = summarize_verified_artifacts(&bundles);
+
+    if let Some(canonical_conversations) = bundles.first().and_then(explicit_contract_conversations)
+    {
+        if covered_conversations != canonical_conversations {
+            let missing = canonical_conversations
+                .difference(&covered_conversations)
+                .cloned()
+                .collect::<Vec<_>>();
+            let unexpected = covered_conversations
+                .difference(&canonical_conversations)
+                .cloned()
+                .collect::<Vec<_>>();
+
+            let mut details = Vec::new();
+            if !missing.is_empty() {
+                details.push(format!("missing: {}", missing.join(", ")));
+            }
+            if !unexpected.is_empty() {
+                details.push(format!("unexpected: {}", unexpected.join(", ")));
+            }
+
+            return Err(format!(
+                "canonical conversation slice coverage mismatch ({})",
+                details.join("; ")
+            ));
+        }
+
+        println!(
+            "Doctor OK: {} artifact{} cover the canonical conversation slice (contract_hash: {}, total questions: {})",
+            bundles.len(),
+            if bundles.len() == 1 { "" } else { "s" },
+            contract_hash,
+            total_questions
+        );
+    } else {
+        println!(
+            "Doctor OK: {} artifact{} are structurally sound and merge-compatible (contract_hash: {}, total questions: {}, coverage: not provable from explicit contract conversations)",
+            bundles.len(),
+            if bundles.len() == 1 { "" } else { "s" },
+            contract_hash,
+            total_questions
+        );
+    }
+
     Ok(())
 }
 
@@ -2824,6 +2939,7 @@ fn print_help() {
     eprintln!("  locomo-bench qa <RESULTS.json> [OPTIONS]");
     eprintln!("  locomo-bench merge <RESULTS.json> <RESULTS.json>... [--out PATH|--tag NAME]");
     eprintln!("  locomo-bench verify <RESULTS.json> [MORE.json ...]");
+    eprintln!("  locomo-bench doctor <RESULTS.json> [MORE.json ...]");
     eprintln!(
         "  locomo-bench config-resolve [--profile NAME] [--config PATH] [--secrets-env-file PATH]"
     );
@@ -2843,6 +2959,9 @@ fn print_help() {
     );
     eprintln!(
         "  verify <RESULTS.json>...         Validate artifact structure and shard compatibility"
+    );
+    eprintln!(
+        "  doctor <RESULTS.json>...         Check publication readiness and canonical-slice coverage"
     );
     eprintln!(
         "  publish <RESULTS.json>           Export a GitHub Pages friendly bundle from one canonical artifact"
@@ -3875,6 +3994,7 @@ fn default_output_path(
             PathBuf::from(format!("bench/locomo/results/local/{stem}.json"))
         }
         BenchCommand::Verify => PathBuf::from("bench/locomo/results/local/verify.json"),
+        BenchCommand::Doctor => PathBuf::from("bench/locomo/results/local/doctor.json"),
         BenchCommand::Publish => PathBuf::from("bench/locomo/published"),
         BenchCommand::ConfigResolve => {
             PathBuf::from("bench/locomo/results/local/config-resolve.json")
@@ -3986,6 +4106,14 @@ async fn main() {
 
     if matches!(command, BenchCommand::Verify) {
         if let Err(err) = verify_artifacts(&merge_inputs) {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if matches!(command, BenchCommand::Doctor) {
+        if let Err(err) = doctor_artifacts(&merge_inputs) {
             eprintln!("{err}");
             std::process::exit(1);
         }
@@ -4711,6 +4839,190 @@ mod tests {
         raw.lines().map(|line| line.to_string()).collect()
     }
 
+    fn temp_path(name: &str) -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        env::temp_dir().join(format!("locomo-{unique}-{name}"))
+    }
+
+    fn write_temp_file(name: &str, contents: &str) -> PathBuf {
+        let path = temp_path(name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&path, contents).unwrap();
+        path
+    }
+
+    fn write_locomo_overlay() -> PathBuf {
+        let dataset_path = PathBuf::from("data/locomo10.json");
+        let output_dir = temp_path("results");
+        fs::create_dir_all(&output_dir).unwrap();
+        let overlay = format!(
+            concat!(
+                "database_url = \"postgres://localhost/elephant\"\n",
+                "dataset_path = \"{}\"\n",
+                "output_dir = \"{}\"\n",
+                "conversation_jobs = 2\n",
+                "question_jobs = 4\n"
+            ),
+            dataset_path.display(),
+            output_dir.display(),
+        );
+        write_temp_file("execution.toml", &overlay)
+    }
+
+    fn write_bench_secrets() -> PathBuf {
+        write_temp_file(
+            "secrets.env",
+            "ELEPHANT_BENCH_RUNTIME_API_KEY=sk-runtime\nELEPHANT_BENCH_JUDGE_API_KEY=sk-judge\n",
+        )
+    }
+
+    fn make_test_artifact_from_resolved(
+        dir: &Path,
+        stem: &str,
+        profile: RunProfile,
+        resolved: &elephant_bench::ResolvedBenchConfig,
+        sample_id: &str,
+        question_id: &str,
+        judge_correct: bool,
+    ) -> PathBuf {
+        let output_path = dir.join(format!("{stem}.json"));
+        let questions_path = sidecar_path(&output_path, "questions");
+        let debug_path = sidecar_path(&output_path, "debug");
+        let question = test_question_result(sample_id, question_id, "single-hop", judge_correct);
+        let debug = QuestionDebugRecord {
+            question_id: question.question_id.clone(),
+            sample_id: question.sample_id.clone(),
+            question: question.question.clone(),
+            reflect_trace: Vec::new(),
+            final_done: None,
+            retrieved_context: Vec::new(),
+            retrieved_sources: Vec::new(),
+        };
+        write_jsonl_records(&questions_path, std::slice::from_ref(&question))
+            .expect("write question sidecar");
+        write_jsonl_records(&debug_path, std::slice::from_ref(&debug))
+            .expect("write debug sidecar");
+
+        let mut per_category = HashMap::new();
+        per_category.insert(
+            "single-hop".into(),
+            CategoryResult {
+                accuracy: if judge_correct { 1.0 } else { 0.0 },
+                mean_f1: if judge_correct { 1.0 } else { 0.0 },
+                mean_evidence_recall: if judge_correct { 1.0 } else { 0.0 },
+                count: 1,
+            },
+        );
+
+        let stage_usage = StageUsage {
+            input_tokens: 10,
+            cached_prompt_tokens: 7,
+            cache_read_input_tokens: 5,
+            cache_creation_input_tokens: 2,
+            output_tokens: 5,
+            calls: 1,
+            errors: 0,
+            latency_ms: 100,
+        };
+
+        let output = BenchmarkOutput {
+            benchmark: "locomo".into(),
+            timestamp: "2026-03-10T00:00:00Z".into(),
+            commit: Some("abc123".into()),
+            tag: Some(stem.into()),
+            judge_model: "gpt-5.4".into(),
+            retain_model: "model-r".into(),
+            reflect_model: "model-f".into(),
+            embedding_model: "model-e".into(),
+            reranker_model: "model-k".into(),
+            consolidation_strategy: resolved.consolidation_mode().into(),
+            total_questions: 1,
+            accuracy: if judge_correct { 1.0 } else { 0.0 },
+            mean_f1: if judge_correct { 1.0 } else { 0.0 },
+            mean_evidence_recall: if judge_correct { 1.0 } else { 0.0 },
+            per_category,
+            per_conversation: HashMap::from([(
+                sample_id.into(),
+                ConversationSummary {
+                    bank_id: format!("bank-{sample_id}"),
+                    accuracy: if judge_correct { 1.0 } else { 0.0 },
+                    mean_f1: if judge_correct { 1.0 } else { 0.0 },
+                    mean_evidence_recall: if judge_correct { 1.0 } else { 0.0 },
+                    count: 1,
+                    ingest_time_s: 2.0,
+                    consolidation_time_s: 1.0,
+                    qa_time_s: 3.0,
+                    total_time_s: 6.0,
+                    stage_metrics: BTreeMap::from([(LlmStage::Reflect, stage_usage.clone())]),
+                    bank_stats: ConversationBankStats {
+                        sessions_ingested: 1,
+                        turns_ingested: 2,
+                        facts_stored: 3,
+                        entities_resolved: 1,
+                        links_created: 0,
+                        opinions_reinforced: 0,
+                        opinions_weakened: 0,
+                        observations_created: 1,
+                        observations_updated: 0,
+                        final_fact_count: 4,
+                        final_observation_count: 1,
+                        final_opinion_count: 0,
+                        final_entity_count: 1,
+                    },
+                },
+            )]),
+            banks: HashMap::from([(sample_id.into(), format!("bank-{sample_id}"))]),
+            turn_refs: HashMap::from([(format!("{sample_id}-turn-1"), "D1:1".into())]),
+            manifest: BenchmarkManifest {
+                protocol_version: resolved.protocol_version().into(),
+                profile: profile.as_str().into(),
+                mode: "run".into(),
+                config_path: None,
+                dataset_path: resolved.dataset_path().display().to_string(),
+                dataset_fingerprint: resolved.dataset_fingerprint().into(),
+                command: format!("locomo-bench run --profile {}", profile.as_str()),
+                category_filter: resolved.category_filter().to_vec(),
+                selected_conversations: resolved.selected_conversations().to_vec(),
+                image_policy: resolved.image_policy().into(),
+                ingestion_granularity: resolved.ingest_mode().into(),
+                question_concurrency: resolved.question_jobs(),
+                conversation_concurrency: resolved.conversation_jobs(),
+                consolidation_strategy: resolved.consolidation_mode().into(),
+                session_limit: resolved.session_limit(),
+                question_limit: resolved.question_limit(),
+                raw_json: resolved.ingest_mode() == "raw-json",
+                dirty_worktree: Some(false),
+                prompt_hashes: BenchmarkPromptHashes::default(),
+                runtime_config: BenchmarkRuntimeConfig::default(),
+                contract_hash: Some(resolved.contract_hash().to_string()),
+                resolved_contract: Some(resolved.redacted_contract_json()),
+                execution: Some(resolved.redacted_execution_json()),
+                source_artifact: None,
+                source_artifacts: Vec::new(),
+            },
+            artifacts: BenchmarkArtifacts {
+                questions_path: relative_artifact_path(&output_path, &questions_path),
+                debug_path: relative_artifact_path(&output_path, &debug_path),
+            },
+            stage_metrics: BTreeMap::from([(LlmStage::Reflect, stage_usage.clone())]),
+            total_stage_usage: stage_usage,
+            results: Vec::new(),
+            total_time_s: 6.0,
+        };
+
+        fs::write(
+            &output_path,
+            serde_json::to_string_pretty(&output).expect("serialize output"),
+        )
+        .expect("write summary");
+        output_path
+    }
+
     #[test]
     fn excludes_category_five_even_when_answer_is_present() {
         let qa = QaPair {
@@ -4976,6 +5288,29 @@ mod tests {
     #[test]
     fn parse_verify_requires_one_input() {
         let raw = vec!["locomo-bench".to_string(), "verify".to_string()];
+        let err = parse_args_from(&raw).unwrap_err();
+        assert!(err.contains("at least one"));
+    }
+
+    #[test]
+    fn parse_doctor_subcommand() {
+        let raw = vec![
+            "locomo-bench".to_string(),
+            "doctor".to_string(),
+            "a.json".to_string(),
+            "b.json".to_string(),
+        ];
+        let invocation = parse_args_from(&raw).unwrap().unwrap();
+        assert_eq!(invocation.command, BenchCommand::Doctor);
+        assert_eq!(
+            invocation.merge_artifacts,
+            vec![PathBuf::from("a.json"), PathBuf::from("b.json")]
+        );
+    }
+
+    #[test]
+    fn parse_doctor_requires_one_input() {
+        let raw = vec!["locomo-bench".to_string(), "doctor".to_string()];
         let err = parse_args_from(&raw).unwrap_err();
         assert!(err.contains("at least one"));
     }
@@ -5401,6 +5736,143 @@ mod tests {
         assert!(err.contains("selected_conversations"));
 
         fs::remove_dir_all(&test_dir).ok();
+    }
+
+    #[test]
+    fn doctor_accepts_full_explicit_conversation_coverage() {
+        let test_dir = env::temp_dir().join(format!("locomo-doctor-test-{}", std::process::id()));
+        fs::create_dir_all(&test_dir).expect("create doctor test dir");
+
+        let left = write_test_artifact(&test_dir, "left", "conv-01", "q-left", true);
+        let right = write_test_artifact(&test_dir, "right", "conv-02", "q-right", false);
+        for artifact_path in [&left, &right] {
+            let mut artifact = load_benchmark_output(artifact_path).expect("load artifact");
+            artifact.manifest.contract_hash = Some("contract-test".into());
+            artifact.manifest.resolved_contract = Some(json!({
+                "benchmark": "locomo",
+                "conversations": ["conv-01", "conv-02"]
+            }));
+            fs::write(
+                artifact_path,
+                serde_json::to_string_pretty(&artifact).expect("serialize artifact"),
+            )
+            .expect("rewrite artifact");
+        }
+
+        doctor_artifacts(&[left, right]).expect("doctor succeeds");
+
+        fs::remove_dir_all(&test_dir).ok();
+    }
+
+    #[test]
+    fn doctor_rejects_incomplete_explicit_conversation_coverage() {
+        let test_dir =
+            env::temp_dir().join(format!("locomo-doctor-missing-test-{}", std::process::id()));
+        fs::create_dir_all(&test_dir).expect("create doctor missing test dir");
+
+        let artifact_path = write_test_artifact(&test_dir, "drift", "conv-01", "q-01", true);
+        let mut artifact = load_benchmark_output(&artifact_path).expect("load artifact");
+        artifact.manifest.contract_hash = Some("contract-test".into());
+        artifact.manifest.resolved_contract = Some(json!({
+            "benchmark": "locomo",
+            "conversations": ["conv-01", "conv-02"]
+        }));
+        fs::write(
+            &artifact_path,
+            serde_json::to_string_pretty(&artifact).expect("serialize artifact"),
+        )
+        .expect("rewrite artifact");
+
+        let err = doctor_artifacts(&[artifact_path]).unwrap_err();
+        assert!(err.contains("canonical conversation slice"));
+
+        fs::remove_dir_all(&test_dir).ok();
+    }
+
+    #[test]
+    fn shard_workflow_merges_disjoint_runs_under_one_contract() {
+        let overlay_path = write_locomo_overlay();
+        let secrets_path = write_bench_secrets();
+        let resolved = resolve_locomo_bench_config(
+            &RunProfile::Full.contract_path(),
+            Some(&overlay_path),
+            Some(&secrets_path),
+        )
+        .unwrap();
+
+        let shard_a = resolved
+            .with_cli_execution_overrides(
+                None,
+                Some("shard-a"),
+                None,
+                None,
+                &["conv-01".to_string()],
+            )
+            .unwrap();
+        let shard_b = resolved
+            .with_cli_execution_overrides(
+                None,
+                Some("shard-b"),
+                None,
+                None,
+                &["conv-02".to_string()],
+            )
+            .unwrap();
+
+        assert_eq!(resolved.contract_hash(), shard_a.contract_hash());
+        assert_eq!(shard_a.contract_hash(), shard_b.contract_hash());
+        assert_eq!(shard_a.selected_conversations(), &["conv-01".to_string()]);
+        assert_eq!(shard_b.selected_conversations(), &["conv-02".to_string()]);
+        assert_ne!(
+            shard_a.redacted_execution_json(),
+            shard_b.redacted_execution_json()
+        );
+
+        let dir = env::temp_dir().join(format!("locomo-shard-workflow-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+
+        let art_a = make_test_artifact_from_resolved(
+            &dir,
+            "a",
+            RunProfile::Full,
+            &shard_a,
+            "conv-01",
+            "q-left",
+            true,
+        );
+        let art_b = make_test_artifact_from_resolved(
+            &dir,
+            "b",
+            RunProfile::Full,
+            &shard_b,
+            "conv-02",
+            "q-right",
+            false,
+        );
+
+        let out = dir.join("merged.json");
+        merge_artifacts(&[art_a, art_b], &out, Some("merged".into())).unwrap();
+
+        let merged_bundle = load_artifact_bundle(&out).unwrap();
+        assert_eq!(merged_bundle.output.manifest.mode, "merge");
+        assert_eq!(merged_bundle.output.manifest.profile, "full");
+        assert_eq!(
+            merged_bundle.output.manifest.contract_hash.as_deref(),
+            Some(resolved.contract_hash())
+        );
+        assert_eq!(
+            merged_bundle.output.manifest.resolved_contract,
+            Some(resolved.redacted_contract_json())
+        );
+        assert_eq!(merged_bundle.output.manifest.execution, None);
+        assert_eq!(
+            merged_bundle.output.manifest.selected_conversations,
+            vec!["conv-01".to_string(), "conv-02".to_string()]
+        );
+        assert_eq!(merged_bundle.output.manifest.source_artifacts.len(), 2);
+        assert_eq!(merged_bundle.output.total_questions, 2);
+
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

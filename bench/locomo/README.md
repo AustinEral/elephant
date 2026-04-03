@@ -159,6 +159,12 @@ cargo run --release --bin locomo-bench -- \
   bench/locomo/results/local/batch-a.json \
   bench/locomo/results/local/batch-b.json
 
+# Doctor a shard set before publishing or promoting it
+cargo run --release --bin locomo-bench -- \
+  doctor \
+  bench/locomo/results/local/batch-a.json \
+  bench/locomo/results/local/batch-b.json
+
 # Export a Pages-friendly publish bundle from one canonical artifact
 cargo run --release --bin locomo-bench -- \
   publish \
@@ -194,6 +200,7 @@ Use `publish` after that to stage a public bundle with `summary.json` plus gzipp
 | `qa <artifact>` | Score QA against bank ids from an existing artifact; skips ingest and consolidation |
 | `merge <artifact>...` | Combine compatible subset artifacts into one canonical summary + sidecars |
 | `verify <artifact>...` | Validate artifact structure and shard compatibility without running the benchmark |
+| `doctor <artifact>...` | Check publication readiness and canonical-slice coverage from artifact provenance |
 | `publish <artifact>` | Export a publishable bundle with `index.json`, `summary.json`, and `questions.jsonl.gz` |
 | `--profile <name>` | Load a versioned benchmark profile (`full`, `smoke`, `legacy-raw`) |
 | `--config <path>` | Apply a TOML execution overlay on top of the selected profile |
@@ -209,6 +216,8 @@ Fresh `run`, `ingest`, and `merge` outputs now refuse to overwrite existing summ
 Contract-affecting slice/ingest/consolidation settings live in the checked-in profile. Execution-time sharding, like `--conversation`, stays outside the contract hash.
 
 `verify` is the first publication-hygiene command for LoCoMo. It checks artifact structure, per-artifact consistency, and multi-artifact shard compatibility before merge or publication.
+
+`doctor` builds on `verify`. When the artifact contract explicitly lists the canonical conversation slice, `doctor` also checks that the artifact set fully covers that slice before promotion or publication.
 
 ## Merge constraints
 

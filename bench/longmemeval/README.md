@@ -90,6 +90,12 @@ cargo run --release --bin longmemeval-bench -- \
   bench/longmemeval/results/local/shard-a.json \
   bench/longmemeval/results/local/shard-b.json
 
+# Doctor a shard set before publishing or promoting it
+cargo run --release --bin longmemeval-bench -- \
+  doctor \
+  bench/longmemeval/results/local/shard-a.json \
+  bench/longmemeval/results/local/shard-b.json
+
 # Compare two runs
 cargo run --release --bin longmemeval-view -- \
   bench/longmemeval/results/local/baseline.json \
@@ -104,6 +110,7 @@ cargo run --release --bin longmemeval-view -- \
 | `ingest` | Ingest + consolidate only, no QA |
 | `qa <artifact>` | Score against existing banks from ingest artifact |
 | `verify <artifact...>` | Validate artifact structure and shard compatibility without running the benchmark |
+| `doctor <artifact...>` | Check publication readiness and canonical-slice coverage from artifact provenance |
 | `--profile <name>` | `smoke` (1 instance), `full-s` (S dataset), `full-m` (M dataset) |
 | `--config <path>` | TOML execution overlay on top of profile |
 | `--instance <id>` | Execution-only shard selector within the profile slice |
@@ -120,6 +127,8 @@ cargo run --release --bin longmemeval-view -- \
 Contract-affecting slice, ingest, consolidation, and judge defaults live in the checked-in profile. Execution-time shard controls stay outside the contract hash.
 
 `verify` is the first publication-hygiene command. It checks artifact structure, per-artifact consistency, and multi-artifact shard compatibility for LongMemEval result artifacts.
+
+`doctor` builds on `verify`. When the artifact contract explicitly lists the canonical instance slice, `doctor` also checks that the artifact set fully covers that slice before promotion or publication.
 
 ## Output artifacts
 
