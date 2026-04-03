@@ -4248,6 +4248,81 @@ mod tests {
         artifact_path
     }
 
+    fn make_test_artifact_from_resolved(
+        dir: &Path,
+        tag: &str,
+        profile: RunProfile,
+        resolved: &elephant_bench::ResolvedLongMemEvalBenchConfig,
+        questions: &[QuestionResult],
+        debug_records: &[QuestionDebugRecord],
+    ) -> PathBuf {
+        let artifact_path = dir.join(format!("{tag}.json"));
+        let questions_rel = format!("{tag}.questions.jsonl");
+        let debug_rel = format!("{tag}.debug.jsonl");
+        let questions_path = dir.join(&questions_rel);
+        let debug_path = dir.join(&debug_rel);
+
+        let mut banks = HashMap::new();
+        for q in questions {
+            banks.insert(q.question_id.clone(), q.bank_id.clone());
+        }
+
+        let output = BenchmarkOutput {
+            benchmark: "longmemeval".into(),
+            timestamp: "2026-03-15T00:00:00Z".into(),
+            commit: Some("abc123".into()),
+            tag: Some(tag.into()),
+            retain_model: "model-r".into(),
+            reflect_model: "model-f".into(),
+            embedding_model: "model-e".into(),
+            reranker_model: "model-k".into(),
+            judge_model: "gpt-4o".into(),
+            consolidation_strategy: resolved.consolidation_mode().into(),
+            total_questions: questions.len(),
+            accuracy: compute_accuracy(questions),
+            per_category: compute_per_category(questions),
+            banks,
+            instance_status: HashMap::new(),
+            instance_timings: HashMap::new(),
+            manifest: BenchmarkManifest {
+                protocol_version: resolved.protocol_version().into(),
+                profile: profile.as_str().into(),
+                mode: "run".into(),
+                config_path: None,
+                dataset_path: resolved.dataset_path().display().to_string(),
+                dataset_fingerprint: resolved.dataset_fingerprint().into(),
+                command: format!("longmemeval-bench run --profile {}", profile.as_str()),
+                selected_instances: resolved.selected_instances().to_vec(),
+                ingest_format: resolved.ingest_format().into(),
+                instance_concurrency: resolved.instance_jobs(),
+                consolidation_strategy: resolved.consolidation_mode().into(),
+                session_limit: resolved.session_limit(),
+                dirty_worktree: Some(false),
+                prompt_hashes: BenchmarkPromptHashes::default(),
+                runtime_config: BenchmarkRuntimeConfig::default(),
+                contract_hash: Some(resolved.contract_hash().to_string()),
+                resolved_contract: Some(resolved.redacted_contract_json()),
+                execution: Some(resolved.redacted_execution_json()),
+                source_artifact: None,
+                source_artifacts: Vec::new(),
+            },
+            artifacts: BenchmarkArtifacts {
+                questions_path: questions_rel,
+                debug_path: debug_rel,
+            },
+            stage_metrics: BTreeMap::new(),
+            total_stage_usage: StageUsage::default(),
+            total_time_s: 10.0,
+        };
+
+        let json = serde_json::to_string_pretty(&output).unwrap();
+        fs::write(&artifact_path, json).unwrap();
+        write_jsonl_records(&questions_path, questions).unwrap();
+        write_jsonl_records(&debug_path, debug_records).unwrap();
+
+        artifact_path
+    }
+
     fn make_test_qr(question_id: &str, correct: bool) -> QuestionResult {
         QuestionResult {
             question_id: question_id.into(),
@@ -4327,6 +4402,81 @@ mod tests {
         // Banks merged
         assert_eq!(merged.banks.len(), 3);
         assert_eq!(merged.banks.get("q1").unwrap(), "bank-q1");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn shard_workflow_merges_disjoint_runs_under_one_contract() {
+        let overlay_path = write_longmemeval_overlay();
+        let secrets_path = write_bench_secrets();
+        let resolved = resolve_longmemeval_bench_config(
+            &RunProfile::FullS.contract_path(),
+            Some(&overlay_path),
+            Some(&secrets_path),
+        )
+        .unwrap();
+
+        let shard_a_ids = vec!["q1".to_string()];
+        let shard_b_ids = vec!["q2".to_string()];
+        let shard_a = resolved
+            .with_cli_execution_overrides(None, Some("shard-a"), None, &shard_a_ids, None, None)
+            .unwrap();
+        let shard_b = resolved
+            .with_cli_execution_overrides(None, Some("shard-b"), None, &shard_b_ids, None, None)
+            .unwrap();
+
+        assert_eq!(resolved.contract_hash(), shard_a.contract_hash());
+        assert_eq!(shard_a.contract_hash(), shard_b.contract_hash());
+        assert_eq!(shard_a.selected_instances(), &["q1".to_string()]);
+        assert_eq!(shard_b.selected_instances(), &["q2".to_string()]);
+        assert_ne!(
+            shard_a.redacted_execution_json(),
+            shard_b.redacted_execution_json()
+        );
+
+        let dir =
+            env::temp_dir().join(format!("longmemeval-shard-workflow-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+
+        let art_a = make_test_artifact_from_resolved(
+            &dir,
+            "a",
+            RunProfile::FullS,
+            &shard_a,
+            &[make_test_qr("q1", true)],
+            &[make_test_debug("q1")],
+        );
+        let art_b = make_test_artifact_from_resolved(
+            &dir,
+            "b",
+            RunProfile::FullS,
+            &shard_b,
+            &[make_test_qr("q2", false)],
+            &[make_test_debug("q2")],
+        );
+
+        let out = dir.join("merged.json");
+        merge_artifacts(&[art_a, art_b], &out, Some("merged".into())).unwrap();
+
+        let merged = load_benchmark_output(&out).unwrap();
+        assert_eq!(merged.manifest.mode, "merge");
+        assert_eq!(merged.manifest.profile, "full-s");
+        assert_eq!(
+            merged.manifest.contract_hash.as_deref(),
+            Some(resolved.contract_hash())
+        );
+        assert_eq!(
+            merged.manifest.resolved_contract,
+            Some(resolved.redacted_contract_json())
+        );
+        assert_eq!(merged.manifest.execution, None);
+        assert_eq!(
+            merged.manifest.selected_instances,
+            vec!["q1".to_string(), "q2".to_string()]
+        );
+        assert_eq!(merged.manifest.source_artifacts.len(), 2);
+        assert_eq!(merged.total_questions, 2);
 
         fs::remove_dir_all(&dir).ok();
     }
