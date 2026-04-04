@@ -136,9 +136,9 @@ struct LookupSourcesArgs {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct DoneArgs {
-    /// The answer with inline [fact-ID] citations.
+    /// The final answer text.
     response: String,
-    /// Fact IDs referenced in the response.
+    /// Supporting fact IDs for the answer.
     #[serde(default)]
     source_ids: Vec<String>,
 }
@@ -162,7 +162,7 @@ fn tool_defs(enable_source_lookup: bool) -> Vec<ToolDefinition> {
     }
     tools.push(ToolDefinition::from_schema::<DoneArgs>(
         "done",
-        "Return the final answer with source citations.",
+        "Return the final answer text and the supporting fact IDs in source_ids.",
     ));
     tools
 }
@@ -176,7 +176,7 @@ fn tool_defs_for_iteration(
         return (
             vec![ToolDefinition::from_schema::<DoneArgs>(
                 "done",
-                "Return the final answer with source citations.",
+                "Return the final answer text and the supporting fact IDs in source_ids.",
             )],
             ToolChoice::Specific("done".into()),
         );
