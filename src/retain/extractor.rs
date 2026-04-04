@@ -363,16 +363,20 @@ mod tests {
             network: ExtractedNetworkType::Experience,
             entity_mentions: vec!["Caroline".into()],
             temporal_range: Some(crate::types::TemporalRange {
-                start: Some(chrono::NaiveDate::from_ymd_opt(2023, 9, 9)
-                    .unwrap()
-                    .and_hms_opt(0, 0, 0)
-                    .unwrap()
-                    .and_utc()),
-                end: Some(chrono::NaiveDate::from_ymd_opt(2023, 9, 9)
-                    .unwrap()
-                    .and_hms_opt(0, 0, 0)
-                    .unwrap()
-                    .and_utc()),
+                start: Some(
+                    chrono::NaiveDate::from_ymd_opt(2023, 9, 9)
+                        .unwrap()
+                        .and_hms_opt(0, 0, 0)
+                        .unwrap()
+                        .and_utc(),
+                ),
+                end: Some(
+                    chrono::NaiveDate::from_ymd_opt(2023, 9, 9)
+                        .unwrap()
+                        .and_hms_opt(0, 0, 0)
+                        .unwrap()
+                        .and_utc(),
+                ),
             }),
             confidence: None,
         }])
