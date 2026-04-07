@@ -10,6 +10,7 @@ expected_fingerprint = "1be32e546a434b8b"
 
 [slice]
 instances = ["e47becba"]
+session_limit = 1
 
 [runtime.llm]
 provider = "openai"

@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use elephant::llm::{AnthropicPromptCacheTtl, OpenAiPromptCacheRetention};
+
 fn default_output_dir() -> PathBuf {
     PathBuf::from("bench/locomo/results/local")
 }
@@ -78,6 +80,45 @@ impl LongMemEvalShardExecution {
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct PromptCacheOverlayFile {
+    #[serde(default)]
+    pub(crate) enabled: Option<bool>,
+    #[serde(default)]
+    pub(crate) key: Option<String>,
+    #[serde(default)]
+    pub(crate) retention: Option<OpenAiPromptCacheRetention>,
+    #[serde(default)]
+    pub(crate) ttl: Option<AnthropicPromptCacheTtl>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub(crate) struct PromptCacheExecution {
+    pub(crate) enabled: bool,
+    pub(crate) key: Option<String>,
+    pub(crate) retention: Option<OpenAiPromptCacheRetention>,
+    pub(crate) ttl: Option<AnthropicPromptCacheTtl>,
+}
+
+impl PromptCacheExecution {
+    pub(crate) fn from_overlay(overlay: Option<PromptCacheOverlayFile>) -> Self {
+        let overlay = overlay.unwrap_or_default();
+        let inferred_enabled =
+            overlay.key.is_some() || overlay.retention.is_some() || overlay.ttl.is_some();
+        Self {
+            enabled: overlay.enabled.unwrap_or(inferred_enabled),
+            key: overlay.key,
+            retention: overlay.retention,
+            ttl: overlay.ttl,
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        !self.enabled && self.key.is_none() && self.retention.is_none() && self.ttl.is_none()
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ClientTargetOverlayFile {
     #[serde(default)]
     pub(crate) base_url: Option<String>,
@@ -85,6 +126,8 @@ pub(crate) struct ClientTargetOverlayFile {
     pub(crate) vertex_project: Option<String>,
     #[serde(default)]
     pub(crate) vertex_location: Option<String>,
+    #[serde(default)]
+    pub(crate) prompt_cache: Option<PromptCacheOverlayFile>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -92,6 +135,7 @@ pub(crate) struct ClientTargetExecution {
     pub(crate) base_url: Option<String>,
     pub(crate) vertex_project: Option<String>,
     pub(crate) vertex_location: Option<String>,
+    pub(crate) prompt_cache: PromptCacheExecution,
 }
 
 impl ClientTargetExecution {
@@ -101,11 +145,15 @@ impl ClientTargetExecution {
             base_url: overlay.base_url,
             vertex_project: overlay.vertex_project,
             vertex_location: overlay.vertex_location,
+            prompt_cache: PromptCacheExecution::from_overlay(overlay.prompt_cache),
         }
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.base_url.is_none() && self.vertex_project.is_none() && self.vertex_location.is_none()
+        self.base_url.is_none()
+            && self.vertex_project.is_none()
+            && self.vertex_location.is_none()
+            && self.prompt_cache.is_empty()
     }
 }
 

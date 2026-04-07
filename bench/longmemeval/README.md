@@ -53,7 +53,7 @@ Use an isolated Postgres instance for benchmark runs (see [LoCoMo README](../loc
 ## Quick start
 
 ```bash
-# Smoke test (1 instance)
+# Smoke test (1 instance, first session only)
 cargo run --release --bin longmemeval-bench -- \
   run --profile smoke --secrets-env-file bench/secrets.env --tag quick
 
@@ -112,7 +112,7 @@ cargo run -p elephant-bench --release --bin longmemeval-view -- \
 | `qa <artifact>` | Score against existing banks from ingest artifact |
 | `verify <artifact...>` | Validate artifact structure and shard compatibility without running the benchmark |
 | `doctor <artifact...>` | Check publication readiness and canonical-slice coverage from artifact provenance |
-| `--profile <name>` | `smoke` (1 instance), `full-s` (S dataset), `full-m` (M dataset) |
+| `--profile <name>` | `smoke` (1 instance, first session only), `full-s` (S dataset), `full-m` (M dataset) |
 | `--config <path>` | TOML execution overlay on top of profile |
 | `--instance <id>` | Execution-only shard selector within the profile slice |
 | `--instance-limit <n>` | Execution-only shard window within the profile slice |

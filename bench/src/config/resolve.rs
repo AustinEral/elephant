@@ -8,8 +8,8 @@ use serde::Serialize;
 use elephant::consolidation::{ConsolidationConfig, opinion_merger};
 use elephant::embedding::EmbeddingConfig;
 use elephant::llm::{
-    AnthropicConfig, ClientConfig, DEFAULT_TIMEOUT_SECS, GeminiConfig, LlmConfig, OpenAiConfig,
-    ReasoningEffortConfig, VertexConfig,
+    AnthropicConfig, AnthropicPromptCacheConfig, ClientConfig, DEFAULT_TIMEOUT_SECS, GeminiConfig,
+    LlmConfig, OpenAiConfig, OpenAiPromptCacheConfig, ReasoningEffortConfig, VertexConfig,
 };
 use elephant::metrics::MetricsCollector;
 use elephant::recall::reranker::RerankerConfig;
@@ -27,6 +27,7 @@ use super::contract::{
 use super::execution::{
     BenchExecution, BenchExecutionOverlayFile, ClientTargetExecution, LocomoShardExecution,
     LongMemEvalExecution, LongMemEvalExecutionOverlayFile, LongMemEvalShardExecution,
+    PromptCacheExecution,
 };
 use super::secrets::{BenchSecrets, RedactedBenchSecrets};
 
@@ -1158,6 +1159,18 @@ fn validate_client_target(name: &str, target: &ClientTargetExecution) -> Result<
     if let Some(vertex_location) = target.vertex_location.as_deref() {
         validate_nonblank(&format!("{name}.vertex_location"), vertex_location)?;
     }
+    if let Some(key) = target.prompt_cache.key.as_deref() {
+        validate_nonblank(&format!("{name}.prompt_cache.key"), key)?;
+    }
+    if !target.prompt_cache.enabled
+        && (target.prompt_cache.key.is_some()
+            || target.prompt_cache.retention.is_some()
+            || target.prompt_cache.ttl.is_some())
+    {
+        return Err(ConfigError::configuration(format!(
+            "{name}.prompt_cache fields require prompt_cache.enabled = true"
+        )));
+    }
     Ok(())
 }
 
@@ -1452,6 +1465,7 @@ fn build_judge_config_from_parts(
         DEFAULT_TIMEOUT_SECS,
         judge_target.vertex_project.as_deref(),
         judge_target.vertex_location.as_deref(),
+        &judge_target.prompt_cache,
     )?;
     Ok(BenchJudgeConfig::new(
         client,
@@ -1474,6 +1488,7 @@ fn build_runtime_llm_config(
         DEFAULT_TIMEOUT_SECS,
         runtime_target.vertex_project.as_deref(),
         runtime_target.vertex_location.as_deref(),
+        &runtime_target.prompt_cache,
     )?;
     let reflect = build_client_config(
         runtime.llm.provider,
@@ -1483,6 +1498,7 @@ fn build_runtime_llm_config(
         DEFAULT_TIMEOUT_SECS,
         runtime_target.vertex_project.as_deref(),
         runtime_target.vertex_location.as_deref(),
+        &runtime_target.prompt_cache,
     )?;
     Ok(LlmConfig::new(retain, reflect))
 }
@@ -1561,6 +1577,7 @@ fn build_client_config(
     timeout_secs: u64,
     vertex_project: Option<&str>,
     vertex_location: Option<&str>,
+    prompt_cache: &PromptCacheExecution,
 ) -> Result<ClientConfig> {
     let api_key = api_key.ok_or_else(|| {
         ConfigError::configuration(format!(
@@ -1576,6 +1593,11 @@ fn build_client_config(
                     "base_url is not supported for provider=anthropic",
                 ));
             }
+            if prompt_cache.key.is_some() || prompt_cache.retention.is_some() {
+                return Err(ConfigError::configuration(
+                    "OpenAI prompt cache fields are not supported for provider=anthropic",
+                ));
+            }
             if vertex_project.is_some() || vertex_location.is_some() {
                 return Err(ConfigError::configuration(
                     "vertex_project and vertex_location are only supported for provider=vertex",
@@ -1585,12 +1607,24 @@ fn build_client_config(
             config = config
                 .with_timeout_secs(nonzero_timeout(timeout_secs)?)
                 .map_err(ConfigError::from)?;
+            if prompt_cache.enabled {
+                let mut cache = AnthropicPromptCacheConfig::new();
+                if let Some(ttl) = prompt_cache.ttl {
+                    cache = cache.with_ttl(ttl);
+                }
+                config = config.with_prompt_cache(cache);
+            }
             Ok(ClientConfig::Anthropic(config))
         }
         ProviderKind::OpenAi => {
             if vertex_project.is_some() || vertex_location.is_some() {
                 return Err(ConfigError::configuration(
                     "vertex_project and vertex_location are only supported for provider=vertex",
+                ));
+            }
+            if prompt_cache.ttl.is_some() {
+                return Err(ConfigError::configuration(
+                    "Anthropic prompt cache ttl is not supported for provider=openai",
                 ));
             }
             let mut config = OpenAiConfig::new(api_key, model).map_err(ConfigError::from)?;
@@ -1600,9 +1634,31 @@ fn build_client_config(
             if let Some(base_url) = base_url {
                 config = config.with_base_url(base_url).map_err(ConfigError::from)?;
             }
+            if prompt_cache.enabled {
+                if let Some(key) = prompt_cache.key.as_ref() {
+                    config = config
+                        .with_prompt_cache(OpenAiPromptCacheConfig::new().with_key(key.clone()));
+                }
+                if let Some(retention) = prompt_cache.retention {
+                    let cache = config
+                        .prompt_cache()
+                        .cloned()
+                        .unwrap_or_else(OpenAiPromptCacheConfig::new)
+                        .with_retention(retention);
+                    config = config.with_prompt_cache(cache);
+                }
+                if prompt_cache.key.is_none() && prompt_cache.retention.is_none() {
+                    config = config.with_prompt_cache(OpenAiPromptCacheConfig::new());
+                }
+            }
             Ok(ClientConfig::OpenAi(config))
         }
         ProviderKind::Gemini => {
+            if prompt_cache.enabled {
+                return Err(ConfigError::configuration(
+                    "prompt_cache is not supported for provider=gemini in benchmark execution config",
+                ));
+            }
             if vertex_project.is_some() || vertex_location.is_some() {
                 return Err(ConfigError::configuration(
                     "vertex_project and vertex_location are only supported for provider=vertex",
@@ -1618,6 +1674,11 @@ fn build_client_config(
             Ok(ClientConfig::Gemini(config))
         }
         ProviderKind::Vertex => {
+            if prompt_cache.enabled {
+                return Err(ConfigError::configuration(
+                    "prompt_cache is not supported for provider=vertex in benchmark execution config",
+                ));
+            }
             let project = vertex_project.ok_or_else(|| {
                 ConfigError::configuration("vertex_project must be set for provider=vertex")
             })?;
@@ -1757,6 +1818,34 @@ question_jobs = 4
         )
     }
 
+    fn sample_overlay_with_prompt_cache(dataset_path: &Path) -> String {
+        format!(
+            r#"
+database_url = "postgres://bench:bench@localhost/elephant"
+dataset_path = "{}"
+conversation_jobs = 1
+question_jobs = 4
+
+[runtime_target]
+base_url = "https://openrouter.ai/api/v1"
+
+[runtime_target.prompt_cache]
+enabled = true
+key = "elephant:bench:runtime"
+retention = "in_memory"
+
+[judge_target]
+base_url = "https://openrouter.ai/api/v1"
+
+[judge_target.prompt_cache]
+enabled = true
+key = "elephant:bench:judge"
+retention = "in_memory"
+"#,
+            dataset_path.display()
+        )
+    }
+
     #[test]
     fn resolves_locomo_config_and_hash_is_stable() {
         let _guard = env_lock().lock().unwrap();
@@ -1808,6 +1897,102 @@ question_jobs = 4
             resolved.redacted_execution_json()["ort_dylib_path"],
             serde_json::Value::String(expected.display().to_string())
         );
+    }
+
+    #[test]
+    fn resolves_locomo_overlay_with_prompt_cache_targets() {
+        let _guard = env_lock().lock().unwrap();
+        let profile = temp_path("profile.toml");
+        let overlay = temp_path("overlay.toml");
+        let dataset = temp_path("dataset.json");
+        let secrets = temp_path("secrets.env");
+
+        write_file(&profile, &sample_profile());
+        write_file(&dataset, r#"{"sample":"ok"}"#);
+        write_file(&overlay, &sample_overlay_with_prompt_cache(&dataset));
+        write_file(
+            &secrets,
+            "ELEPHANT_BENCH_RUNTIME_API_KEY=runtime-secret\nELEPHANT_BENCH_JUDGE_API_KEY=judge-secret\n",
+        );
+
+        let resolved =
+            resolve_locomo_bench_config(&profile, Some(&overlay), Some(&secrets)).unwrap();
+
+        assert_eq!(
+            resolved.redacted_execution_json()["runtime_target"]["prompt_cache"]["enabled"],
+            serde_json::Value::Bool(true)
+        );
+        assert_eq!(
+            resolved.redacted_execution_json()["judge_target"]["prompt_cache"]["retention"],
+            serde_json::Value::String("in_memory".into())
+        );
+    }
+
+    #[test]
+    fn build_client_config_applies_openai_prompt_cache() {
+        let prompt_cache = PromptCacheExecution {
+            enabled: true,
+            key: Some("elephant:bench".into()),
+            retention: Some(elephant::llm::OpenAiPromptCacheRetention::InMemory),
+            ttl: None,
+        };
+
+        let client = build_client_config(
+            ProviderKind::OpenAi,
+            Some("runtime-secret"),
+            "gpt-5.4-mini",
+            Some("https://openrouter.ai/api/v1"),
+            DEFAULT_TIMEOUT_SECS,
+            None,
+            None,
+            &prompt_cache,
+        )
+        .unwrap();
+
+        match client {
+            ClientConfig::OpenAi(config) => {
+                let prompt_cache = config.prompt_cache().expect("prompt cache should be set");
+                assert_eq!(prompt_cache.key(), Some("elephant:bench"));
+                assert_eq!(
+                    prompt_cache.retention(),
+                    Some(elephant::llm::OpenAiPromptCacheRetention::InMemory)
+                );
+            }
+            other => panic!("expected openai client, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_client_config_applies_anthropic_prompt_cache() {
+        let prompt_cache = PromptCacheExecution {
+            enabled: true,
+            key: None,
+            retention: None,
+            ttl: Some(elephant::llm::AnthropicPromptCacheTtl::Hours1),
+        };
+
+        let client = build_client_config(
+            ProviderKind::Anthropic,
+            Some("runtime-secret"),
+            "claude-sonnet",
+            None,
+            DEFAULT_TIMEOUT_SECS,
+            None,
+            None,
+            &prompt_cache,
+        )
+        .unwrap();
+
+        match client {
+            ClientConfig::Anthropic(config) => {
+                let prompt_cache = config.prompt_cache().expect("prompt cache should be set");
+                assert_eq!(
+                    prompt_cache.ttl(),
+                    Some(elephant::llm::AnthropicPromptCacheTtl::Hours1)
+                );
+            }
+            other => panic!("expected anthropic client, got {other:?}"),
+        }
     }
 
     #[test]
