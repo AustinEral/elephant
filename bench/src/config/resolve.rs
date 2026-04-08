@@ -14,6 +14,7 @@ use elephant::llm::{
 use elephant::metrics::MetricsCollector;
 use elephant::recall::reranker::RerankerConfig;
 use elephant::retain::{extractor, graph_builder};
+use elephant::types::ChunkConfig;
 use elephant::{ConfigError, ReflectConfig, RetrievalConfig, RuntimeConfig};
 
 use crate::env::BenchJudgeConfig;
@@ -148,6 +149,15 @@ impl ResolvedBenchConfig {
     /// Return the reflect budget token setting from the resolved contract.
     pub fn reflect_budget_tokens(&self) -> usize {
         self.contract.runtime.tuning.reflect_budget_tokens
+    }
+
+    /// Return the resolved retain chunking configuration.
+    pub fn retain_chunk_config(&self) -> ChunkConfig {
+        ChunkConfig {
+            max_tokens: self.contract.runtime.tuning.retain_chunk_max_tokens,
+            overlap_tokens: self.contract.runtime.tuning.retain_chunk_overlap_tokens,
+            preserve_turns: true,
+        }
     }
 
     /// Return a redacted JSON snapshot of the resolved contract.
@@ -351,6 +361,7 @@ impl ResolvedLongMemEvalBenchConfig {
         match self.contract.ingest_format {
             LongMemEvalIngestFormat::Text => "text",
             LongMemEvalIngestFormat::Json => "json",
+            LongMemEvalIngestFormat::Round => "round",
         }
     }
 
@@ -391,6 +402,15 @@ impl ResolvedLongMemEvalBenchConfig {
     /// Return the reflect budget token setting from the resolved contract.
     pub fn reflect_budget_tokens(&self) -> usize {
         self.contract.runtime.tuning.reflect_budget_tokens
+    }
+
+    /// Return the resolved retain chunking configuration.
+    pub fn retain_chunk_config(&self) -> ChunkConfig {
+        ChunkConfig {
+            max_tokens: self.contract.runtime.tuning.retain_chunk_max_tokens,
+            overlap_tokens: self.contract.runtime.tuning.retain_chunk_overlap_tokens,
+            preserve_turns: true,
+        }
     }
 
     /// Return a redacted JSON snapshot of the resolved contract.
@@ -843,6 +863,8 @@ fn lint_canonical_contract_file(
         "judge.max_attempts",
         "runtime.tuning.reflect_budget_tokens",
         "runtime.tuning.dedup_threshold",
+        "runtime.tuning.retain_chunk_max_tokens",
+        "runtime.tuning.retain_chunk_overlap_tokens",
         "runtime.tuning.extraction.structured_output_max_attempts",
         "runtime.tuning.graph.semantic_threshold",
         "runtime.tuning.graph.temporal_max_days",
@@ -1055,6 +1077,16 @@ fn validate_runtime_contract(runtime: &RuntimeContract) -> Result<()> {
     validate_nonblank("runtime.llm.retain_model", &runtime.llm.retain_model)?;
     validate_nonblank("runtime.llm.reflect_model", &runtime.llm.reflect_model)?;
     validate_nonblank("runtime.embedding.model", &runtime.embedding.model)?;
+    if runtime.tuning.retain_chunk_max_tokens == 0 {
+        return Err(ConfigError::configuration(
+            "runtime.tuning.retain_chunk_max_tokens must be greater than 0",
+        ));
+    }
+    if runtime.tuning.retain_chunk_overlap_tokens >= runtime.tuning.retain_chunk_max_tokens {
+        return Err(ConfigError::configuration(
+            "runtime.tuning.retain_chunk_overlap_tokens must be less than runtime.tuning.retain_chunk_max_tokens",
+        ));
+    }
     match runtime.embedding.provider {
         super::contract::EmbeddingProviderKind::Local => {}
         super::contract::EmbeddingProviderKind::OpenAi => {
@@ -1283,6 +1315,11 @@ fn build_runtime_config_from_parts(
     };
 
     RuntimeConfig::new(database_url.to_string(), llm, embedding, reranker)?
+        .with_chunk_config(ChunkConfig {
+            max_tokens: tuning.retain_chunk_max_tokens,
+            overlap_tokens: tuning.retain_chunk_overlap_tokens,
+            preserve_turns: true,
+        })?
         .with_dedup_threshold(tuning.dedup_threshold)?
         .with_reasoning_effort(reasoning_effort)?
         .with_extraction(extractor::ExtractionConfig {
@@ -1799,6 +1836,12 @@ model = "bge-small-en-v1.5"
 provider = "local"
 model = "ms-marco-MiniLM-L-6-v2"
 
+[runtime.tuning]
+reflect_budget_tokens = 4096
+dedup_threshold = 0.95
+retain_chunk_max_tokens = 512
+retain_chunk_overlap_tokens = 64
+
 [judge]
 provider = "openai"
 model = "gpt-5.4"
@@ -2015,6 +2058,12 @@ reflect_model = "gpt-5.4-mini"
 provider = "local"
 model = "bge-small-en-v1.5"
 
+[runtime.tuning]
+reflect_budget_tokens = 4096
+dedup_threshold = 0.95
+retain_chunk_max_tokens = 512
+retain_chunk_overlap_tokens = 64
+
 [runtime.reranker]
 provider = "none"
 
@@ -2056,6 +2105,12 @@ reflect_model = "gemini-2.5-flash"
 [runtime.embedding]
 provider = "local"
 model = "bge-small-en-v1.5"
+
+[runtime.tuning]
+reflect_budget_tokens = 4096
+dedup_threshold = 0.95
+retain_chunk_max_tokens = 512
+retain_chunk_overlap_tokens = 64
 
 [runtime.reranker]
 provider = "none"
@@ -2352,7 +2407,7 @@ base_url = "https://judge-proxy.example.com"
 schema_version = 1
 benchmark = "longmemeval"
 protocol_version = "2026-03-31-longmemeval-contract-v1"
-ingest_format = "text"
+ingest_format = "round"
 consolidation = "end"
 
 [dataset]
@@ -2411,6 +2466,189 @@ dataset_path = "{}"
     }
 
     #[test]
+    fn longmemeval_round_ingest_keeps_chunk_config_explicit() {
+        let _guard = env_lock().lock().unwrap();
+        let profile = temp_path("long-round-profile.toml");
+        let overlay = temp_path("long-round-overlay.toml");
+        let dataset = temp_path("long-round-dataset.json");
+        let secrets = temp_path("long-round-secrets.env");
+        write_file(
+            &profile,
+            r#"
+schema_version = 1
+benchmark = "longmemeval"
+protocol_version = "2026-03-31-longmemeval-contract-v1"
+ingest_format = "round"
+consolidation = "end"
+
+[dataset]
+identifier = "longmemeval-s"
+
+[runtime.llm]
+provider = "openai"
+retain_model = "gpt-5.4-mini"
+reflect_model = "gpt-5.4-mini"
+
+[runtime.embedding]
+provider = "local"
+model = "bge-small-en-v1.5"
+
+[runtime.reranker]
+provider = "none"
+
+[runtime.tuning]
+reflect_budget_tokens = 4096
+dedup_threshold = 0.95
+retain_chunk_max_tokens = 2048
+retain_chunk_overlap_tokens = 64
+
+[runtime.tuning.extraction]
+structured_output_max_attempts = 3
+
+[runtime.tuning.graph]
+semantic_threshold = 0.7
+temporal_max_days = 30
+enable_causal = true
+
+[runtime.tuning.consolidation]
+batch_size = 8
+max_tokens = 4096
+recall_budget = 512
+structured_output_max_attempts = 3
+
+[runtime.tuning.reflect]
+max_iterations = 8
+source_limit = 3
+enable_source_lookup = true
+
+[runtime.tuning.retrieval]
+retriever_limit = 40
+max_facts = 50
+
+[judge]
+provider = "openai"
+model = "gpt-5.4"
+max_tokens = 200
+max_attempts = 3
+"#,
+        );
+        write_file(&dataset, r#"{"sample":"ok"}"#);
+        write_file(
+            &overlay,
+            format!(
+                r#"
+database_url = "postgres://bench:bench@localhost/elephant"
+dataset_path = "{}"
+"#,
+                dataset.display()
+            )
+            .as_str(),
+        );
+        write_file(
+            &secrets,
+            "ELEPHANT_BENCH_RUNTIME_API_KEY=runtime-secret\nELEPHANT_BENCH_JUDGE_API_KEY=judge-secret\n",
+        );
+
+        let resolved =
+            resolve_longmemeval_bench_config(&profile, Some(&overlay), Some(&secrets)).unwrap();
+        assert_eq!(resolved.ingest_format(), "round");
+        let json = resolved.redacted_contract_json();
+        assert_eq!(json["runtime"]["tuning"]["retain_chunk_max_tokens"], 2048);
+        assert_eq!(json["runtime"]["tuning"]["retain_chunk_overlap_tokens"], 64);
+    }
+
+    #[test]
+    fn longmemeval_round_ingest_allows_zero_chunk_overlap() {
+        let _guard = env_lock().lock().unwrap();
+        let profile = temp_path("long-round-zero-overlap-profile.toml");
+        let overlay = temp_path("long-round-zero-overlap-overlay.toml");
+        let dataset = temp_path("long-round-zero-overlap-dataset.json");
+        let secrets = temp_path("long-round-zero-overlap-secrets.env");
+        write_file(
+            &profile,
+            r#"
+schema_version = 1
+benchmark = "longmemeval"
+protocol_version = "2026-03-31-longmemeval-contract-v1"
+ingest_format = "round"
+consolidation = "end"
+
+[dataset]
+identifier = "longmemeval-s"
+
+[runtime.llm]
+provider = "openai"
+retain_model = "gpt-5.4-mini"
+reflect_model = "gpt-5.4-mini"
+
+[runtime.embedding]
+provider = "local"
+model = "bge-small-en-v1.5"
+
+[runtime.reranker]
+provider = "none"
+
+[runtime.tuning]
+reflect_budget_tokens = 4096
+dedup_threshold = 0.95
+retain_chunk_max_tokens = 2048
+retain_chunk_overlap_tokens = 0
+
+[runtime.tuning.extraction]
+structured_output_max_attempts = 3
+
+[runtime.tuning.graph]
+semantic_threshold = 0.7
+temporal_max_days = 30
+enable_causal = true
+
+[runtime.tuning.consolidation]
+batch_size = 8
+max_tokens = 4096
+recall_budget = 512
+structured_output_max_attempts = 3
+
+[runtime.tuning.reflect]
+max_iterations = 8
+source_limit = 3
+enable_source_lookup = true
+
+[runtime.tuning.retrieval]
+retriever_limit = 40
+max_facts = 50
+
+[judge]
+provider = "openai"
+model = "gpt-5.4"
+max_tokens = 200
+max_attempts = 3
+"#,
+        );
+        write_file(&dataset, r#"{"sample":"ok"}"#);
+        write_file(
+            &overlay,
+            format!(
+                r#"
+database_url = "postgres://bench:bench@localhost/elephant"
+dataset_path = "{}"
+"#,
+                dataset.display()
+            )
+            .as_str(),
+        );
+        write_file(
+            &secrets,
+            "ELEPHANT_BENCH_RUNTIME_API_KEY=runtime-secret\nELEPHANT_BENCH_JUDGE_API_KEY=judge-secret\n",
+        );
+
+        let resolved =
+            resolve_longmemeval_bench_config(&profile, Some(&overlay), Some(&secrets)).unwrap();
+        let json = resolved.redacted_contract_json();
+        assert_eq!(json["runtime"]["tuning"]["retain_chunk_max_tokens"], 2048);
+        assert_eq!(json["runtime"]["tuning"]["retain_chunk_overlap_tokens"], 0);
+    }
+
+    #[test]
     fn longmemeval_overlay_shard_offset_survives_without_cli_override() {
         let _guard = env_lock().lock().unwrap();
         let profile = temp_path("long-offset-profile.toml");
@@ -2423,7 +2661,7 @@ dataset_path = "{}"
 schema_version = 1
 benchmark = "longmemeval"
 protocol_version = "2026-03-31-longmemeval-contract-v1"
-ingest_format = "text"
+ingest_format = "round"
 consolidation = "end"
 
 [dataset]
@@ -2516,6 +2754,8 @@ provider = "none"
 [runtime.tuning]
 reflect_budget_tokens = 4096
 dedup_threshold = 0.95
+retain_chunk_max_tokens = 512
+retain_chunk_overlap_tokens = 64
 
 [runtime.tuning.extraction]
 structured_output_max_attempts = 3

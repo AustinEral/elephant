@@ -42,5 +42,9 @@ name = "longmemeval-view"
 path = "longmemeval/view.rs"
 
 [[bin]]
+name = "inspect_retain_source"
+path = "inspect_retain_source.rs"
+
+[[bin]]
 name = "reset-consolidation"
 path = "reset_consolidation.rs"

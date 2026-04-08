@@ -30,6 +30,14 @@ fn default_reflect_budget_tokens() -> usize {
     4096
 }
 
+fn default_retain_chunk_max_tokens() -> usize {
+    512
+}
+
+fn default_retain_chunk_overlap_tokens() -> usize {
+    64
+}
+
 fn default_source_limit() -> usize {
     elephant::reflect::DEFAULT_SOURCE_LOOKUP_LIMIT
 }
@@ -157,6 +165,7 @@ pub(crate) enum LongMemEvalIngestFormat {
     #[default]
     Text,
     Json,
+    Round,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -341,6 +350,10 @@ pub(crate) struct RuntimeTuningContract {
     pub(crate) reflect_budget_tokens: usize,
     #[serde(default = "default_dedup_threshold")]
     pub(crate) dedup_threshold: Option<f32>,
+    #[serde(default = "default_retain_chunk_max_tokens")]
+    pub(crate) retain_chunk_max_tokens: usize,
+    #[serde(default = "default_retain_chunk_overlap_tokens")]
+    pub(crate) retain_chunk_overlap_tokens: usize,
     #[serde(default)]
     pub(crate) reasoning_effort: ReasoningEffortContract,
     #[serde(default)]
@@ -370,6 +383,8 @@ impl Default for RuntimeTuningContract {
         Self {
             reflect_budget_tokens: default_reflect_budget_tokens(),
             dedup_threshold: default_dedup_threshold(),
+            retain_chunk_max_tokens: default_retain_chunk_max_tokens(),
+            retain_chunk_overlap_tokens: default_retain_chunk_overlap_tokens(),
             reasoning_effort: ReasoningEffortContract::default(),
             extraction: ExtractionTuningContract::default(),
             resolve_temperature: None,

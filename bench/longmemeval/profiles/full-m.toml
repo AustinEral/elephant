@@ -1,7 +1,7 @@
 schema_version = 1
 benchmark = "longmemeval"
 protocol_version = "2026-03-31-longmemeval-contract-v1"
-ingest_format = "text"
+ingest_format = "round"
 consolidation = "end"
 
 [dataset]
@@ -24,6 +24,8 @@ model = "ms-marco-MiniLM-L-6-v2"
 [runtime.tuning]
 reflect_budget_tokens = 4096
 dedup_threshold = 0.95
+retain_chunk_max_tokens = 2048
+retain_chunk_overlap_tokens = 64
 
 [runtime.tuning.extraction]
 structured_output_max_attempts = 3

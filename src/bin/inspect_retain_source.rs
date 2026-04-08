@@ -177,6 +177,11 @@ fn print_help() {
         "  cargo run --bin inspect_retain_source -- --benchmark longmemeval --question <ID> --session <N> [options]"
     );
     eprintln!();
+    eprintln!("Note: for bench-profile-aware LongMemEval inspection, use:");
+    eprintln!(
+        "  cargo run -p elephant-bench --bin inspect_retain_source -- --profile <name> --question <ID> --session <N> [options]"
+    );
+    eprintln!();
     eprintln!("General options:");
     eprintln!("  --benchmark <NAME>   locomo | longmemeval [default: locomo]");
     eprintln!("  --dataset <PATH>     Dataset path [default depends on --benchmark]");

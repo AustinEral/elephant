@@ -12,12 +12,14 @@ use crate::llm::{ClientConfig, OpenAiConfig};
 use crate::llm::{LlmConfig, ReasoningEffortConfig};
 use crate::recall::reranker::RerankerConfig;
 use crate::retain::{extractor, graph_builder};
+use crate::types::ChunkConfig;
 
 use super::env as config_env;
 use super::error::{ConfigError, ConfigErrorKind, Result};
 use loaders::{
     embedding_config_from_env, parse_optional_positive_usize, parse_optional_reasoning_effort,
-    parse_optional_temperature, reranker_config_from_env, runtime_llm_config_from_env,
+    parse_optional_temperature, reranker_config_from_env, retain_chunk_config_from_env,
+    runtime_llm_config_from_env,
 };
 use validation::{
     validate_embedding_config, validate_nonblank_field, validate_optional_nonnegative_float,
@@ -32,6 +34,7 @@ pub struct RuntimeConfig {
     llm: LlmConfig,
     embedding: EmbeddingConfig,
     reranker: RerankerConfig,
+    retain_chunk: ChunkConfig,
     dedup_threshold: Option<f32>,
     reasoning_effort: ReasoningEffortConfig,
     extraction: extractor::ExtractionConfig,
@@ -51,6 +54,7 @@ impl fmt::Debug for RuntimeConfig {
             .field("llm", &self.llm)
             .field("embedding", &self.embedding)
             .field("reranker", &self.reranker)
+            .field("retain_chunk", &self.retain_chunk)
             .field("dedup_threshold", &self.dedup_threshold)
             .field("reasoning_effort", &self.reasoning_effort)
             .field("extraction", &self.extraction)
@@ -78,6 +82,11 @@ impl RuntimeConfig {
             llm,
             embedding,
             reranker,
+            retain_chunk: ChunkConfig {
+                max_tokens: 512,
+                overlap_tokens: 64,
+                preserve_turns: true,
+            },
             dedup_threshold: Some(0.95),
             reasoning_effort: ReasoningEffortConfig::default(),
             extraction: extractor::ExtractionConfig::default(),
@@ -102,6 +111,7 @@ impl RuntimeConfig {
         let llm = runtime_llm_config_from_env()?;
         let embedding = embedding_config_from_env()?;
         let reranker = reranker_config_from_env()?;
+        let retain_chunk = retain_chunk_config_from_env()?;
         let dedup_threshold = match env::var("DEDUP_THRESHOLD").as_deref() {
             Ok("none") => None,
             Ok(raw) => Some(raw.parse().map_err(|_| {
@@ -156,6 +166,7 @@ impl RuntimeConfig {
         let retrieval = RetrievalConfig::from_env()?;
 
         Self::new(database_url, llm, embedding, reranker)?
+            .with_chunk_config(retain_chunk)?
             .with_dedup_threshold(dedup_threshold)?
             .with_reasoning_effort(reasoning_effort)?
             .with_extraction(extraction)?
@@ -171,6 +182,13 @@ impl RuntimeConfig {
     /// Override the near-duplicate similarity threshold in the range `0.0..=1.0`.
     pub fn with_dedup_threshold(mut self, dedup_threshold: Option<f32>) -> Result<Self> {
         self.dedup_threshold = dedup_threshold;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Override retain chunking settings.
+    pub fn with_chunk_config(mut self, retain_chunk: ChunkConfig) -> Result<Self> {
+        self.retain_chunk = retain_chunk;
         self.validate()?;
         Ok(self)
     }
@@ -248,6 +266,12 @@ impl RuntimeConfig {
         validate_nonblank_field("database_url", &self.database_url)?;
         validate_embedding_config(&self.embedding)?;
         validate_reranker_config(&self.reranker)?;
+        validate_positive_usize_field("retain_chunk.max_tokens", self.retain_chunk.max_tokens)?;
+        if self.retain_chunk.overlap_tokens >= self.retain_chunk.max_tokens {
+            return Err(ConfigError::configuration(
+                "retain_chunk.overlap_tokens must be less than retain_chunk.max_tokens",
+            ));
+        }
         validate_optional_unit_interval_float("dedup_threshold", self.dedup_threshold)?;
         validate_positive_usize_field(
             "extraction.structured_output_max_attempts",
@@ -300,6 +324,11 @@ impl RuntimeConfig {
     /// Return the validated reranker provider configuration.
     pub(crate) fn reranker(&self) -> &RerankerConfig {
         &self.reranker
+    }
+
+    /// Return the validated retain chunking configuration.
+    pub(crate) fn chunk_config(&self) -> &ChunkConfig {
+        &self.retain_chunk
     }
 
     /// Return the configured near-duplicate threshold.
@@ -585,6 +614,14 @@ mod tests {
         let config = minimal_programmatic_runtime_config();
 
         assert_eq!(config.database_url(), "postgres://example");
+        assert_eq!(
+            config.chunk_config(),
+            &ChunkConfig {
+                max_tokens: 512,
+                overlap_tokens: 64,
+                preserve_turns: true,
+            }
+        );
         assert_eq!(config.retrieval().retriever_limit(), 40);
         assert_eq!(config.retrieval().max_facts(), 50);
         assert_eq!(config.reflect().max_iterations(), 8);
@@ -799,6 +836,58 @@ mod tests {
         );
         assert!(err.to_string().contains("graph.semantic_threshold"));
 
+        clear_minimal_runtime_env();
+    }
+
+    #[test]
+    fn runtime_config_from_env_loads_retain_chunk_config() {
+        let _guard = env_lock().lock().unwrap();
+        set_minimal_runtime_env();
+        unsafe {
+            env::set_var("RETAIN_CHUNK_MAX_TOKENS", "2048");
+            env::set_var("RETAIN_CHUNK_OVERLAP_TOKENS", "128");
+        }
+
+        let config = RuntimeConfig::from_env().unwrap();
+        assert_eq!(
+            config.chunk_config(),
+            &ChunkConfig {
+                max_tokens: 2048,
+                overlap_tokens: 128,
+                preserve_turns: true,
+            }
+        );
+
+        unsafe {
+            env::remove_var("RETAIN_CHUNK_MAX_TOKENS");
+            env::remove_var("RETAIN_CHUNK_OVERLAP_TOKENS");
+        }
+        clear_minimal_runtime_env();
+    }
+
+    #[test]
+    fn runtime_config_from_env_allows_zero_retain_chunk_overlap() {
+        let _guard = env_lock().lock().unwrap();
+        set_minimal_runtime_env();
+        unsafe {
+            env::set_var("RETAIN_CHUNK_MAX_TOKENS", "2048");
+            env::set_var("RETAIN_CHUNK_OVERLAP_TOKENS", "0");
+        }
+
+        let config = RuntimeConfig::from_env().unwrap();
+        assert_eq!(
+            config.chunk_config(),
+            &ChunkConfig {
+                max_tokens: 2048,
+                overlap_tokens: 0,
+                preserve_turns: true,
+            }
+        );
+
+        unsafe {
+            env::remove_var("RETAIN_CHUNK_MAX_TOKENS");
+            env::remove_var("RETAIN_CHUNK_OVERLAP_TOKENS");
+        }
         clear_minimal_runtime_env();
     }
 

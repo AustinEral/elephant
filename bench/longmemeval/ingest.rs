@@ -15,13 +15,14 @@ use elephant_bench::BenchRuntime;
 
 use super::dataset::{LongMemEvalInstance, Turn};
 
-/// Session formatting mode for ingestion.
+/// Ingestion formatting mode.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum IngestFormat {
     #[default]
     Text,
     Json,
+    Round,
 }
 
 impl IngestFormat {
@@ -29,6 +30,7 @@ impl IngestFormat {
         match self {
             Self::Text => "text",
             Self::Json => "json",
+            Self::Round => "round",
         }
     }
 }
@@ -40,8 +42,9 @@ impl FromStr for IngestFormat {
         match s {
             "text" => Ok(Self::Text),
             "json" => Ok(Self::Json),
+            "round" => Ok(Self::Round),
             other => Err(format!(
-                "invalid --ingest-format value: {other} (expected one of: text, json)"
+                "invalid --ingest-format value: {other} (expected one of: text, json, round)"
             )),
         }
     }
@@ -97,7 +100,7 @@ impl ConsolidationMode {
 /// Configuration for LongMemEval ingestion.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IngestConfig {
-    /// Session formatting: text (default) or json.
+    /// Ingestion format: text (default), json, or round.
     pub format: IngestFormat,
     /// Consolidation strategy: end (default), per-session, or off.
     pub consolidation: ConsolidationMode,
@@ -124,6 +127,7 @@ pub struct IngestResult {
 /// Ingestion statistics for one instance.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IngestStats {
+    /// Number of ingestion units processed (sessions for session modes, rounds for round mode).
     pub sessions_ingested: usize,
     pub facts_stored: usize,
     pub entities_resolved: usize,
@@ -204,9 +208,46 @@ pub fn format_session_json(turns: &[Turn]) -> String {
     serde_json::to_string(&cleaned).unwrap_or_default()
 }
 
+/// Format a single round's turns as date-prefixed plain text.
+pub fn format_round_text(turns: &[Turn], date_str: &str) -> String {
+    format_session_text(turns, date_str)
+}
+
+/// Split a LongMemEval session into benchmark rounds.
+///
+/// A round is a contiguous block that ends after the final assistant message
+/// in a reply sequence, or at the final trailing user-only block.
+pub fn round_slices(turns: &[Turn]) -> Vec<&[Turn]> {
+    let mut rounds = Vec::new();
+    if turns.is_empty() {
+        return rounds;
+    }
+
+    let mut start = 0usize;
+    for (idx, turn) in turns.iter().enumerate() {
+        let next_role = turns.get(idx + 1).map(|next| next.role.as_str());
+        let boundary = if turn.role == "assistant" {
+            next_role != Some("assistant")
+        } else {
+            idx + 1 == turns.len()
+        };
+
+        if boundary {
+            rounds.push(&turns[start..=idx]);
+            start = idx + 1;
+        }
+    }
+
+    rounds
+}
+
+fn round_count(turns: &[Turn]) -> usize {
+    round_slices(turns).len()
+}
+
 /// Ingest a single LongMemEval instance into its own isolated bank.
 ///
-/// Creates a new bank, ingests all haystack sessions sequentially, then
+/// Creates a new bank, ingests all selected haystack units sequentially, then
 /// optionally runs consolidation based on the configured mode.
 ///
 /// Note: INGEST-05 (pool sizing for concurrent ops) is deferred to Phase 5.
@@ -239,72 +280,102 @@ pub async fn ingest_instance(
         .session_limit
         .map(|n| n.min(total_sessions))
         .unwrap_or(total_sessions);
+    let total_units = match config.format {
+        IngestFormat::Round => instance
+            .haystack_sessions
+            .iter()
+            .zip(instance.haystack_dates.iter())
+            .take(ingest_count)
+            .map(|(session, _)| round_count(session))
+            .sum(),
+        _ => ingest_count,
+    };
+    let unit_label = match config.format {
+        IngestFormat::Round => "round",
+        _ => "session",
+    };
+    let unit_summary = if total_units == 1 {
+        unit_label.to_string()
+    } else {
+        format!("{unit_label}s")
+    };
     eprintln!(
-        "  {} bank {} | ingesting {ingest_count}/{total_sessions} sessions...",
+        "  {} bank {} | ingesting {ingest_count}/{total_sessions} sessions as {total_units} {unit_summary}...",
         instance.question_id, bank_id,
     );
 
-    // 2. Ingest sessions sequentially
+    // 2. Ingest units sequentially
     let ingest_start = Instant::now();
+    let mut units_ingested = 0usize;
 
-    for (idx, (session, date_str)) in instance
+    for (session_idx, (session, date_str)) in instance
         .haystack_sessions
         .iter()
         .zip(instance.haystack_dates.iter())
         .take(ingest_count)
         .enumerate()
     {
-        let session_start = Instant::now();
+        let timestamp = parse_haystack_date(date_str);
 
-        let content = match config.format {
-            IngestFormat::Text => format_session_text(session, date_str),
-            IngestFormat::Json => {
+        let units: Vec<(usize, String)> = match config.format {
+            IngestFormat::Text => vec![(session.len(), format_session_text(session, date_str))],
+            IngestFormat::Json => vec![(
+                session.len(),
                 format!(
                     "{}\n\n{}",
                     parse_date_prefix(date_str),
                     format_session_json(session)
-                )
-            }
+                ),
+            )],
+            IngestFormat::Round => round_slices(session)
+                .into_iter()
+                .map(|round| (round.len(), format_round_text(round, date_str)))
+                .collect(),
         };
-        let timestamp = parse_haystack_date(date_str);
 
-        match runtime
-            .retain(&RetainInput {
-                bank_id,
-                content,
-                timestamp,
-                turn_id: None,
-                context: None,
-                custom_instructions: None,
-                speaker: None,
-            })
-            .await
-        {
-            Ok(resp) => {
-                stats.sessions_ingested += 1;
-                stats.facts_stored += resp.facts_stored;
-                stats.entities_resolved += resp.entities_resolved;
-                stats.links_created += resp.links_created;
-                stats.opinions_reinforced += resp.opinions_reinforced;
-                stats.opinions_weakened += resp.opinions_weakened;
-                eprintln!(
-                    "  {} ingest [{}/{}] {} facts | {:.1}s | total {:.1}s",
-                    instance.question_id,
-                    idx + 1,
-                    ingest_count,
-                    resp.facts_stored,
-                    session_start.elapsed().as_secs_f64(),
-                    ingest_start.elapsed().as_secs_f64(),
-                );
-            }
-            Err(e) => {
-                eprintln!(
-                    "  {} ingest [{}/{}] FAILED: {e}",
-                    instance.question_id,
-                    idx + 1,
-                    ingest_count,
-                );
-                stats.session_failures += 1;
+        for (turn_count, content) in units {
+            let unit_start = Instant::now();
+
+            match runtime
+                .retain(&RetainInput {
+                    bank_id,
+                    content,
+                    timestamp,
+                    turn_id: None,
+                    context: None,
+                    custom_instructions: None,
+                    speaker: None,
+                })
+                .await
+            {
+                Ok(resp) => {
+                    stats.sessions_ingested += 1;
+                    stats.facts_stored += resp.facts_stored;
+                    stats.entities_resolved += resp.entities_resolved;
+                    stats.links_created += resp.links_created;
+                    stats.opinions_reinforced += resp.opinions_reinforced;
+                    stats.opinions_weakened += resp.opinions_weakened;
+                    units_ingested += 1;
+                    eprintln!(
+                        "  {} ingest [{}/{}] {}-level complete | {} turns | {} facts | unit: {:.1}s | total {:.1}s",
+                        instance.question_id,
+                        units_ingested,
+                        total_units,
+                        unit_label,
+                        turn_count,
+                        resp.facts_stored,
+                        unit_start.elapsed().as_secs_f64(),
+                        ingest_start.elapsed().as_secs_f64(),
+                    );
+                }
+                Err(e) => {
+                    units_ingested += 1;
+                    eprintln!(
+                        "  {} ingest [{}/{}] {}-level FAILED: {e}",
+                        instance.question_id, units_ingested, total_units, unit_label,
+                    );
+                    stats.session_failures += 1;
+                }
             }
         }
 
@@ -318,7 +389,7 @@ pub async fn ingest_instance(
                 Err(e) => {
                     warn!(
                         question_id = %instance.question_id,
-                        session = idx + 1,
+                        session = session_idx + 1,
                         error = %e,
                         "per-session consolidation failed"
                     );
@@ -396,8 +467,12 @@ pub async fn ingest_instance(
     let total_time_s = total_start.elapsed().as_secs_f64();
 
     eprintln!(
-        "  {} ingestion complete | {} sessions, {} facts | {:.1}s",
-        instance.question_id, stats.sessions_ingested, stats.facts_stored, total_time_s,
+        "  {} ingestion complete | {} {}, {} facts | {:.1}s",
+        instance.question_id,
+        stats.sessions_ingested,
+        unit_summary,
+        stats.facts_stored,
+        total_time_s,
     );
 
     Ok(IngestResult {
@@ -511,6 +586,91 @@ mod tests {
         let turns = make_turns();
         let result = format_session_json(&turns);
         assert!(!result.contains("has_answer"));
+    }
+
+    // --- format_round_text ---
+
+    #[test]
+    fn format_round_text_matches_session_text_for_rounds() {
+        let turns = make_turns();
+        let result = format_round_text(&turns, "2023/05/20 (Sat) 02:21");
+        assert!(result.starts_with("[Date: 2023-05-20]\n\n"));
+        assert!(result.contains("user: Hello there"));
+        assert!(result.contains("assistant: Hi! How can I help?"));
+    }
+
+    #[test]
+    fn round_count_keeps_final_odd_turn_alone() {
+        let turns = vec![
+            Turn {
+                role: "user".into(),
+                content: "first".into(),
+            },
+            Turn {
+                role: "assistant".into(),
+                content: "second".into(),
+            },
+            Turn {
+                role: "user".into(),
+                content: "third".into(),
+            },
+        ];
+
+        assert_eq!(round_count(&turns), 2);
+        let rounds = round_slices(&turns);
+        assert_eq!(rounds[0].len(), 2);
+        assert_eq!(rounds[1].len(), 1);
+        assert_eq!(rounds[1][0].content, "third");
+    }
+
+    #[test]
+    fn round_slices_groups_repeated_user_turns_with_following_assistant() {
+        let turns = vec![
+            Turn {
+                role: "user".into(),
+                content: "first".into(),
+            },
+            Turn {
+                role: "user".into(),
+                content: "second".into(),
+            },
+            Turn {
+                role: "assistant".into(),
+                content: "third".into(),
+            },
+        ];
+
+        let rounds = round_slices(&turns);
+        assert_eq!(rounds.len(), 1);
+        assert_eq!(rounds[0].len(), 3);
+    }
+
+    #[test]
+    fn round_slices_keeps_leading_assistant_block_separate() {
+        let turns = vec![
+            Turn {
+                role: "assistant".into(),
+                content: "first".into(),
+            },
+            Turn {
+                role: "assistant".into(),
+                content: "second".into(),
+            },
+            Turn {
+                role: "user".into(),
+                content: "third".into(),
+            },
+            Turn {
+                role: "assistant".into(),
+                content: "fourth".into(),
+            },
+        ];
+
+        let rounds = round_slices(&turns);
+        assert_eq!(rounds.len(), 2);
+        assert_eq!(rounds[0].len(), 2);
+        assert_eq!(rounds[1].len(), 2);
+        assert_eq!(rounds[1][0].content, "third");
     }
 
     // --- ConsolidationMode ---

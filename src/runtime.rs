@@ -33,7 +33,6 @@ use crate::retain::resolver::{self, LayeredEntityResolver};
 use crate::retain::{self, DefaultRetainPipeline, RetainPipeline};
 use crate::storage::MemoryStore;
 use crate::storage::pg::PgMemoryStore;
-use crate::types::ChunkConfig;
 
 use crate::consolidation::{Consolidator, OpinionMerger};
 
@@ -353,12 +352,8 @@ impl RuntimeBuilder {
         let reflect_config = runtime_config.reflect();
         let reflect_temperature = runtime_config.reflect_temperature();
         let retrieval_config = runtime_config.retrieval();
+        let chunk_config = runtime_config.chunk_config().clone();
         let dedup_threshold = runtime_config.dedup_threshold();
-        let chunk_config = ChunkConfig {
-            max_tokens: 512,
-            overlap_tokens: 64,
-            preserve_turns: true,
-        };
         let extract_temperature_resolution = llm::resolve_temperature(
             llm_configs.retain(),
             extraction_config.temperature,

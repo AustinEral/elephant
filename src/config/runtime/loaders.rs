@@ -5,6 +5,7 @@ use std::env;
 use crate::embedding::{EmbeddingConfig, EmbeddingProvider};
 use crate::llm::{LlmConfig, Provider, ReasoningEffort, VertexConfig};
 use crate::recall::reranker::{RerankerConfig, RerankerProvider};
+use crate::types::ChunkConfig;
 
 use super::super::client_env::{
     SharedClientEnvConfig, build_client_config, optional_string_any, required_string_any,
@@ -39,6 +40,20 @@ pub(super) fn parse_optional_positive_usize(name: &'static str) -> Result<Option
         ))),
         other => Ok(other),
     }
+}
+
+pub(super) fn retain_chunk_config_from_env() -> Result<ChunkConfig> {
+    let max_tokens = parse_optional_positive_usize("RETAIN_CHUNK_MAX_TOKENS")?.unwrap_or(512);
+    let overlap_tokens = config_env::parse_optional_usize(
+        "RETAIN_CHUNK_OVERLAP_TOKENS",
+        ConfigErrorKind::Configuration,
+    )?
+    .unwrap_or(64);
+    Ok(ChunkConfig {
+        max_tokens,
+        overlap_tokens,
+        preserve_turns: true,
+    })
 }
 
 pub(super) fn required_nonblank_string(name: &'static str) -> Result<String> {

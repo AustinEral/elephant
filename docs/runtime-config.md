@@ -74,6 +74,10 @@ Benchmark configuration is separate. Benchmarks do not use the root runtime `.en
 
 - `DEDUP_THRESHOLD`
   Fact insertion dedup threshold. Use `none` to disable.
+- `RETAIN_CHUNK_MAX_TOKENS`
+  Maximum retain chunk size before chunking splits long inputs.
+- `RETAIN_CHUNK_OVERLAP_TOKENS`
+  Retain chunk overlap. Use `0` to disable overlap.
 - `REFLECT_ENABLE_SOURCE_LOOKUP`
   Enable or disable reflect source lookup.
 - `REFLECT_MAX_ITERATIONS`

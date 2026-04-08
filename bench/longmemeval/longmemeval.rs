@@ -1291,6 +1291,7 @@ fn run_config_from_artifact(artifact: &BenchmarkOutput) -> Result<RunConfig, Str
     let ingest_format = match artifact.manifest.ingest_format.as_str() {
         "text" => IngestFormat::Text,
         "json" => IngestFormat::Json,
+        "round" => IngestFormat::Round,
         other => return Err(format!("unknown ingest format in artifact: {other}")),
     };
 
@@ -3725,6 +3726,10 @@ mod tests {
     fn ingest_format_from_str() {
         assert_eq!("text".parse::<IngestFormat>().unwrap(), IngestFormat::Text);
         assert_eq!("json".parse::<IngestFormat>().unwrap(), IngestFormat::Json);
+        assert_eq!(
+            "round".parse::<IngestFormat>().unwrap(),
+            IngestFormat::Round
+        );
         assert!("xml".parse::<IngestFormat>().is_err());
     }
 
@@ -3749,6 +3754,7 @@ mod tests {
     fn ingest_format_as_str() {
         assert_eq!(IngestFormat::Text.as_str(), "text");
         assert_eq!(IngestFormat::Json.as_str(), "json");
+        assert_eq!(IngestFormat::Round.as_str(), "round");
     }
 
     #[test]

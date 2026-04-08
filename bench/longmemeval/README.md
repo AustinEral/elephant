@@ -8,6 +8,11 @@ Two dataset sizes:
 - **S** (~50 sessions per instance, ~115k tokens)
 - **M** (~500 sessions per instance, ~1.5M tokens)
 
+Current checked-in profiles use:
+- round ingest
+- `retain_chunk_max_tokens = 2048`
+- `retain_chunk_overlap_tokens = 64`
+
 ## Setup
 
 ```bash
