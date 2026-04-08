@@ -108,6 +108,7 @@ impl BenchCommand {
 #[serde(rename_all = "kebab-case")]
 enum RunProfile {
     Smoke,
+    Probe,
     #[default]
     FullS,
     FullM,
@@ -117,6 +118,7 @@ impl RunProfile {
     fn as_str(self) -> &'static str {
         match self {
             Self::Smoke => "smoke",
+            Self::Probe => "probe",
             Self::FullS => "full-s",
             Self::FullM => "full-m",
         }
@@ -138,10 +140,11 @@ impl FromStr for RunProfile {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "smoke" => Ok(Self::Smoke),
+            "probe" => Ok(Self::Probe),
             "full-s" => Ok(Self::FullS),
             "full-m" => Ok(Self::FullM),
             other => Err(format!(
-                "invalid --profile value: {other} (expected one of: smoke, full-s, full-m)"
+                "invalid --profile value: {other} (expected one of: smoke, probe, full-s, full-m)"
             )),
         }
     }
@@ -916,7 +919,7 @@ fn print_help() {
     eprintln!(
         "  --profile <NAME>                Named profile for `run`/`ingest` [default: full-s]"
     );
-    eprintln!("                                  Profiles: smoke, full-s, full-m");
+    eprintln!("                                  Profiles: smoke, probe, full-s, full-m");
     eprintln!(
         "  --config <PATH>                 TOML execution overlay for `run`/`ingest`/`qa`/`config-resolve`"
     );

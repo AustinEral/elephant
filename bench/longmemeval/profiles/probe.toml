@@ -1,15 +1,15 @@
 schema_version = 1
-benchmark = "locomo"
-protocol_version = "2026-03-31-locomo-contract-v1"
-ingest = "raw-json"
+benchmark = "longmemeval"
+protocol_version = "2026-03-31-longmemeval-contract-v1"
+ingest_format = "round"
 consolidation = "end"
 
 [dataset]
-identifier = "locomo10"
-expected_fingerprint = "8dfd1872bfb58ab8"
+identifier = "longmemeval-s"
+expected_fingerprint = "1be32e546a434b8b"
 
 [slice]
-category_filter = [1, 2, 3, 4]
+session_limit = 1
 
 [runtime.llm]
 provider = "openai"
@@ -27,7 +27,7 @@ model = "ms-marco-MiniLM-L-6-v2"
 [runtime.tuning]
 reflect_budget_tokens = 4096
 dedup_threshold = 0.95
-retain_chunk_max_tokens = 512
+retain_chunk_max_tokens = 2048
 retain_chunk_overlap_tokens = 64
 
 [runtime.tuning.extraction]

@@ -1,7 +1,7 @@
 //! Lightweight stage-aware metrics for benchmark instrumentation.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -228,6 +228,23 @@ impl MeteredLlmClient {
             stage,
         }
     }
+
+    fn for_each_distinct_scoped_collector(
+        &self,
+        mut f: impl FnMut(&Arc<MetricsCollector>),
+    ) {
+        let _ = ACTIVE_SCOPED_COLLECTORS.try_with(|scopes| {
+            let direct_ptr = Arc::as_ptr(&self.collector) as usize;
+            let mut seen = HashSet::from([direct_ptr]);
+
+            for collector in scopes.borrow().iter() {
+                let ptr = Arc::as_ptr(collector) as usize;
+                if seen.insert(ptr) {
+                    f(collector);
+                }
+            }
+        });
+    }
 }
 
 #[async_trait]
@@ -240,20 +257,14 @@ impl LlmClient for MeteredLlmClient {
             Ok(response) => {
                 self.collector
                     .record_success(self.stage, response, elapsed_ms);
-                let _ = ACTIVE_SCOPED_COLLECTORS.try_with(|scopes| {
-                    let scoped = scopes.borrow().clone();
-                    for collector in scoped {
-                        collector.record_success(self.stage, response, elapsed_ms);
-                    }
+                self.for_each_distinct_scoped_collector(|collector| {
+                    collector.record_success(self.stage, response, elapsed_ms);
                 });
             }
             Err(_) => {
                 self.collector.record_error(self.stage, elapsed_ms);
-                let _ = ACTIVE_SCOPED_COLLECTORS.try_with(|scopes| {
-                    let scoped = scopes.borrow().clone();
-                    for collector in scoped {
-                        collector.record_error(self.stage, elapsed_ms);
-                    }
+                self.for_each_distinct_scoped_collector(|collector| {
+                    collector.record_error(self.stage, elapsed_ms);
                 });
             }
         }
@@ -264,7 +275,23 @@ impl LlmClient for MeteredLlmClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::PromptCacheUsage;
+    use crate::llm::{PromptCacheUsage, ToolCall};
+
+    struct SuccessClient;
+
+    #[async_trait]
+    impl LlmClient for SuccessClient {
+        async fn complete(&self, _request: CompletionRequest) -> Result<CompletionResponse> {
+            Ok(CompletionResponse {
+                content: "ok".into(),
+                input_tokens: 7,
+                output_tokens: 3,
+                stop_reason: None,
+                tool_calls: Vec::<ToolCall>::new(),
+                prompt_cache: None,
+            })
+        }
+    }
 
     #[test]
     fn stage_usage_deserializes_legacy_token_names() {
@@ -354,5 +381,50 @@ mod tests {
         assert_eq!(total.calls, 2);
         assert_eq!(total.errors, 0);
         assert_eq!(total.latency_ms, 13);
+    }
+
+    #[tokio::test]
+    async fn metered_client_does_not_double_count_same_scoped_collector() {
+        let collector = Arc::new(MetricsCollector::new());
+        let inner: Arc<dyn LlmClient> = Arc::new(SuccessClient);
+        let client = MeteredLlmClient::new(inner, collector.clone(), LlmStage::Reflect);
+
+        with_scoped_collector(collector.clone(), client.complete(CompletionRequest::builder().build()))
+            .await
+            .unwrap();
+
+        let snapshot = collector.snapshot();
+        let usage = snapshot.get(&LlmStage::Reflect).expect("reflect metrics");
+        assert_eq!(usage.calls, 1);
+        assert_eq!(usage.errors, 0);
+        assert_eq!(usage.input_tokens, 7);
+        assert_eq!(usage.output_tokens, 3);
+    }
+
+    #[tokio::test]
+    async fn metered_client_records_once_to_each_distinct_scoped_collector() {
+        let direct = Arc::new(MetricsCollector::new());
+        let scoped = Arc::new(MetricsCollector::new());
+        let inner: Arc<dyn LlmClient> = Arc::new(SuccessClient);
+        let client = MeteredLlmClient::new(inner, direct.clone(), LlmStage::Reflect);
+
+        with_scoped_collector(scoped.clone(), client.complete(CompletionRequest::builder().build()))
+            .await
+            .unwrap();
+
+        let direct_usage = direct
+            .snapshot()
+            .get(&LlmStage::Reflect)
+            .cloned()
+            .expect("direct reflect metrics");
+        let scoped_usage = scoped
+            .snapshot()
+            .get(&LlmStage::Reflect)
+            .cloned()
+            .expect("scoped reflect metrics");
+        assert_eq!(direct_usage.calls, 1);
+        assert_eq!(scoped_usage.calls, 1);
+        assert_eq!(direct_usage.input_tokens, 7);
+        assert_eq!(scoped_usage.input_tokens, 7);
     }
 }
