@@ -333,8 +333,18 @@ pub async fn ingest_instance(
                 .collect(),
         };
 
-        for (turn_count, content) in units {
+        let session_number = session_idx + 1;
+        let total_rounds_in_session = units.len();
+        for (unit_idx, (turn_count, content)) in units.into_iter().enumerate() {
             let unit_start = Instant::now();
+            let unit_position = match config.format {
+                IngestFormat::Round => format!(
+                    "session {session_number}/{ingest_count} round {}/{}",
+                    unit_idx + 1,
+                    total_rounds_in_session
+                ),
+                _ => format!("session {session_number}/{ingest_count}"),
+            };
 
             match runtime
                 .retain(&RetainInput {
@@ -357,10 +367,11 @@ pub async fn ingest_instance(
                     stats.opinions_weakened += resp.opinions_weakened;
                     units_ingested += 1;
                     eprintln!(
-                        "  {} ingest [{}/{}] {}-level complete | {} turns | {} facts | unit: {:.1}s | total {:.1}s",
+                        "  {} ingest [{}/{}] {} | {}-level complete | {} turns | {} facts | unit: {:.1}s | total {:.1}s",
                         instance.question_id,
                         units_ingested,
                         total_units,
+                        unit_position,
                         unit_label,
                         turn_count,
                         resp.facts_stored,
@@ -371,8 +382,12 @@ pub async fn ingest_instance(
                 Err(e) => {
                     units_ingested += 1;
                     eprintln!(
-                        "  {} ingest [{}/{}] {}-level FAILED: {e}",
-                        instance.question_id, units_ingested, total_units, unit_label,
+                        "  {} ingest [{}/{}] {} | {}-level FAILED: {e}",
+                        instance.question_id,
+                        units_ingested,
+                        total_units,
+                        unit_position,
+                        unit_label,
                     );
                     stats.session_failures += 1;
                 }
