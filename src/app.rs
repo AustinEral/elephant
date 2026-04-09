@@ -329,6 +329,7 @@ mod tests {
                 links_created: 0,
                 opinions_reinforced: 0,
                 opinions_weakened: 0,
+                breakdown: crate::types::RetainBreakdown::default(),
             })
         }
     }

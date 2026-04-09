@@ -9,8 +9,8 @@ use tracing::warn;
 
 use elephant::error::Result;
 use elephant::metrics::{LlmStage, StageUsage};
-use elephant::types::RetainInput;
 use elephant::types::id::BankId;
+use elephant::types::{RetainBreakdown, RetainInput};
 use elephant_bench::BenchRuntime;
 
 use super::dataset::{LongMemEvalInstance, Turn};
@@ -120,6 +120,8 @@ pub struct IngestResult {
     pub stage_metrics: BTreeMap<LlmStage, StageUsage>,
     /// Ingestion statistics.
     pub stats: IngestStats,
+    /// Fine-grained retain instrumentation aggregated across ingested units.
+    pub retain_breakdown: RetainBreakdown,
     /// Wall-clock timing.
     pub timing: IngestTiming,
 }
@@ -261,6 +263,7 @@ pub async fn ingest_instance(
 ) -> Result<IngestResult> {
     let total_start = Instant::now();
     let mut stats = IngestStats::default();
+    let mut retain_breakdown = RetainBreakdown::default();
 
     // 1. Create or reuse bank
     let bank_id = if let Some(id) = existing_bank_id {
@@ -365,6 +368,7 @@ pub async fn ingest_instance(
                     stats.links_created += resp.links_created;
                     stats.opinions_reinforced += resp.opinions_reinforced;
                     stats.opinions_weakened += resp.opinions_weakened;
+                    retain_breakdown.accumulate(&resp.breakdown);
                     units_ingested += 1;
                     eprintln!(
                         "  {} ingest [{}/{}] {} | {}-level complete | {} turns | {} facts | unit: {:.1}s | total {:.1}s",
@@ -495,6 +499,7 @@ pub async fn ingest_instance(
         bank_id,
         stage_metrics: BTreeMap::new(),
         stats,
+        retain_breakdown,
         timing: IngestTiming {
             ingest_time_s,
             consolidation_time_s,
@@ -763,6 +768,7 @@ mod tests {
                 observations_created: 4,
                 observations_updated: 2,
             },
+            retain_breakdown: RetainBreakdown::default(),
             timing: IngestTiming {
                 ingest_time_s: 10.5,
                 consolidation_time_s: 3.2,

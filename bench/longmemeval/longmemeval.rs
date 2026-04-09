@@ -28,7 +28,7 @@ use ingest::{ConsolidationMode, IngestConfig, IngestFormat};
 
 use elephant::consolidation::ConsolidationProgress;
 use elephant::metrics::{LlmStage, MetricsCollector, StageUsage, with_scoped_collector};
-use elephant::types::ReflectQuery;
+use elephant::types::{ReflectQuery, RetainBreakdown};
 use elephant_bench::{
     BenchJudgeConfig, BenchRuntime, BenchRuntimeMetadata, BenchRuntimePromptHashes,
     BenchRuntimeTuning, resolve_longmemeval_bench_config,
@@ -999,6 +999,8 @@ struct BenchmarkOutput {
     instance_status: HashMap<String, InstanceStatus>,
     #[serde(default)]
     instance_timings: HashMap<String, InstancePhaseTimings>,
+    instance_retain_breakdowns: HashMap<String, RetainBreakdown>,
+    retain_breakdown: RetainBreakdown,
     #[serde(default)]
     stage_metrics: BTreeMap<LlmStage, StageUsage>,
     #[serde(default)]
@@ -1435,6 +1437,16 @@ fn compute_accuracy(results: &[QuestionResult]) -> f64 {
     correct as f64 / results.len() as f64
 }
 
+fn accumulate_retain_breakdowns(
+    breakdowns: impl IntoIterator<Item = RetainBreakdown>,
+) -> RetainBreakdown {
+    let mut total = RetainBreakdown::default();
+    for breakdown in breakdowns {
+        total.accumulate(&breakdown);
+    }
+    total
+}
+
 // --- Shared state for incremental writes ---
 
 struct SharedState {
@@ -1442,6 +1454,7 @@ struct SharedState {
     banks: HashMap<String, String>,
     instance_status: HashMap<String, InstanceStatus>,
     instance_timings: HashMap<String, InstancePhaseTimings>,
+    instance_retain_breakdowns: HashMap<String, RetainBreakdown>,
     output_path: PathBuf,
     questions_path: PathBuf,
     debug_path: PathBuf,
@@ -1466,11 +1479,14 @@ impl SharedState {
         result: QuestionResult,
         debug: QuestionDebugRecord,
         timings: InstancePhaseTimings,
+        retain_breakdown: RetainBreakdown,
     ) {
         append_jsonl(&self.questions_path, &result);
         append_jsonl(&self.debug_path, &debug);
         self.instance_timings
             .insert(result.question_id.clone(), timings);
+        self.instance_retain_breakdowns
+            .insert(result.question_id.clone(), retain_breakdown);
         self.results.push(result);
         self.flush();
     }
@@ -1505,6 +1521,10 @@ impl SharedState {
             banks: self.banks.clone(),
             instance_status: self.instance_status.clone(),
             instance_timings: self.instance_timings.clone(),
+            instance_retain_breakdowns: self.instance_retain_breakdowns.clone(),
+            retain_breakdown: accumulate_retain_breakdowns(
+                self.instance_retain_breakdowns.values().cloned(),
+            ),
             manifest: self.manifest.clone(),
             artifacts: BenchmarkArtifacts {
                 questions_path: self.questions_path.display().to_string(),
@@ -2095,6 +2115,7 @@ fn merge_artifacts(
     // Merge instance_status from all bundles
     let mut merged_instance_status: HashMap<String, InstanceStatus> = HashMap::new();
     let mut merged_instance_timings: HashMap<String, InstancePhaseTimings> = HashMap::new();
+    let mut merged_instance_retain_breakdowns: HashMap<String, RetainBreakdown> = HashMap::new();
     for bundle in &bundles {
         for (qid, status) in &bundle.output.instance_status {
             merged_instance_status
@@ -2105,6 +2126,11 @@ fn merge_artifacts(
             merged_instance_timings
                 .entry(qid.clone())
                 .or_insert_with(|| timings.clone());
+        }
+        for (qid, breakdown) in &bundle.output.instance_retain_breakdowns {
+            merged_instance_retain_breakdowns
+                .entry(qid.clone())
+                .or_insert_with(|| breakdown.clone());
         }
     }
 
@@ -2125,6 +2151,10 @@ fn merge_artifacts(
         banks,
         instance_status: merged_instance_status,
         instance_timings: merged_instance_timings,
+        instance_retain_breakdowns: merged_instance_retain_breakdowns.clone(),
+        retain_breakdown: accumulate_retain_breakdowns(
+            merged_instance_retain_breakdowns.into_values(),
+        ),
         manifest,
         artifacts: BenchmarkArtifacts {
             questions_path: questions_path.display().to_string(),
@@ -2470,6 +2500,7 @@ async fn main() {
     let mut completed_debug: Vec<QuestionDebugRecord> = Vec::new();
     let mut resume_instance_status: HashMap<String, InstanceStatus> = HashMap::new();
     let mut resume_instance_timings: HashMap<String, InstancePhaseTimings> = HashMap::new();
+    let mut resume_instance_retain_breakdowns: HashMap<String, RetainBreakdown> = HashMap::new();
     let is_resume = should_resume_run(&config);
 
     if is_resume && output_path.exists() {
@@ -2484,6 +2515,7 @@ async fn main() {
             }
             resume_instance_status = existing.instance_status;
             resume_instance_timings = existing.instance_timings;
+            resume_instance_retain_breakdowns = existing.instance_retain_breakdowns;
         }
         // Load completed question results from sidecar (needed for skip classification)
         if questions_path.exists()
@@ -2563,6 +2595,7 @@ async fn main() {
             .filter(|r| skip_ids.contains(&r.question_id))
             .collect();
         resume_instance_timings.retain(|qid, _| skip_ids.contains(qid));
+        resume_instance_retain_breakdowns.retain(|qid, _| skip_ids.contains(qid));
 
         // Rewrite sidecars with only kept records
         let _ = fs::write(&questions_path, "");
@@ -2660,6 +2693,7 @@ async fn main() {
         banks: existing_banks,
         instance_status: resume_instance_status.clone(),
         instance_timings: resume_instance_timings.clone(),
+        instance_retain_breakdowns: resume_instance_retain_breakdowns.clone(),
         output_path: output_path.clone(),
         questions_path: questions_path.clone(),
         debug_path: debug_path.clone(),
@@ -2707,6 +2741,7 @@ async fn main() {
             let prior_status = resume_statuses.get(&qid).cloned();
             let mut ingest_elapsed = 0.0;
             let mut consolidation_elapsed = 0.0;
+            let mut retain_breakdown = RetainBreakdown::default();
 
             // --- Step 1: Determine bank_id ---
             let bank_id_str: String;
@@ -2782,6 +2817,7 @@ async fn main() {
                                 total_time_s: instance_start.elapsed().as_secs_f64(),
                                 ..Default::default()
                             },
+                            RetainBreakdown::default(),
                         );
                         let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
                         eprintln!(
@@ -2822,7 +2858,10 @@ async fn main() {
                 )
                 .await;
                 match result {
-                    Ok(_) => {}
+                    Ok(ingest_result) => {
+                        ingest_elapsed = ingest_result.timing.ingest_time_s;
+                        retain_breakdown = ingest_result.retain_breakdown;
+                    }
                     Err(e) => {
                         let err_msg = format!("{e}");
                         eprintln!("ERROR ingesting {qid}: {err_msg}");
@@ -2854,6 +2893,7 @@ async fn main() {
                                 total_time_s: instance_start.elapsed().as_secs_f64(),
                                 ..Default::default()
                             },
+                            RetainBreakdown::default(),
                         );
                         let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
                         eprintln!(
@@ -2874,7 +2914,9 @@ async fn main() {
                         qa_complete: false,
                     },
                 );
-                ingest_elapsed = ingest_start.elapsed().as_secs_f64();
+                if ingest_elapsed == 0.0 {
+                    ingest_elapsed = ingest_start.elapsed().as_secs_f64();
+                }
             }
 
             // --- Step 2: Consolidation ---
@@ -2976,6 +3018,7 @@ async fn main() {
                             qa_time_s: 0.0,
                             total_time_s: ingest_elapsed + consolidation_elapsed,
                         },
+                        retain_breakdown.clone(),
                     );
                 }
                 let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
@@ -3120,6 +3163,7 @@ async fn main() {
                         qa_time_s: qa_elapsed,
                         total_time_s: ingest_elapsed + consolidation_elapsed + qa_elapsed,
                     },
+                    retain_breakdown,
                 );
             }
 
@@ -3338,6 +3382,8 @@ mod tests {
             banks: HashMap::new(),
             instance_status: HashMap::new(),
             instance_timings: HashMap::new(),
+            instance_retain_breakdowns: HashMap::new(),
+            retain_breakdown: RetainBreakdown::default(),
             manifest: BenchmarkManifest {
                 profile: "smoke".into(),
                 dataset_path: "data/test.json".into(),
@@ -3534,6 +3580,8 @@ mod tests {
             banks: HashMap::new(),
             instance_status: HashMap::new(),
             instance_timings: HashMap::new(),
+            instance_retain_breakdowns: HashMap::new(),
+            retain_breakdown: RetainBreakdown::default(),
             manifest: BenchmarkManifest {
                 profile: "smoke".into(),
                 mode: "ingest".into(),
@@ -3606,7 +3654,7 @@ mod tests {
         assert_eq!(config.dataset, resolved.dataset_path());
         assert_eq!(config.instances, vec!["e47becba".to_string()]);
         assert_eq!(config.instance_limit, None);
-        assert_eq!(config.ingest_format, IngestFormat::Text);
+        assert_eq!(config.ingest_format, IngestFormat::Round);
         assert_eq!(config.consolidation, ConsolidationMode::End);
         assert_eq!(config.instance_jobs, 4);
         assert_eq!(config.config_path, Some(overlay_path));
@@ -3646,7 +3694,7 @@ mod tests {
         .unwrap();
         assert_eq!(resolved.instances(), &["e47becba".to_string()]);
         assert_eq!(resolved.shard_instance_limit(), None);
-        assert_eq!(resolved.ingest_format(), "text");
+        assert_eq!(resolved.ingest_format(), "round");
         assert_eq!(resolved.consolidation_mode(), "end");
         assert_eq!(resolved.instance_jobs(), 4);
     }
@@ -3800,6 +3848,8 @@ mod tests {
             banks,
             instance_status: HashMap::new(),
             instance_timings: HashMap::new(),
+            instance_retain_breakdowns: HashMap::new(),
+            retain_breakdown: RetainBreakdown::default(),
             manifest: BenchmarkManifest::default(),
             artifacts: BenchmarkArtifacts::default(),
             stage_metrics: BTreeMap::new(),
@@ -3830,7 +3880,7 @@ mod tests {
     #[test]
     fn benchmark_manifest_serde_roundtrip() {
         let m = BenchmarkManifest {
-            protocol_version: "2026-03-15-longmemeval-v1".into(),
+            protocol_version: "2026-04-08-longmemeval-contract-v2".into(),
             profile: "smoke".into(),
             mode: "run".into(),
             config_path: None,
@@ -3853,7 +3903,7 @@ mod tests {
         };
         let json = serde_json::to_string(&m).unwrap();
         let back: BenchmarkManifest = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.protocol_version, "2026-03-15-longmemeval-v1");
+        assert_eq!(back.protocol_version, "2026-04-08-longmemeval-contract-v2");
         assert_eq!(back.profile, "smoke");
         assert_eq!(back.session_limit, Some(5));
         assert_eq!(back.contract_hash, Some("contract123".into()));
@@ -3997,6 +4047,8 @@ mod tests {
             banks: HashMap::new(),
             instance_status,
             instance_timings: HashMap::new(),
+            instance_retain_breakdowns: HashMap::new(),
+            retain_breakdown: RetainBreakdown::default(),
             manifest: BenchmarkManifest::default(),
             artifacts: BenchmarkArtifacts::default(),
             stage_metrics: BTreeMap::new(),
@@ -4012,8 +4064,7 @@ mod tests {
     }
 
     #[test]
-    fn benchmark_output_without_instance_status_deserializes() {
-        // Old artifacts without instance_status should still deserialize
+    fn benchmark_output_without_instance_status_deserializes_when_v2_breakdowns_present() {
         let json = r#"{
             "benchmark": "longmemeval",
             "timestamp": "2026-03-16T00:00:00Z",
@@ -4026,7 +4077,32 @@ mod tests {
             "total_questions": 0,
             "accuracy": 0.0,
             "per_category": {},
-            "banks": {}
+            "banks": {},
+            "instance_retain_breakdowns": {},
+            "retain_breakdown": {
+                "extract": {
+                    "chunking_ms": 0,
+                    "chunk_count": 0,
+                    "extractor_calls": 0,
+                    "extracted_fact_count": 0,
+                    "empty_chunks": 0,
+                    "llm_extract_ms": 0
+                },
+                "graph": {
+                    "load_existing_facts_ms": 0,
+                    "build_temporal_links_ms": 0,
+                    "build_entity_links_ms": 0,
+                    "build_semantic_links_ms": 0,
+                    "build_causal_links_ms": 0,
+                    "insert_links_ms": 0,
+                    "existing_facts_count": 0,
+                    "new_facts_count": 0,
+                    "temporal_links_count": 0,
+                    "entity_links_count": 0,
+                    "semantic_links_count": 0,
+                    "causal_links_count": 0
+                }
+            }
         }"#;
         let output: BenchmarkOutput = serde_json::from_str(json).unwrap();
         assert!(output.instance_status.is_empty());
@@ -4125,6 +4201,8 @@ mod tests {
             banks: HashMap::new(),
             instance_status: HashMap::new(),
             instance_timings: HashMap::new(),
+            instance_retain_breakdowns: HashMap::new(),
+            retain_breakdown: RetainBreakdown::default(),
             manifest: BenchmarkManifest {
                 profile: "smoke".into(),
                 mode: "ingest".into(),
@@ -4170,6 +4248,8 @@ mod tests {
             banks: HashMap::new(),
             instance_status: HashMap::new(),
             instance_timings: HashMap::new(),
+            instance_retain_breakdowns: HashMap::new(),
+            retain_breakdown: RetainBreakdown::default(),
             manifest: BenchmarkManifest {
                 profile: "smoke".into(),
                 mode: "ingest".into(),
@@ -4602,8 +4682,10 @@ mod tests {
             banks,
             instance_status: HashMap::new(),
             instance_timings: HashMap::new(),
+            instance_retain_breakdowns: HashMap::new(),
+            retain_breakdown: RetainBreakdown::default(),
             manifest: BenchmarkManifest {
-                protocol_version: "2026-03-15-longmemeval-v1".into(),
+                protocol_version: "2026-04-08-longmemeval-contract-v2".into(),
                 profile: "smoke".into(),
                 mode: "run".into(),
                 config_path: None,
@@ -4677,6 +4759,8 @@ mod tests {
             banks,
             instance_status: HashMap::new(),
             instance_timings: HashMap::new(),
+            instance_retain_breakdowns: HashMap::new(),
+            retain_breakdown: RetainBreakdown::default(),
             manifest: BenchmarkManifest {
                 protocol_version: resolved.protocol_version().into(),
                 profile: profile.as_str().into(),

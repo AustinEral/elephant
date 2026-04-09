@@ -1,6 +1,6 @@
 schema_version = 1
 benchmark = "longmemeval"
-protocol_version = "2026-03-31-longmemeval-contract-v1"
+protocol_version = "2026-04-08-longmemeval-contract-v2"
 ingest_format = "round"
 consolidation = "end"
 

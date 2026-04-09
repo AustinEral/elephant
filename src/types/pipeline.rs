@@ -48,6 +48,101 @@ pub struct RetainOutput {
     pub opinions_reinforced: usize,
     /// Number of existing opinions weakened by contradicting evidence.
     pub opinions_weakened: usize,
+    /// Fine-grained retain instrumentation for benchmark artifacts.
+    pub breakdown: RetainBreakdown,
+}
+
+/// Fine-grained retain instrumentation for benchmark artifacts.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RetainBreakdown {
+    /// Breakdown of chunking/extraction work.
+    pub extract: RetainExtractBreakdown,
+    /// Breakdown of graph-link construction work.
+    pub graph: RetainGraphBreakdown,
+}
+
+impl RetainBreakdown {
+    /// Merge another retain breakdown into this one.
+    pub fn accumulate(&mut self, other: &Self) {
+        self.extract.accumulate(&other.extract);
+        self.graph.accumulate(&other.graph);
+    }
+}
+
+/// Fine-grained breakdown of retain extraction work.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RetainExtractBreakdown {
+    /// Time spent chunking the retain input.
+    pub chunking_ms: u64,
+    /// Number of chunks emitted by the chunker.
+    pub chunk_count: usize,
+    /// Number of extractor calls made (one per chunk).
+    pub extractor_calls: usize,
+    /// Total number of facts extracted before entity resolution/dedup.
+    pub extracted_fact_count: usize,
+    /// Number of chunks that produced zero extracted facts.
+    pub empty_chunks: usize,
+    /// Time spent in extractor LLM calls.
+    pub llm_extract_ms: u64,
+}
+
+impl RetainExtractBreakdown {
+    /// Merge another extraction breakdown into this one.
+    pub fn accumulate(&mut self, other: &Self) {
+        self.chunking_ms += other.chunking_ms;
+        self.chunk_count += other.chunk_count;
+        self.extractor_calls += other.extractor_calls;
+        self.extracted_fact_count += other.extracted_fact_count;
+        self.empty_chunks += other.empty_chunks;
+        self.llm_extract_ms += other.llm_extract_ms;
+    }
+}
+
+/// Fine-grained breakdown of retain graph-link construction work.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RetainGraphBreakdown {
+    /// Time spent loading existing facts for graph comparison.
+    pub load_existing_facts_ms: u64,
+    /// Time spent building temporal links.
+    pub build_temporal_links_ms: u64,
+    /// Time spent building entity links.
+    pub build_entity_links_ms: u64,
+    /// Time spent building semantic links.
+    pub build_semantic_links_ms: u64,
+    /// Time spent checking causal links.
+    pub build_causal_links_ms: u64,
+    /// Time spent inserting graph links into storage.
+    pub insert_links_ms: u64,
+    /// Number of existing facts loaded for comparison.
+    pub existing_facts_count: usize,
+    /// Number of new facts considered in this graph build.
+    pub new_facts_count: usize,
+    /// Number of temporal links created.
+    pub temporal_links_count: usize,
+    /// Number of entity links created.
+    pub entity_links_count: usize,
+    /// Number of semantic links created.
+    pub semantic_links_count: usize,
+    /// Number of causal links created.
+    pub causal_links_count: usize,
+}
+
+impl RetainGraphBreakdown {
+    /// Merge another graph breakdown into this one.
+    pub fn accumulate(&mut self, other: &Self) {
+        self.load_existing_facts_ms += other.load_existing_facts_ms;
+        self.build_temporal_links_ms += other.build_temporal_links_ms;
+        self.build_entity_links_ms += other.build_entity_links_ms;
+        self.build_semantic_links_ms += other.build_semantic_links_ms;
+        self.build_causal_links_ms += other.build_causal_links_ms;
+        self.insert_links_ms += other.insert_links_ms;
+        self.existing_facts_count += other.existing_facts_count;
+        self.new_facts_count += other.new_facts_count;
+        self.temporal_links_count += other.temporal_links_count;
+        self.entity_links_count += other.entity_links_count;
+        self.semantic_links_count += other.semantic_links_count;
+        self.causal_links_count += other.causal_links_count;
+    }
 }
 
 // --- Recall pipeline ---
@@ -502,6 +597,7 @@ mod tests {
             links_created: 5,
             opinions_reinforced: 1,
             opinions_weakened: 0,
+            breakdown: RetainBreakdown::default(),
         };
         let json = serde_json::to_string(&output).unwrap();
         let back: RetainOutput = serde_json::from_str(&json).unwrap();

@@ -12,6 +12,7 @@ pub mod graph_builder;
 pub mod resolver;
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -21,7 +22,9 @@ use crate::embedding::EmbeddingClient;
 use crate::error::Result;
 use crate::llm::LlmClient;
 use crate::storage::MemoryStore;
-use crate::types::{ExtractionInput, Fact, FactId, RetainInput, RetainOutput, Source, SourceId};
+use crate::types::{
+    ExtractionInput, Fact, FactId, RetainBreakdown, RetainInput, RetainOutput, Source, SourceId,
+};
 
 use self::chunker::Chunker;
 use self::extractor::FactExtractor;
@@ -137,8 +140,14 @@ impl DefaultRetainPipeline {
         }
 
         // 1. Chunk the input
+        let chunking_start = Instant::now();
         let chunks = self.chunker.chunk(&input.content, &self.chunk_config);
+        let chunking_ms = chunking_start.elapsed().as_millis() as u64;
         debug!(chunks = chunks.len(), "chunked");
+
+        let mut breakdown = RetainBreakdown::default();
+        breakdown.extract.chunking_ms = chunking_ms;
+        breakdown.extract.chunk_count = chunks.len();
 
         let mut all_fact_ids = Vec::new();
         let mut all_new_entities = Vec::new();
@@ -165,10 +174,15 @@ impl DefaultRetainPipeline {
                 custom_instructions: input.custom_instructions.clone(),
                 speaker: input.speaker.clone(),
             };
+            let extract_start = Instant::now();
             let extracted = self.extractor.extract(&extraction_input).await?;
+            breakdown.extract.extractor_calls += 1;
+            breakdown.extract.llm_extract_ms += extract_start.elapsed().as_millis() as u64;
+            breakdown.extract.extracted_fact_count += extracted.len();
             debug!(chunk = chunk_idx, extracted = extracted.len(), "extracted");
 
             if extracted.is_empty() {
+                breakdown.extract.empty_chunks += 1;
                 continue;
             }
 
@@ -282,10 +296,12 @@ impl DefaultRetainPipeline {
 
             // 2f. Build graph links
             debug!(chunk = chunk_idx, facts = facts.len(), "building_links");
-            let links = self
+            let graph_report = self
                 .graph_builder
                 .build_links(&facts, input.bank_id, &*txn)
                 .await?;
+            breakdown.graph.accumulate(&graph_report.breakdown);
+            let links = graph_report.links;
             debug!(chunk = chunk_idx, links = links.len(), "links_built");
             total_links += links.len();
 
@@ -321,6 +337,7 @@ impl DefaultRetainPipeline {
             links_created: total_links,
             opinions_reinforced: total_reinforced,
             opinions_weakened: total_weakened,
+            breakdown,
         })
     }
 
@@ -418,8 +435,8 @@ mod tests {
             _new_facts: &[Fact],
             _bank_id: crate::types::BankId,
             _store: &dyn MemoryStore,
-        ) -> Result<Vec<crate::types::GraphLink>> {
-            Ok(vec![])
+        ) -> Result<crate::retain::graph_builder::GraphBuildReport> {
+            Ok(crate::retain::graph_builder::GraphBuildReport::default())
         }
     }
 

@@ -1,6 +1,7 @@
 //! Graph link construction after fact extraction (Phase 2D).
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use chrono::Duration;
@@ -8,7 +9,9 @@ use chrono::Duration;
 use crate::error::Result;
 use crate::llm::{CompletionRequest, LlmClient, Message, ReasoningEffort};
 use crate::storage::MemoryStore;
-use crate::types::{BankId, Fact, FactFilter, GraphLink, LinkType, NetworkType};
+use crate::types::{
+    BankId, Fact, FactFilter, GraphLink, LinkType, NetworkType, RetainGraphBreakdown,
+};
 use crate::util::cosine_similarity;
 
 /// Trait for building graph links between facts.
@@ -23,7 +26,7 @@ pub trait GraphBuilder: Send + Sync {
         new_facts: &[Fact],
         bank_id: BankId,
         store: &dyn MemoryStore,
-    ) -> Result<Vec<GraphLink>>;
+    ) -> Result<GraphBuildReport>;
 }
 
 /// Configuration for graph link construction thresholds.
@@ -57,6 +60,15 @@ impl Default for GraphConfig {
 pub struct DefaultGraphBuilder {
     llm: Arc<dyn LlmClient>,
     config: GraphConfig,
+}
+
+/// Result of graph-link construction for one retain step.
+#[derive(Debug, Clone, Default)]
+pub struct GraphBuildReport {
+    /// Links created for the new facts.
+    pub links: Vec<GraphLink>,
+    /// Fine-grained graph timing and count instrumentation.
+    pub breakdown: RetainGraphBreakdown,
 }
 
 /// Causal-link system instruction.
@@ -281,12 +293,18 @@ impl GraphBuilder for DefaultGraphBuilder {
         new_facts: &[Fact],
         bank_id: BankId,
         store: &dyn MemoryStore,
-    ) -> Result<Vec<GraphLink>> {
+    ) -> Result<GraphBuildReport> {
         if new_facts.is_empty() {
-            return Ok(Vec::new());
+            return Ok(GraphBuildReport::default());
         }
 
+        let mut breakdown = RetainGraphBreakdown {
+            new_facts_count: new_facts.len(),
+            ..RetainGraphBreakdown::default()
+        };
+
         // Fetch existing facts in the bank for comparison
+        let load_start = Instant::now();
         let existing_facts = store
             .get_facts_by_bank(
                 bank_id,
@@ -300,16 +318,33 @@ impl GraphBuilder for DefaultGraphBuilder {
                 },
             )
             .await?;
+        breakdown.load_existing_facts_ms = load_start.elapsed().as_millis() as u64;
+        breakdown.existing_facts_count = existing_facts.len();
 
         // Build each link type
+        let temporal_start = Instant::now();
         let temporal_links = self.build_temporal_links(new_facts, &existing_facts);
+        breakdown.build_temporal_links_ms = temporal_start.elapsed().as_millis() as u64;
+        breakdown.temporal_links_count = temporal_links.len();
+
+        let entity_start = Instant::now();
         let entity_links = self.build_entity_links(new_facts, &existing_facts);
+        breakdown.build_entity_links_ms = entity_start.elapsed().as_millis() as u64;
+        breakdown.entity_links_count = entity_links.len();
+
+        let semantic_start = Instant::now();
         let semantic_links = self
             .build_semantic_links(new_facts, &existing_facts)
             .await?;
+        breakdown.build_semantic_links_ms = semantic_start.elapsed().as_millis() as u64;
+        breakdown.semantic_links_count = semantic_links.len();
+
+        let causal_start = Instant::now();
         let causal_links = self
             .build_causal_links(new_facts, &existing_facts, &entity_links, &temporal_links)
             .await?;
+        breakdown.build_causal_links_ms = causal_start.elapsed().as_millis() as u64;
+        breakdown.causal_links_count = causal_links.len();
 
         let mut all_links = Vec::new();
         all_links.extend(temporal_links);
@@ -319,10 +354,15 @@ impl GraphBuilder for DefaultGraphBuilder {
 
         // Store all links
         if !all_links.is_empty() {
+            let insert_start = Instant::now();
             store.insert_links(&all_links).await?;
+            breakdown.insert_links_ms = insert_start.elapsed().as_millis() as u64;
         }
 
-        Ok(all_links)
+        Ok(GraphBuildReport {
+            links: all_links,
+            breakdown,
+        })
     }
 }
 

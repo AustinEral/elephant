@@ -229,10 +229,7 @@ impl MeteredLlmClient {
         }
     }
 
-    fn for_each_distinct_scoped_collector(
-        &self,
-        mut f: impl FnMut(&Arc<MetricsCollector>),
-    ) {
+    fn for_each_distinct_scoped_collector(&self, mut f: impl FnMut(&Arc<MetricsCollector>)) {
         let _ = ACTIVE_SCOPED_COLLECTORS.try_with(|scopes| {
             let direct_ptr = Arc::as_ptr(&self.collector) as usize;
             let mut seen = HashSet::from([direct_ptr]);
@@ -389,9 +386,12 @@ mod tests {
         let inner: Arc<dyn LlmClient> = Arc::new(SuccessClient);
         let client = MeteredLlmClient::new(inner, collector.clone(), LlmStage::Reflect);
 
-        with_scoped_collector(collector.clone(), client.complete(CompletionRequest::builder().build()))
-            .await
-            .unwrap();
+        with_scoped_collector(
+            collector.clone(),
+            client.complete(CompletionRequest::builder().build()),
+        )
+        .await
+        .unwrap();
 
         let snapshot = collector.snapshot();
         let usage = snapshot.get(&LlmStage::Reflect).expect("reflect metrics");
@@ -408,9 +408,12 @@ mod tests {
         let inner: Arc<dyn LlmClient> = Arc::new(SuccessClient);
         let client = MeteredLlmClient::new(inner, direct.clone(), LlmStage::Reflect);
 
-        with_scoped_collector(scoped.clone(), client.complete(CompletionRequest::builder().build()))
-            .await
-            .unwrap();
+        with_scoped_collector(
+            scoped.clone(),
+            client.complete(CompletionRequest::builder().build()),
+        )
+        .await
+        .unwrap();
 
         let direct_usage = direct
             .snapshot()
