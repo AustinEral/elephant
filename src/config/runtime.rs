@@ -139,6 +139,8 @@ impl RuntimeConfig {
         };
         let resolve_temperature = parse_optional_temperature("RETAIN_RESOLVE_TEMPERATURE")?;
         let graph = graph_builder::GraphConfig {
+            max_causal_checks: parse_optional_positive_usize("RETAIN_GRAPH_MAX_CAUSAL_CHECKS")?
+                .unwrap_or(graph_builder::GraphConfig::default().max_causal_checks),
             causal_temperature: parse_optional_temperature("RETAIN_GRAPH_TEMPERATURE")?,
             causal_reasoning_effort: reasoning_effort.retain_graph,
             ..graph_builder::GraphConfig::default()
@@ -280,6 +282,7 @@ impl RuntimeConfig {
         validate_optional_nonnegative_float("extraction.temperature", self.extraction.temperature)?;
         validate_optional_nonnegative_float("resolve_temperature", self.resolve_temperature)?;
         validate_unit_interval_float("graph.semantic_threshold", self.graph.semantic_threshold)?;
+        validate_positive_usize_field("graph.max_causal_checks", self.graph.max_causal_checks)?;
         validate_optional_nonnegative_float(
             "graph.causal_temperature",
             self.graph.causal_temperature,
@@ -628,6 +631,10 @@ mod tests {
         assert_eq!(config.extraction().temperature, None);
         assert_eq!(config.resolve_temperature(), None);
         assert_eq!(config.graph().causal_temperature, None);
+        assert_eq!(
+            config.graph().max_causal_checks,
+            graph_builder::DEFAULT_MAX_CAUSAL_CHECKS
+        );
         assert_eq!(config.consolidation().temperature, None);
         assert_eq!(config.opinion_merge().temperature, None);
         assert_eq!(config.reflect_temperature(), None);
@@ -835,6 +842,26 @@ mod tests {
             super::super::error::ConfigErrorKind::Configuration
         );
         assert!(err.to_string().contains("graph.semantic_threshold"));
+
+        clear_minimal_runtime_env();
+    }
+
+    #[test]
+    fn runtime_config_rejects_zero_graph_max_causal_checks() {
+        let _guard = env_lock().lock().unwrap();
+        set_minimal_runtime_env();
+
+        let config = RuntimeConfig::from_env().unwrap();
+        let graph = graph_builder::GraphConfig {
+            max_causal_checks: 0,
+            ..config.graph()
+        };
+        let err = config.with_graph(graph).unwrap_err();
+        assert_eq!(
+            err.kind(),
+            super::super::error::ConfigErrorKind::Configuration
+        );
+        assert!(err.to_string().contains("graph.max_causal_checks"));
 
         clear_minimal_runtime_env();
     }

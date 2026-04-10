@@ -343,6 +343,10 @@ fn default_judge_max_attempts() -> usize {
     3
 }
 
+fn default_graph_max_causal_checks() -> usize {
+    10
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RuntimeTuningContract {
@@ -442,6 +446,8 @@ pub(crate) struct GraphTuningContract {
     pub(crate) temporal_max_days: i64,
     #[serde(default = "default_true")]
     pub(crate) enable_causal: bool,
+    #[serde(default = "default_graph_max_causal_checks")]
+    pub(crate) max_causal_checks: usize,
     #[serde(default)]
     pub(crate) causal_temperature: Option<f32>,
 }
@@ -452,6 +458,7 @@ impl Default for GraphTuningContract {
             semantic_threshold: default_semantic_threshold(),
             temporal_max_days: default_temporal_max_days(),
             enable_causal: default_true(),
+            max_causal_checks: default_graph_max_causal_checks(),
             causal_temperature: None,
         }
     }

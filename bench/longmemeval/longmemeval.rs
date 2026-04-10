@@ -111,6 +111,7 @@ enum RunProfile {
     Probe,
     #[default]
     FullS,
+    FullSIngest,
     FullM,
 }
 
@@ -120,6 +121,7 @@ impl RunProfile {
             Self::Smoke => "smoke",
             Self::Probe => "probe",
             Self::FullS => "full-s",
+            Self::FullSIngest => "full-s-ingest",
             Self::FullM => "full-m",
         }
     }
@@ -142,9 +144,10 @@ impl FromStr for RunProfile {
             "smoke" => Ok(Self::Smoke),
             "probe" => Ok(Self::Probe),
             "full-s" => Ok(Self::FullS),
+            "full-s-ingest" => Ok(Self::FullSIngest),
             "full-m" => Ok(Self::FullM),
             other => Err(format!(
-                "invalid --profile value: {other} (expected one of: smoke, probe, full-s, full-m)"
+                "invalid --profile value: {other} (expected one of: smoke, probe, full-s, full-s-ingest, full-m)"
             )),
         }
     }
@@ -919,7 +922,9 @@ fn print_help() {
     eprintln!(
         "  --profile <NAME>                Named profile for `run`/`ingest` [default: full-s]"
     );
-    eprintln!("                                  Profiles: smoke, probe, full-s, full-m");
+    eprintln!(
+        "                                  Profiles: smoke, probe, full-s, full-s-ingest, full-m"
+    );
     eprintln!(
         "  --config <PATH>                 TOML execution overlay for `run`/`ingest`/`qa`/`config-resolve`"
     );
@@ -3336,6 +3341,7 @@ mod tests {
     fn run_profile_as_str() {
         assert_eq!(RunProfile::Smoke.as_str(), "smoke");
         assert_eq!(RunProfile::FullS.as_str(), "full-s");
+        assert_eq!(RunProfile::FullSIngest.as_str(), "full-s-ingest");
         assert_eq!(RunProfile::FullM.as_str(), "full-m");
     }
 
@@ -3343,6 +3349,10 @@ mod tests {
     fn run_profile_from_str() {
         assert_eq!("smoke".parse::<RunProfile>().unwrap(), RunProfile::Smoke);
         assert_eq!("full-s".parse::<RunProfile>().unwrap(), RunProfile::FullS);
+        assert_eq!(
+            "full-s-ingest".parse::<RunProfile>().unwrap(),
+            RunProfile::FullSIngest
+        );
         assert_eq!("full-m".parse::<RunProfile>().unwrap(), RunProfile::FullM);
         assert!("bad".parse::<RunProfile>().is_err());
     }
@@ -3361,6 +3371,10 @@ mod tests {
         assert_eq!(
             RunProfile::FullS.config_path(),
             PathBuf::from("bench/longmemeval/profiles/full-s.toml")
+        );
+        assert_eq!(
+            RunProfile::FullSIngest.config_path(),
+            PathBuf::from("bench/longmemeval/profiles/full-s-ingest.toml")
         );
         assert_eq!(
             RunProfile::FullM.config_path(),

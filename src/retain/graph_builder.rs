@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use chrono::Duration;
+use futures::future::join_all;
 
 use crate::error::Result;
 use crate::llm::{CompletionRequest, LlmClient, Message, ReasoningEffort};
@@ -38,6 +39,8 @@ pub struct GraphConfig {
     pub temporal_max_days: i64,
     /// Whether to check for causal links via LLM.
     pub enable_causal: bool,
+    /// Max causal pairs checked per retain batch.
+    pub max_causal_checks: usize,
     /// Explicit sampling-temperature override for causal link checks.
     pub causal_temperature: Option<f32>,
     /// Reasoning effort override for causal-link checks, if supported.
@@ -50,6 +53,7 @@ impl Default for GraphConfig {
             semantic_threshold: 0.7,
             temporal_max_days: 30,
             enable_causal: true,
+            max_causal_checks: DEFAULT_MAX_CAUSAL_CHECKS,
             causal_temperature: None,
             causal_reasoning_effort: None,
         }
@@ -78,8 +82,8 @@ pub const CAUSAL_LINK_SYSTEM_PROMPT: &str =
 pub const CAUSAL_LINK_USER_PROMPT_TEMPLATE: &str = "Given these two facts, is there a causal relationship between them?\n\nFact A: {fact_a}\nFact B: {fact_b}\n\nAnswer 'yes' if one fact caused or led to the other, otherwise 'no'.";
 /// Causal-link output cap.
 pub const CAUSAL_LINK_MAX_TOKENS: usize = 32;
-/// Max causal pairs checked per retain batch.
-pub const MAX_CAUSAL_CHECKS: usize = 10;
+/// Default max causal pairs checked per retain batch.
+pub const DEFAULT_MAX_CAUSAL_CHECKS: usize = 10;
 
 impl DefaultGraphBuilder {
     /// Create a new graph builder.
@@ -232,8 +236,6 @@ impl DefaultGraphBuilder {
             return Ok(Vec::new());
         }
 
-        let mut links = Vec::new();
-
         // Only check pairs that already have entity or temporal connections
         let mut candidates: Vec<(usize, usize)> = Vec::new();
         for link in entity_links.iter().chain(temporal_links.iter()) {
@@ -252,33 +254,47 @@ impl DefaultGraphBuilder {
         candidates.sort_unstable();
         candidates.dedup();
 
-        // Limit LLM calls
-        for (ni, ei) in candidates.into_iter().take(MAX_CAUSAL_CHECKS) {
-            let new_fact = &new_facts[ni];
-            let existing = &existing_facts[ei];
+        let checks = candidates
+            .into_iter()
+            .take(self.config.max_causal_checks)
+            .map(|(ni, ei)| async move {
+                let new_fact = &new_facts[ni];
+                let existing = &existing_facts[ei];
 
-            let prompt = CAUSAL_LINK_USER_PROMPT_TEMPLATE
-                .replace("{fact_a}", &new_fact.content)
-                .replace("{fact_b}", &existing.content);
+                let prompt = CAUSAL_LINK_USER_PROMPT_TEMPLATE
+                    .replace("{fact_a}", &new_fact.content)
+                    .replace("{fact_b}", &existing.content);
 
-            let mut request = CompletionRequest::builder()
-                .system(CAUSAL_LINK_SYSTEM_PROMPT)
-                .message(Message::user(prompt))
-                .reasoning_effort_opt(self.config.causal_reasoning_effort)
-                .max_tokens(CAUSAL_LINK_MAX_TOKENS);
-            if let Some(temperature) = self.config.causal_temperature {
-                request = request.temperature(temperature);
-            }
-            let request = request.build();
+                let mut request = CompletionRequest::builder()
+                    .system(CAUSAL_LINK_SYSTEM_PROMPT)
+                    .message(Message::user(prompt))
+                    .reasoning_effort_opt(self.config.causal_reasoning_effort)
+                    .max_tokens(CAUSAL_LINK_MAX_TOKENS);
+                if let Some(temperature) = self.config.causal_temperature {
+                    request = request.temperature(temperature);
+                }
+                let request = request.build();
 
-            let response = self.llm.complete(request).await?;
-            if response.content.trim().to_lowercase().starts_with("yes") {
-                links.push(GraphLink {
-                    source_id: new_fact.id,
-                    target_id: existing.id,
-                    link_type: LinkType::Causal,
-                    weight: 0.8,
-                });
+                let response = self.llm.complete(request).await?;
+                Ok::<Option<GraphLink>, crate::error::Error>(
+                    response
+                        .content
+                        .trim()
+                        .to_lowercase()
+                        .starts_with("yes")
+                        .then_some(GraphLink {
+                            source_id: new_fact.id,
+                            target_id: existing.id,
+                            link_type: LinkType::Causal,
+                            weight: 0.8,
+                        }),
+                )
+            });
+
+        let mut links = Vec::new();
+        for result in join_all(checks).await {
+            if let Some(link) = result? {
+                links.push(link);
             }
         }
 
@@ -371,6 +387,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::llm::mock::MockLlmClient;
     use crate::types::{FactId, FactType, TemporalRange};
     use chrono::Utc;
 
@@ -447,7 +464,7 @@ mod tests {
     #[test]
     fn temporal_links_distant_facts_no_link() {
         let builder = DefaultGraphBuilder {
-            llm: Arc::new(crate::llm::mock::MockLlmClient::new()),
+            llm: Arc::new(MockLlmClient::new()),
             config: GraphConfig {
                 temporal_max_days: 30,
                 ..Default::default()
@@ -471,5 +488,45 @@ mod tests {
 
         let links = builder.build_temporal_links(&[fact_a], &[fact_b]);
         assert!(links.is_empty());
+    }
+
+    #[tokio::test]
+    async fn causal_links_respect_max_checks() {
+        let llm = Arc::new(MockLlmClient::new());
+        for _ in 0..DEFAULT_MAX_CAUSAL_CHECKS {
+            llm.push_response("yes");
+        }
+
+        let builder = DefaultGraphBuilder {
+            llm: llm.clone(),
+            config: GraphConfig::default(),
+        };
+
+        let new_fact = make_fact("new fact", vec![crate::types::EntityId::new()]);
+        let existing: Vec<_> = (0..(DEFAULT_MAX_CAUSAL_CHECKS + 1))
+            .map(|idx| {
+                make_fact(
+                    &format!("existing fact {idx}"),
+                    vec![crate::types::EntityId::new()],
+                )
+            })
+            .collect();
+        let entity_links: Vec<_> = existing
+            .iter()
+            .map(|fact| GraphLink {
+                source_id: new_fact.id,
+                target_id: fact.id,
+                link_type: LinkType::Entity,
+                weight: 1.0,
+            })
+            .collect();
+
+        let links = builder
+            .build_causal_links(&[new_fact], &existing, &entity_links, &[])
+            .await
+            .unwrap();
+
+        assert_eq!(links.len(), DEFAULT_MAX_CAUSAL_CHECKS);
+        assert_eq!(llm.remaining(), 0);
     }
 }

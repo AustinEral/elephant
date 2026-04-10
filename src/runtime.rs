@@ -632,7 +632,7 @@ impl RuntimeBuilder {
                     graph_semantic_threshold: graph_config.semantic_threshold,
                     graph_temporal_max_days: graph_config.temporal_max_days,
                     graph_enable_causal: graph_config.enable_causal,
-                    graph_max_causal_checks: graph_builder::MAX_CAUSAL_CHECKS,
+                    graph_max_causal_checks: graph_config.max_causal_checks,
                     consolidation_batch_size: consolidation_config.batch_size,
                     consolidation_max_tokens: consolidation_config.max_tokens,
                     consolidation_recall_budget: consolidation_config.recall_budget,

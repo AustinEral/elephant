@@ -37,6 +37,7 @@ structured_output_max_attempts = 3
 semantic_threshold = 0.7
 temporal_max_days = 30
 enable_causal = true
+max_causal_checks = 10
 
 [runtime.tuning.consolidation]
 batch_size = 8

@@ -869,6 +869,7 @@ fn lint_canonical_contract_file(
         "runtime.tuning.graph.semantic_threshold",
         "runtime.tuning.graph.temporal_max_days",
         "runtime.tuning.graph.enable_causal",
+        "runtime.tuning.graph.max_causal_checks",
         "runtime.tuning.consolidation.batch_size",
         "runtime.tuning.consolidation.max_tokens",
         "runtime.tuning.consolidation.recall_budget",
@@ -1332,6 +1333,7 @@ fn build_runtime_config_from_parts(
             semantic_threshold: tuning.graph.semantic_threshold,
             temporal_max_days: tuning.graph.temporal_max_days,
             enable_causal: tuning.graph.enable_causal,
+            max_causal_checks: tuning.graph.max_causal_checks,
             causal_temperature: tuning.graph.causal_temperature,
             causal_reasoning_effort: tuning.reasoning_effort.retain_graph,
         })?
@@ -2509,6 +2511,7 @@ structured_output_max_attempts = 3
 semantic_threshold = 0.7
 temporal_max_days = 30
 enable_causal = true
+max_causal_checks = 10
 
 [runtime.tuning.consolidation]
 batch_size = 8
@@ -2555,6 +2558,7 @@ dataset_path = "{}"
         let json = resolved.redacted_contract_json();
         assert_eq!(json["runtime"]["tuning"]["retain_chunk_max_tokens"], 2048);
         assert_eq!(json["runtime"]["tuning"]["retain_chunk_overlap_tokens"], 64);
+        assert_eq!(json["runtime"]["tuning"]["graph"]["max_causal_checks"], 10);
     }
 
     #[test]
@@ -2601,6 +2605,7 @@ structured_output_max_attempts = 3
 semantic_threshold = 0.7
 temporal_max_days = 30
 enable_causal = true
+max_causal_checks = 10
 
 [runtime.tuning.consolidation]
 batch_size = 8
@@ -2764,6 +2769,7 @@ structured_output_max_attempts = 3
 semantic_threshold = 0.7
 temporal_max_days = 30
 enable_causal = true
+max_causal_checks = 10
 
 [runtime.tuning.consolidation]
 batch_size = 8
