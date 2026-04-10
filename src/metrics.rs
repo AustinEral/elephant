@@ -62,9 +62,11 @@ pub struct StageUsage {
     /// Number of calls that returned an error.
     #[serde(default)]
     pub errors: u64,
-    /// Wall-clock latency across all calls.
-    #[serde(default)]
-    pub latency_ms: u64,
+    /// Sum of per-call elapsed time across all calls in this stage.
+    ///
+    /// This is cumulative call latency, not end-to-end wall-clock stage time.
+    #[serde(default, alias = "latency_ms")]
+    pub cumulative_latency_ms: u64,
 }
 
 impl StageUsage {
@@ -110,7 +112,7 @@ impl MetricsCollector {
                 output_tokens: response.output_tokens as u64,
                 calls: 1,
                 errors: 0,
-                latency_ms: elapsed_ms,
+                cumulative_latency_ms: elapsed_ms,
             },
         );
     }
@@ -122,7 +124,7 @@ impl MetricsCollector {
             StageUsage {
                 calls: 1,
                 errors: 1,
-                latency_ms: elapsed_ms,
+                cumulative_latency_ms: elapsed_ms,
                 ..StageUsage::default()
             },
         );
@@ -138,7 +140,7 @@ impl MetricsCollector {
         usage.output_tokens += delta.output_tokens;
         usage.calls += delta.calls;
         usage.errors += delta.errors;
-        usage.latency_ms += delta.latency_ms;
+        usage.cumulative_latency_ms += delta.cumulative_latency_ms;
     }
 
     /// Return a point-in-time snapshot.
@@ -158,7 +160,7 @@ impl MetricsCollector {
             entry.output_tokens += usage.output_tokens;
             entry.calls += usage.calls;
             entry.errors += usage.errors;
-            entry.latency_ms += usage.latency_ms;
+            entry.cumulative_latency_ms += usage.cumulative_latency_ms;
         }
     }
 
@@ -174,7 +176,7 @@ impl MetricsCollector {
                 acc.output_tokens += stage.output_tokens;
                 acc.calls += stage.calls;
                 acc.errors += stage.errors;
-                acc.latency_ms += stage.latency_ms;
+                acc.cumulative_latency_ms += stage.cumulative_latency_ms;
                 acc
             })
     }
@@ -306,6 +308,18 @@ mod tests {
         assert_eq!(usage.input_tokens, 10);
         assert_eq!(usage.output_tokens, 4);
         assert_eq!(usage.total_tokens(), 14);
+        assert_eq!(usage.cumulative_latency_ms, 25);
+    }
+
+    #[test]
+    fn stage_usage_serializes_cumulative_latency_name() {
+        let usage = StageUsage {
+            cumulative_latency_ms: 25,
+            ..StageUsage::default()
+        };
+        let json = serde_json::to_value(&usage).unwrap();
+        assert_eq!(json["cumulative_latency_ms"], 25);
+        assert!(json.get("latency_ms").is_none());
     }
 
     #[test]
@@ -334,7 +348,7 @@ mod tests {
         assert_eq!(usage.output_tokens, 20);
         assert_eq!(usage.calls, 1);
         assert_eq!(usage.errors, 0);
-        assert_eq!(usage.latency_ms, 50);
+        assert_eq!(usage.cumulative_latency_ms, 50);
     }
 
     #[test]
@@ -351,7 +365,7 @@ mod tests {
                 output_tokens: 8,
                 calls: 1,
                 errors: 0,
-                latency_ms: 10,
+                cumulative_latency_ms: 10,
             },
         );
         prior.insert(
@@ -364,7 +378,7 @@ mod tests {
                 output_tokens: 2,
                 calls: 1,
                 errors: 0,
-                latency_ms: 3,
+                cumulative_latency_ms: 3,
             },
         );
 
@@ -377,7 +391,7 @@ mod tests {
         assert_eq!(total.output_tokens, 10);
         assert_eq!(total.calls, 2);
         assert_eq!(total.errors, 0);
-        assert_eq!(total.latency_ms, 13);
+        assert_eq!(total.cumulative_latency_ms, 13);
     }
 
     #[tokio::test]

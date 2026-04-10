@@ -98,7 +98,7 @@ If you want to publish a benchmark externally, export a separate public bundle w
       "output_tokens": 45,
       "calls": 10,
       "errors": 0,
-      "latency_ms": 2110
+      "cumulative_latency_ms": 2110
     }
   },
 
@@ -110,7 +110,7 @@ If you want to publish a benchmark externally, export a separate public bundle w
     "output_tokens": 678,
     "calls": 300,
     "errors": 1,
-    "latency_ms": 543210
+    "cumulative_latency_ms": 543210
   },
 
   "bank_ids": {
@@ -157,7 +157,7 @@ If you want to publish a benchmark externally, export a separate public bundle w
           "output_tokens": 45,
           "calls": 10,
           "errors": 0,
-          "latency_ms": 2110
+          "cumulative_latency_ms": 2110
         }
       }
     }
@@ -209,7 +209,7 @@ If merged source runs differed only in provenance-style fields, the merged manif
       "output_tokens": 44,
       "calls": 2,
       "errors": 0,
-      "latency_ms": 1840
+      "cumulative_latency_ms": 1840
     },
     "judge": {
       "input_tokens": 88,
@@ -219,7 +219,7 @@ If merged source runs differed only in provenance-style fields, the merged manif
       "output_tokens": 12,
       "calls": 1,
       "errors": 0,
-      "latency_ms": 420
+      "cumulative_latency_ms": 420
     }
   }
 }
@@ -348,7 +348,7 @@ Each `StageUsage` record preserves the raw token counters that Elephant reports 
 - `cache_creation_input_tokens`
 - `calls`
 - `errors`
-- `latency_ms`
+- `cumulative_latency_ms`
 
 Per-conversation summaries also carry:
 

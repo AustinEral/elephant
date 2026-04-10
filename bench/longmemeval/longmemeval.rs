@@ -1498,6 +1498,19 @@ impl SharedState {
         self.flush();
     }
 
+    fn record_instance_progress(
+        &mut self,
+        question_id: &str,
+        timings: InstancePhaseTimings,
+        retain_breakdown: RetainBreakdown,
+    ) {
+        self.instance_timings
+            .insert(question_id.to_string(), timings);
+        self.instance_retain_breakdowns
+            .insert(question_id.to_string(), retain_breakdown);
+        self.flush();
+    }
+
     fn flush(&self) {
         let output = self.build_output();
         atomic_write_json(&self.output_path, &output);
@@ -2905,17 +2918,29 @@ async fn main() {
                 }
 
                 // Mark ingest complete
-                shared.lock().await.update_instance_status(
-                    &qid,
-                    InstanceStatus {
-                        bank_id: bank_id_str.clone(),
-                        ingest_complete: true,
-                        consolidation_complete: false,
-                        qa_complete: false,
-                    },
-                );
                 if ingest_elapsed == 0.0 {
                     ingest_elapsed = ingest_start.elapsed().as_secs_f64();
+                }
+                {
+                    let mut s = shared.lock().await;
+                    s.update_instance_status(
+                        &qid,
+                        InstanceStatus {
+                            bank_id: bank_id_str.clone(),
+                            ingest_complete: true,
+                            consolidation_complete: false,
+                            qa_complete: false,
+                        },
+                    );
+                    s.record_instance_progress(
+                        &qid,
+                        InstancePhaseTimings {
+                            ingest_time_s: ingest_elapsed,
+                            total_time_s: ingest_elapsed,
+                            ..Default::default()
+                        },
+                        retain_breakdown.clone(),
+                    );
                 }
             }
 
@@ -2931,49 +2956,92 @@ async fn main() {
                     .parse()
                     .map_err(|e| format!("bad bank_id: {e}"))?;
                 let consolidation_start = Instant::now();
-                match consolidate_with_bench_progress(
+                let result = consolidate_with_bench_progress(
                     &qid,
                     runtime.clone(),
                     bid,
                     consolidation_batch_size,
                     metrics.clone(),
                 )
-                .await
-                {
+                .await;
+                consolidation_elapsed = consolidation_start.elapsed().as_secs_f64();
+                match result {
                     Ok(cr) => {
                         eprintln!(
                             "  {qid} consolidation done in {:.1}s | {} created, {} updated",
-                            consolidation_start.elapsed().as_secs_f64(),
-                            cr.observations_created,
-                            cr.observations_updated,
+                            consolidation_elapsed, cr.observations_created, cr.observations_updated,
                         );
+                        {
+                            let mut s = shared.lock().await;
+                            s.update_instance_status(
+                                &qid,
+                                InstanceStatus {
+                                    bank_id: bank_id_str.clone(),
+                                    ingest_complete: true,
+                                    consolidation_complete: true,
+                                    qa_complete: false,
+                                },
+                            );
+                            s.record_instance_progress(
+                                &qid,
+                                InstancePhaseTimings {
+                                    ingest_time_s: ingest_elapsed,
+                                    consolidation_time_s: consolidation_elapsed,
+                                    total_time_s: ingest_elapsed + consolidation_elapsed,
+                                    ..Default::default()
+                                },
+                                retain_breakdown.clone(),
+                            );
+                        }
                     }
                     Err(e) => {
                         eprintln!("  {qid} consolidation FAILED: {e}");
+                        let mut s = shared.lock().await;
+                        s.update_instance_status(
+                            &qid,
+                            InstanceStatus {
+                                bank_id: bank_id_str.clone(),
+                                ingest_complete: true,
+                                consolidation_complete: false,
+                                qa_complete: false,
+                            },
+                        );
+                        s.record_instance_progress(
+                            &qid,
+                            InstancePhaseTimings {
+                                ingest_time_s: ingest_elapsed,
+                                consolidation_time_s: consolidation_elapsed,
+                                total_time_s: ingest_elapsed + consolidation_elapsed,
+                                ..Default::default()
+                            },
+                            retain_breakdown.clone(),
+                        );
                     }
                 }
-                consolidation_elapsed = consolidation_start.elapsed().as_secs_f64();
-                // Mark consolidation complete
-                shared.lock().await.update_instance_status(
-                    &qid,
-                    InstanceStatus {
-                        bank_id: bank_id_str.clone(),
-                        ingest_complete: true,
-                        consolidation_complete: true,
-                        qa_complete: false,
-                    },
-                );
             } else if !matches!(command, BenchCommand::Qa) {
                 // Consolidation off or already done — mark complete
-                shared.lock().await.update_instance_status(
-                    &qid,
-                    InstanceStatus {
-                        bank_id: bank_id_str.clone(),
-                        ingest_complete: true,
-                        consolidation_complete: true,
-                        qa_complete: false,
-                    },
-                );
+                {
+                    let mut s = shared.lock().await;
+                    s.update_instance_status(
+                        &qid,
+                        InstanceStatus {
+                            bank_id: bank_id_str.clone(),
+                            ingest_complete: true,
+                            consolidation_complete: true,
+                            qa_complete: false,
+                        },
+                    );
+                    s.record_instance_progress(
+                        &qid,
+                        InstancePhaseTimings {
+                            ingest_time_s: ingest_elapsed,
+                            consolidation_time_s: consolidation_elapsed,
+                            total_time_s: ingest_elapsed + consolidation_elapsed,
+                            ..Default::default()
+                        },
+                        retain_breakdown.clone(),
+                    );
+                }
             }
 
             // --- Step 3: QA ---

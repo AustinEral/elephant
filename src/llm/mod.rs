@@ -338,7 +338,7 @@ pub(crate) async fn send_and_check(
     let resp_text = resp
         .text()
         .await
-        .map_err(|e| Error::Llm(format!("failed to read {provider} response: {e}")))?;
+        .map_err(|e| Error::ServerError(format!("failed to read {provider} response: {e}")))?;
 
     if status.is_success() {
         return Ok(resp_text);

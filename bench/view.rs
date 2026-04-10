@@ -183,8 +183,8 @@ struct StageUsage {
     calls: u64,
     #[serde(default)]
     errors: u64,
-    #[serde(default)]
-    latency_ms: u64,
+    #[serde(default, alias = "latency_ms")]
+    cumulative_latency_ms: u64,
 }
 
 impl StageUsage {
@@ -637,6 +637,7 @@ struct StageRow {
     cache_write: u64,
     calls: u64,
     errors: u64,
+    #[tabled(rename = "cum latency")]
     latency: String,
 }
 
@@ -1026,8 +1027,8 @@ fn view_single(output: &BenchmarkOutput, path: &str) {
             value: output.total_stage_usage.calls.to_string(),
         });
         metrics_rows.push(SingleConfigRow {
-            key: "latency".into(),
-            value: fmt_ms(output.total_stage_usage.latency_ms),
+            key: "cum latency".into(),
+            value: fmt_ms(output.total_stage_usage.cumulative_latency_ms),
         });
         let correct = correct_count(&output.results);
         metrics_rows.push(SingleConfigRow {
@@ -1059,7 +1060,7 @@ fn view_single(output: &BenchmarkOutput, path: &str) {
                 cache_write: usage.cache_creation_input_tokens,
                 calls: usage.calls,
                 errors: usage.errors,
-                latency: fmt_ms(usage.latency_ms),
+                latency: fmt_ms(usage.cumulative_latency_ms),
             })
             .collect::<Vec<_>>();
 
@@ -1729,12 +1730,12 @@ fn main() {
             delta: fmt_cost_delta_u64(a.total_stage_usage.calls, b.total_stage_usage.calls),
         });
         metrics_rows.push(MetricsRow {
-            metric: "latency".into(),
-            val_a: fmt_ms(a.total_stage_usage.latency_ms),
-            val_b: fmt_ms(b.total_stage_usage.latency_ms),
+            metric: "cum latency".into(),
+            val_a: fmt_ms(a.total_stage_usage.cumulative_latency_ms),
+            val_b: fmt_ms(b.total_stage_usage.cumulative_latency_ms),
             delta: fmt_cost_delta_u64(
-                a.total_stage_usage.latency_ms,
-                b.total_stage_usage.latency_ms,
+                a.total_stage_usage.cumulative_latency_ms,
+                b.total_stage_usage.cumulative_latency_ms,
             ),
         });
         let correct_a = correct_count(&a.results);

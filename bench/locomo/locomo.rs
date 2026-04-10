@@ -4742,7 +4742,7 @@ mod tests {
                     output_tokens: 5,
                     calls: 1,
                     errors: 0,
-                    latency_ms: 100,
+                    cumulative_latency_ms: 100,
                 },
             )]),
         }
@@ -4792,7 +4792,7 @@ mod tests {
             output_tokens: 5,
             calls: 1,
             errors: 0,
-            latency_ms: 100,
+            cumulative_latency_ms: 100,
         };
 
         let output = BenchmarkOutput {
@@ -4986,7 +4986,7 @@ mod tests {
             output_tokens: 5,
             calls: 1,
             errors: 0,
-            latency_ms: 100,
+            cumulative_latency_ms: 100,
         };
 
         let output = BenchmarkOutput {
@@ -5507,7 +5507,7 @@ mod tests {
                 "completion_tokens": 0,
                 "calls": 0,
                 "errors": 0,
-                "latency_ms": 0
+                "cumulative_latency_ms": 0
             },
             "retain_breakdown": {
                 "extract": {
@@ -5616,7 +5616,7 @@ mod tests {
                 "completion_tokens": 0,
                 "calls": 0,
                 "errors": 0,
-                "latency_ms": 0
+                "cumulative_latency_ms": 0
             },
             "retain_breakdown": {
                 "extract": {
@@ -5715,7 +5715,7 @@ mod tests {
                 "completion_tokens": 0,
                 "calls": 0,
                 "errors": 0,
-                "latency_ms": 0
+                "cumulative_latency_ms": 0
             },
             "retain_breakdown": {
                 "extract": {

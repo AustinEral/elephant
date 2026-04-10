@@ -161,8 +161,8 @@ struct ViewStageUsage {
     calls: u64,
     #[serde(default)]
     errors: u64,
-    #[serde(default)]
-    latency_ms: u64,
+    #[serde(default, alias = "latency_ms")]
+    cumulative_latency_ms: u64,
 }
 
 impl ViewStageUsage {
@@ -253,6 +253,7 @@ struct StageRow {
     cache_read: u64,
     cache_write: u64,
     errors: u64,
+    #[tabled(rename = "cum latency")]
     latency: String,
 }
 
@@ -536,7 +537,7 @@ fn build_stage_rows(output: &ViewBenchmarkOutput) -> Vec<StageRow> {
             cache_read: usage.cache_read_input_tokens,
             cache_write: usage.cache_creation_input_tokens,
             errors: usage.errors,
-            latency: fmt_ms(usage.latency_ms),
+            latency: fmt_ms(usage.cumulative_latency_ms),
         })
         .collect();
     rows.sort_by(|a, b| a.stage.cmp(&b.stage));
@@ -622,8 +623,8 @@ fn view_single(output: &ViewBenchmarkOutput, path: &str, verbose: bool) {
             value: output.total_stage_usage.errors.to_string(),
         });
         total_rows.push(SingleConfigRow {
-            key: "latency".into(),
-            value: fmt_ms(output.total_stage_usage.latency_ms),
+            key: "cum latency".into(),
+            value: fmt_ms(output.total_stage_usage.cumulative_latency_ms),
         });
 
         println!("{}", Table::new(&total_rows).with(Style::rounded()));
@@ -896,9 +897,9 @@ fn view_compare(
             val_b: b.total_stage_usage.errors.to_string(),
         });
         total_rows.push(CompareConfigRow {
-            key: "latency".into(),
-            val_a: fmt_ms(a.total_stage_usage.latency_ms),
-            val_b: fmt_ms(b.total_stage_usage.latency_ms),
+            key: "cum latency".into(),
+            val_a: fmt_ms(a.total_stage_usage.cumulative_latency_ms),
+            val_b: fmt_ms(b.total_stage_usage.cumulative_latency_ms),
         });
 
         println!("{}", Table::new(&total_rows).with(Style::rounded()));
@@ -1122,7 +1123,7 @@ mod tests {
                 output_tokens: 25000,
                 calls: 500,
                 errors: 0,
-                latency_ms: 120000,
+                cumulative_latency_ms: 120000,
             },
         );
         stage_metrics.insert(
@@ -1135,7 +1136,7 @@ mod tests {
                 output_tokens: 10000,
                 calls: 500,
                 errors: 0,
-                latency_ms: 45000,
+                cumulative_latency_ms: 45000,
             },
         );
         stage_metrics.insert(
@@ -1148,7 +1149,7 @@ mod tests {
                 output_tokens: 0,
                 calls: 0,
                 errors: 0,
-                latency_ms: 0,
+                cumulative_latency_ms: 0,
             },
         );
 
@@ -1191,7 +1192,7 @@ mod tests {
             output_tokens: 200,
             calls: 5,
             errors: 0,
-            latency_ms: 1000,
+            cumulative_latency_ms: 1000,
         };
         assert_eq!(usage.total_tokens(), 1200);
         assert!(usage.has_cache_usage());
@@ -1230,8 +1231,8 @@ mod tests {
                 "abstention": {"accuracy": 0.80, "count": 50}
             },
             "stage_metrics": {
-                "retain_extract": {"input_tokens": 1000, "cached_prompt_tokens": 800, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, "output_tokens": 200, "calls": 10, "errors": 0, "latency_ms": 1000},
-                "reflect": {"input_tokens": 500, "cached_prompt_tokens": 0, "cache_read_input_tokens": 300, "cache_creation_input_tokens": 20, "output_tokens": 100, "calls": 5, "errors": 1, "latency_ms": 500}
+                "retain_extract": {"input_tokens": 1000, "cached_prompt_tokens": 800, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, "output_tokens": 200, "calls": 10, "errors": 0, "cumulative_latency_ms": 1000},
+                "reflect": {"input_tokens": 500, "cached_prompt_tokens": 0, "cache_read_input_tokens": 300, "cache_creation_input_tokens": 20, "output_tokens": 100, "calls": 5, "errors": 1, "cumulative_latency_ms": 500}
             },
             "total_stage_usage": {
                 "input_tokens": 1500,
@@ -1241,7 +1242,7 @@ mod tests {
                 "output_tokens": 300,
                 "calls": 15,
                 "errors": 1,
-                "latency_ms": 1500
+                "cumulative_latency_ms": 1500
             },
             "total_time_s": 120.5
         }"#;
