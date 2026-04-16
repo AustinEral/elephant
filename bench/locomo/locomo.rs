@@ -30,8 +30,8 @@ use elephant::consolidation::ConsolidationProgress;
 use elephant::llm::LlmClient;
 use elephant::metrics::{LlmStage, MetricsCollector, StageUsage, with_scoped_collector};
 use elephant::types::{
-    BankId, NetworkType, ReflectDoneTrace, ReflectQuery, RetainBreakdown, RetainInput,
-    RetrievalSource, TurnId,
+    BankId, ConsolidationBreakdown, NetworkType, ReflectDoneTrace, ReflectQuery, RetainBreakdown,
+    RetainInput, RetrievalSource, TurnId,
 };
 use elephant_bench::{
     BenchJudgeConfig, BenchRuntime, BenchRuntimeMetadata, BenchRuntimePromptHashes,
@@ -134,6 +134,8 @@ struct ConversationSummary {
     total_time_s: f64,
     #[serde(default)]
     stage_metrics: BTreeMap<LlmStage, StageUsage>,
+    consolidation_breakdown: ConsolidationBreakdown,
+    #[serde(default)]
     retain_breakdown: RetainBreakdown,
     #[serde(default)]
     bank_stats: ConversationBankStats,
@@ -182,6 +184,8 @@ struct BenchmarkOutput {
     stage_metrics: BTreeMap<LlmStage, StageUsage>,
     #[serde(default)]
     total_stage_usage: StageUsage,
+    consolidation_breakdown: ConsolidationBreakdown,
+    #[serde(default)]
     retain_breakdown: RetainBreakdown,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     results: Vec<QuestionResult>,
@@ -421,6 +425,16 @@ fn accumulate_retain_breakdowns(
     breakdowns: impl IntoIterator<Item = RetainBreakdown>,
 ) -> RetainBreakdown {
     let mut total = RetainBreakdown::default();
+    for breakdown in breakdowns {
+        total.accumulate(&breakdown);
+    }
+    total
+}
+
+fn accumulate_consolidation_breakdowns(
+    breakdowns: impl IntoIterator<Item = ConsolidationBreakdown>,
+) -> ConsolidationBreakdown {
+    let mut total = ConsolidationBreakdown::default();
     for breakdown in breakdowns {
         total.accumulate(&breakdown);
     }
@@ -743,6 +757,7 @@ fn flush_results(
     banks: &HashMap<String, String>,
     conversation_stage_metrics: &HashMap<String, BTreeMap<LlmStage, StageUsage>>,
     conversation_timings: &HashMap<String, ConversationPhaseTimings>,
+    conversation_consolidation_breakdowns: &HashMap<String, ConsolidationBreakdown>,
     conversation_retain_breakdowns: &HashMap<String, RetainBreakdown>,
     conversation_bank_stats: &HashMap<String, ConversationBankStats>,
     turn_refs: &HashMap<String, String>,
@@ -827,6 +842,7 @@ fn flush_results(
         .chain(conversation_stage_metrics.keys().cloned())
         .chain(banks.keys().cloned())
         .chain(conversation_timings.keys().cloned())
+        .chain(conversation_consolidation_breakdowns.keys().cloned())
         .chain(conversation_retain_breakdowns.keys().cloned())
         .chain(conversation_bank_stats.keys().cloned())
         .collect::<BTreeSet<_>>();
@@ -878,6 +894,10 @@ fn flush_results(
                     .get(&sample_id)
                     .cloned()
                     .unwrap_or_default(),
+                consolidation_breakdown: conversation_consolidation_breakdowns
+                    .get(&sample_id)
+                    .cloned()
+                    .unwrap_or_default(),
                 retain_breakdown: conversation_retain_breakdowns
                     .get(&sample_id)
                     .cloned()
@@ -919,6 +939,9 @@ fn flush_results(
         },
         stage_metrics,
         total_stage_usage,
+        consolidation_breakdown: accumulate_consolidation_breakdowns(
+            conversation_consolidation_breakdowns.values().cloned(),
+        ),
         retain_breakdown: accumulate_retain_breakdowns(
             conversation_retain_breakdowns.values().cloned(),
         ),
@@ -2801,6 +2824,7 @@ fn merge_artifacts(
     let mut turn_refs = HashMap::new();
     let mut conversation_stage_metrics = HashMap::new();
     let mut conversation_timings = HashMap::new();
+    let mut conversation_consolidation_breakdowns = HashMap::new();
     let mut conversation_retain_breakdowns = HashMap::new();
     let mut conversation_bank_stats = HashMap::new();
     let metrics = MetricsCollector::new();
@@ -2857,6 +2881,8 @@ fn merge_artifacts(
                     total_time_s: summary.total_time_s,
                 },
             );
+            conversation_consolidation_breakdowns
+                .insert(sample_id.clone(), summary.consolidation_breakdown.clone());
             conversation_retain_breakdowns
                 .insert(sample_id.clone(), summary.retain_breakdown.clone());
             conversation_bank_stats.insert(sample_id.clone(), summary.bank_stats.clone());
@@ -2915,6 +2941,7 @@ fn merge_artifacts(
         &banks,
         &conversation_stage_metrics,
         &conversation_timings,
+        &conversation_consolidation_breakdowns,
         &conversation_retain_breakdowns,
         &conversation_bank_stats,
         &turn_refs,
@@ -3044,6 +3071,7 @@ struct SharedResults {
     banks: HashMap<String, String>,
     conversation_stage_metrics: HashMap<String, BTreeMap<LlmStage, StageUsage>>,
     conversation_timings: HashMap<String, ConversationPhaseTimings>,
+    conversation_consolidation_breakdowns: HashMap<String, ConsolidationBreakdown>,
     conversation_retain_breakdowns: HashMap<String, RetainBreakdown>,
     conversation_bank_stats: HashMap<String, ConversationBankStats>,
     turn_refs: HashMap<String, String>,
@@ -3114,6 +3142,16 @@ impl SharedResults {
         self.flush();
     }
 
+    fn record_conversation_consolidation_breakdown(
+        &mut self,
+        sample_id: String,
+        breakdown: ConsolidationBreakdown,
+    ) {
+        self.conversation_consolidation_breakdowns
+            .insert(sample_id, breakdown);
+        self.flush();
+    }
+
     fn record_conversation_bank_stats(&mut self, sample_id: String, stats: ConversationBankStats) {
         self.conversation_bank_stats.insert(sample_id, stats);
         self.flush();
@@ -3129,6 +3167,7 @@ impl SharedResults {
             &self.banks,
             &self.conversation_stage_metrics,
             &self.conversation_timings,
+            &self.conversation_consolidation_breakdowns,
             &self.conversation_retain_breakdowns,
             &self.conversation_bank_stats,
             &self.turn_refs,
@@ -3164,6 +3203,7 @@ struct ConversationRunOptions {
     consolidation_batch_size: usize,
     seed_stage_metrics: BTreeMap<LlmStage, StageUsage>,
     seed_timings: ConversationPhaseTimings,
+    seed_consolidation_breakdown: ConsolidationBreakdown,
     seed_retain_breakdown: RetainBreakdown,
     seed_bank_stats: ConversationBankStats,
     existing_bank: Option<String>,
@@ -3251,6 +3291,7 @@ async fn run_conversation(
     conversation_metrics.extend_snapshot(&options.seed_stage_metrics);
     let mut ingest_time_s = options.seed_timings.ingest_time_s;
     let mut consolidation_time_s = options.seed_timings.consolidation_time_s;
+    let mut consolidation_breakdown = options.seed_consolidation_breakdown.clone();
     let mut retain_breakdown = options.seed_retain_breakdown.clone();
     let mut bank_stats = options.seed_bank_stats.clone();
 
@@ -3441,6 +3482,7 @@ async fn run_conversation(
                     Ok(cr) => {
                         bank_stats.observations_created += cr.observations_created;
                         bank_stats.observations_updated += cr.observations_updated;
+                        consolidation_breakdown.accumulate(&cr.breakdown);
                     }
                     Err(e) => {
                         eprintln!("{e}");
@@ -3482,6 +3524,7 @@ async fn run_conversation(
                 let elapsed = t0.elapsed().as_secs_f64();
                 bank_stats.observations_created += resp.observations_created;
                 bank_stats.observations_updated += resp.observations_updated;
+                consolidation_breakdown.accumulate(&resp.breakdown);
                 println!(
                     "[{tag}] Consolidation done in {}: {} observations created, {} updated",
                     fmt_elapsed(elapsed),
@@ -3500,6 +3543,13 @@ async fn run_conversation(
         .lock()
         .await
         .record_conversation_metrics(sample_id.clone(), conversation_metrics.snapshot());
+    shared
+        .lock()
+        .await
+        .record_conversation_consolidation_breakdown(
+            sample_id.clone(),
+            consolidation_breakdown.clone(),
+        );
     shared
         .lock()
         .await
@@ -4233,6 +4283,7 @@ async fn main() {
         existing_stage_metrics,
         existing_conversation_metrics,
         existing_conversation_timings,
+        existing_conversation_consolidation_breakdowns,
         existing_conversation_retain_breakdowns,
         existing_conversation_bank_stats,
         source_artifact,
@@ -4266,6 +4317,12 @@ async fn main() {
                 .collect(),
             prev.per_conversation
                 .iter()
+                .map(|(sample_id, summary)| {
+                    (sample_id.clone(), summary.consolidation_breakdown.clone())
+                })
+                .collect(),
+            prev.per_conversation
+                .iter()
                 .map(|(sample_id, summary)| (sample_id.clone(), summary.retain_breakdown.clone()))
                 .collect(),
             prev.per_conversation
@@ -4279,6 +4336,7 @@ async fn main() {
             HashMap::new(),
             HashMap::new(),
             BTreeMap::new(),
+            HashMap::new(),
             HashMap::new(),
             HashMap::new(),
             HashMap::new(),
@@ -4430,7 +4488,7 @@ async fn main() {
         protocol_version: resolved_bench
             .as_ref()
             .map(|resolved| resolved.protocol_version().to_string())
-            .unwrap_or_else(|| "2026-04-08-locomo-contract-v2".into()),
+            .unwrap_or_else(|| "2026-04-15-locomo-contract-v3".into()),
         profile: config.profile.as_str().into(),
         mode: command.as_str().into(),
         config_path: config
@@ -4490,6 +4548,8 @@ async fn main() {
         banks: existing_banks.clone(),
         conversation_stage_metrics: existing_conversation_metrics.clone(),
         conversation_timings: existing_conversation_timings.clone(),
+        conversation_consolidation_breakdowns: existing_conversation_consolidation_breakdowns
+            .clone(),
         conversation_retain_breakdowns: existing_conversation_retain_breakdowns.clone(),
         conversation_bank_stats: existing_conversation_bank_stats.clone(),
         turn_refs: existing_turn_refs,
@@ -4531,6 +4591,10 @@ async fn main() {
                 .cloned()
                 .unwrap_or_default(),
             seed_timings: existing_conversation_timings
+                .get(&entry.sample_id)
+                .cloned()
+                .unwrap_or_default(),
+            seed_consolidation_breakdown: existing_conversation_consolidation_breakdowns
                 .get(&entry.sample_id)
                 .cloned()
                 .unwrap_or_default(),
@@ -4824,6 +4888,7 @@ mod tests {
                     qa_time_s: 3.0,
                     total_time_s: 6.0,
                     stage_metrics: BTreeMap::from([(LlmStage::Reflect, stage_usage.clone())]),
+                    consolidation_breakdown: ConsolidationBreakdown::default(),
                     retain_breakdown: RetainBreakdown::default(),
                     bank_stats: ConversationBankStats {
                         sessions_ingested: 1,
@@ -4845,7 +4910,7 @@ mod tests {
             banks: HashMap::from([(sample_id.into(), format!("bank-{sample_id}"))]),
             turn_refs: HashMap::from([(format!("{sample_id}-turn-1"), "D1:1".into())]),
             manifest: BenchmarkManifest {
-                protocol_version: "2026-04-08-locomo-contract-v2".into(),
+                protocol_version: "2026-04-15-locomo-contract-v3".into(),
                 profile: "full".into(),
                 mode: "run".into(),
                 config_path: None,
@@ -4877,6 +4942,7 @@ mod tests {
             },
             stage_metrics: BTreeMap::from([(LlmStage::Reflect, stage_usage.clone())]),
             total_stage_usage: stage_usage,
+            consolidation_breakdown: ConsolidationBreakdown::default(),
             retain_breakdown: RetainBreakdown::default(),
             results: Vec::new(),
             total_time_s: 6.0,
@@ -5018,6 +5084,7 @@ mod tests {
                     qa_time_s: 3.0,
                     total_time_s: 6.0,
                     stage_metrics: BTreeMap::from([(LlmStage::Reflect, stage_usage.clone())]),
+                    consolidation_breakdown: ConsolidationBreakdown::default(),
                     retain_breakdown: RetainBreakdown::default(),
                     bank_stats: ConversationBankStats {
                         sessions_ingested: 1,
@@ -5071,6 +5138,7 @@ mod tests {
             },
             stage_metrics: BTreeMap::from([(LlmStage::Reflect, stage_usage.clone())]),
             total_stage_usage: stage_usage,
+            consolidation_breakdown: ConsolidationBreakdown::default(),
             retain_breakdown: RetainBreakdown::default(),
             results: Vec::new(),
             total_time_s: 6.0,
@@ -5482,7 +5550,7 @@ mod tests {
             },
             "turn_refs": {},
             "manifest": {
-                "protocol_version": "2026-04-08-locomo-contract-v2",
+                "protocol_version": "2026-04-15-locomo-contract-v3",
                 "profile": "smoke",
                 "mode": "ingest",
                 "config_path": null,
@@ -5508,6 +5576,21 @@ mod tests {
                 "calls": 0,
                 "errors": 0,
                 "cumulative_latency_ms": 0
+            },
+            "consolidation_breakdown": {
+                "load_unconsolidated_ms": 0,
+                "unconsolidated_fact_count": 0,
+                "batch_count": 0,
+                "recall_ms": 0,
+                "related_observation_count": 0,
+                "prompt_build_ms": 0,
+                "llm_consolidate_ms": 0,
+                "action_count": 0,
+                "begin_txn_ms": 0,
+                "action_embed_ms": 0,
+                "db_write_ms": 0,
+                "mark_consolidated_ms": 0,
+                "commit_ms": 0
             },
             "retain_breakdown": {
                 "extract": {
@@ -5591,7 +5674,7 @@ mod tests {
             },
             "turn_refs": {},
             "manifest": {
-                "protocol_version": "2026-04-08-locomo-contract-v2",
+                "protocol_version": "2026-04-15-locomo-contract-v3",
                 "profile": "full",
                 "mode": "ingest",
                 "config_path": null,
@@ -5617,6 +5700,21 @@ mod tests {
                 "calls": 0,
                 "errors": 0,
                 "cumulative_latency_ms": 0
+            },
+            "consolidation_breakdown": {
+                "load_unconsolidated_ms": 0,
+                "unconsolidated_fact_count": 0,
+                "batch_count": 0,
+                "recall_ms": 0,
+                "related_observation_count": 0,
+                "prompt_build_ms": 0,
+                "llm_consolidate_ms": 0,
+                "action_count": 0,
+                "begin_txn_ms": 0,
+                "action_embed_ms": 0,
+                "db_write_ms": 0,
+                "mark_consolidated_ms": 0,
+                "commit_ms": 0
             },
             "retain_breakdown": {
                 "extract": {
@@ -5690,7 +5788,7 @@ mod tests {
             },
             "turn_refs": {},
             "manifest": {
-                "protocol_version": "2026-04-08-locomo-contract-v2",
+                "protocol_version": "2026-04-15-locomo-contract-v3",
                 "profile": "full",
                 "mode": "ingest",
                 "config_path": null,
@@ -5716,6 +5814,21 @@ mod tests {
                 "calls": 0,
                 "errors": 0,
                 "cumulative_latency_ms": 0
+            },
+            "consolidation_breakdown": {
+                "load_unconsolidated_ms": 0,
+                "unconsolidated_fact_count": 0,
+                "batch_count": 0,
+                "recall_ms": 0,
+                "related_observation_count": 0,
+                "prompt_build_ms": 0,
+                "llm_consolidate_ms": 0,
+                "action_count": 0,
+                "begin_txn_ms": 0,
+                "action_embed_ms": 0,
+                "db_write_ms": 0,
+                "mark_consolidated_ms": 0,
+                "commit_ms": 0
             },
             "retain_breakdown": {
                 "extract": {

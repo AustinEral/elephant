@@ -534,6 +534,58 @@ pub struct ConsolidationReport {
     pub observations_created: usize,
     /// Number of existing observations updated with new evidence.
     pub observations_updated: usize,
+    /// Fine-grained consolidation instrumentation for benchmark artifacts.
+    pub breakdown: ConsolidationBreakdown,
+}
+
+/// Fine-grained breakdown of observation consolidation work.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConsolidationBreakdown {
+    /// Time spent loading unconsolidated facts at the start of consolidation.
+    pub load_unconsolidated_ms: u64,
+    /// Number of unconsolidated facts seen at the start of consolidation.
+    pub unconsolidated_fact_count: usize,
+    /// Number of consolidation batches processed.
+    pub batch_count: usize,
+    /// Time spent recalling related observations for consolidation batches.
+    pub recall_ms: u64,
+    /// Total number of deduplicated related observations surfaced across batches.
+    pub related_observation_count: usize,
+    /// Time spent rendering consolidation prompts.
+    pub prompt_build_ms: u64,
+    /// Time spent in consolidation LLM calls.
+    pub llm_consolidate_ms: u64,
+    /// Number of consolidation actions returned by the LLM.
+    pub action_count: usize,
+    /// Time spent opening consolidation transactions.
+    pub begin_txn_ms: u64,
+    /// Time spent embedding observation actions before writes.
+    pub action_embed_ms: u64,
+    /// Time spent writing created and updated observations.
+    pub db_write_ms: u64,
+    /// Time spent marking source facts consolidated.
+    pub mark_consolidated_ms: u64,
+    /// Time spent committing consolidation transactions.
+    pub commit_ms: u64,
+}
+
+impl ConsolidationBreakdown {
+    /// Merge another consolidation breakdown into this one.
+    pub fn accumulate(&mut self, other: &Self) {
+        self.load_unconsolidated_ms += other.load_unconsolidated_ms;
+        self.unconsolidated_fact_count += other.unconsolidated_fact_count;
+        self.batch_count += other.batch_count;
+        self.recall_ms += other.recall_ms;
+        self.related_observation_count += other.related_observation_count;
+        self.prompt_build_ms += other.prompt_build_ms;
+        self.llm_consolidate_ms += other.llm_consolidate_ms;
+        self.action_count += other.action_count;
+        self.begin_txn_ms += other.begin_txn_ms;
+        self.action_embed_ms += other.action_embed_ms;
+        self.db_write_ms += other.db_write_ms;
+        self.mark_consolidated_ms += other.mark_consolidated_ms;
+        self.commit_ms += other.commit_ms;
+    }
 }
 
 /// Report from opinion merging.

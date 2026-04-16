@@ -7,11 +7,11 @@ fn default_schema_version() -> u32 {
 }
 
 fn default_protocol_version() -> String {
-    "2026-04-08-locomo-contract-v2".into()
+    "2026-04-15-locomo-contract-v3".into()
 }
 
 fn default_longmemeval_protocol_version() -> String {
-    "2026-04-08-longmemeval-contract-v2".into()
+    "2026-04-15-longmemeval-contract-v3".into()
 }
 
 fn default_dataset_identifier() -> String {

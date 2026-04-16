@@ -1,6 +1,6 @@
 schema_version = 1
 benchmark = "locomo"
-protocol_version = "2026-04-08-locomo-contract-v2"
+protocol_version = "2026-04-15-locomo-contract-v3"
 ingest = "session"
 consolidation = "end"
 

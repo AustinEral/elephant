@@ -6,6 +6,7 @@
 //! keeping each observation focused on a single topic/facet.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -24,7 +25,8 @@ use crate::recall::RecallPipeline;
 use crate::storage::MemoryStore;
 use crate::types::id::{BankId, FactId};
 use crate::types::{
-    ConsolidationReport, Fact, FactFilter, FactType, NetworkType, RecallQuery, TemporalRange,
+    ConsolidationBreakdown, ConsolidationReport, Fact, FactFilter, FactType, NetworkType,
+    RecallQuery, TemporalRange,
 };
 
 /// Static configuration for observation consolidation.
@@ -118,6 +120,37 @@ impl DefaultConsolidator {
     }
 }
 
+#[derive(Default)]
+struct ConsolidationTimingTotals {
+    load_unconsolidated: Duration,
+    recall: Duration,
+    prompt_build: Duration,
+    llm_consolidate: Duration,
+    begin_txn: Duration,
+    action_embed: Duration,
+    db_write: Duration,
+    mark_consolidated: Duration,
+    commit: Duration,
+}
+
+impl ConsolidationTimingTotals {
+    fn apply_to(self, breakdown: &mut ConsolidationBreakdown) {
+        breakdown.load_unconsolidated_ms = duration_to_ms(self.load_unconsolidated);
+        breakdown.recall_ms = duration_to_ms(self.recall);
+        breakdown.prompt_build_ms = duration_to_ms(self.prompt_build);
+        breakdown.llm_consolidate_ms = duration_to_ms(self.llm_consolidate);
+        breakdown.begin_txn_ms = duration_to_ms(self.begin_txn);
+        breakdown.action_embed_ms = duration_to_ms(self.action_embed);
+        breakdown.db_write_ms = duration_to_ms(self.db_write);
+        breakdown.mark_consolidated_ms = duration_to_ms(self.mark_consolidated);
+        breakdown.commit_ms = duration_to_ms(self.commit);
+    }
+}
+
+fn duration_to_ms(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
 #[derive(Deserialize)]
 struct ConsolidateResponse {
     actions: Vec<ConsolidateAction>,
@@ -204,8 +237,10 @@ impl DefaultConsolidator {
         progress: Option<UnboundedSender<ConsolidationProgress>>,
     ) -> Result<ConsolidationReport> {
         let mut report = ConsolidationReport::default();
+        let mut timings = ConsolidationTimingTotals::default();
 
         // 1. Fetch unconsolidated World/Experience facts
+        let load_started = Instant::now();
         let unconsolidated = self
             .store
             .get_facts_by_bank(
@@ -217,6 +252,8 @@ impl DefaultConsolidator {
                 },
             )
             .await?;
+        timings.load_unconsolidated += load_started.elapsed();
+        report.breakdown.unconsolidated_fact_count = unconsolidated.len();
 
         if unconsolidated.is_empty() {
             debug!("no unconsolidated facts");
@@ -230,6 +267,7 @@ impl DefaultConsolidator {
         let bs = self.config.batch_size;
         let total_batches = unconsolidated.len().div_ceil(bs);
         for (batch_idx, batch) in unconsolidated.chunks(bs).enumerate() {
+            report.breakdown.batch_count += 1;
             debug!(
                 batch = batch_idx + 1,
                 total_batches,
@@ -238,6 +276,7 @@ impl DefaultConsolidator {
             );
             // 3a. Per-fact recall: full pipeline (semantic + keyword + graph + temporal)
             // for each fact in parallel, then union/dedup the results.
+            let recall_started = Instant::now();
             let budget = self.config.recall_budget;
             let recall_futures: Vec<_> = batch
                 .iter()
@@ -265,8 +304,11 @@ impl DefaultConsolidator {
                     }
                 }
             }
+            timings.recall += recall_started.elapsed();
+            report.breakdown.related_observation_count += related_observations.len();
 
             // 3b. Format prompt with temporal annotations
+            let prompt_started = Instant::now();
             let facts_text = batch
                 .iter()
                 .enumerate()
@@ -294,6 +336,7 @@ impl DefaultConsolidator {
             let prompt = CONSOLIDATE_PROMPT
                 .replace("{facts}", &facts_text)
                 .replace("{observations}", &obs_text);
+            timings.prompt_build += prompt_started.elapsed();
 
             let mut request = CompletionRequest::builder()
                 .message(Message::user(prompt))
@@ -304,6 +347,7 @@ impl DefaultConsolidator {
             }
             let request = request.build();
 
+            let llm_started = Instant::now();
             let resp: ConsolidateResponse = complete_structured_with_retries(
                 self.llm.as_ref(),
                 request,
@@ -333,13 +377,19 @@ impl DefaultConsolidator {
                 );
                 error
             })?;
+            timings.llm_consolidate += llm_started.elapsed();
+            report.breakdown.action_count += resp.actions.len();
 
             // 3c. Execute actions inside a transaction
+            let txn_started = Instant::now();
             let txn = self.store.begin().await?;
+            timings.begin_txn += txn_started.elapsed();
 
             for action in &resp.actions {
+                let embed_started = Instant::now();
                 let emb_vec = self.embeddings.embed(&[&action.content]).await?;
                 let embedding = emb_vec.into_iter().next();
+                timings.action_embed += embed_started.elapsed();
 
                 // Collect source facts referenced by this action
                 let source_facts: Vec<&Fact> = action
@@ -373,6 +423,7 @@ impl DefaultConsolidator {
                             })
                         });
                     if let Some(existing) = existing {
+                        let write_started = Instant::now();
                         let mut updated = existing.clone();
                         updated.content = action.content.clone();
                         updated.embedding = embedding.clone();
@@ -390,6 +441,7 @@ impl DefaultConsolidator {
                             merge_temporal(updated.temporal_range.as_ref(), &source_facts);
                         updated.updated_at = Utc::now();
                         txn.update_fact(&updated).await?;
+                        timings.db_write += write_started.elapsed();
                         report.observations_updated += 1;
                         true
                     } else {
@@ -406,6 +458,7 @@ impl DefaultConsolidator {
                 };
 
                 if !updated_existing {
+                    let write_started = Instant::now();
                     let now = Utc::now();
                     let obs = Fact {
                         id: FactId::new(),
@@ -424,16 +477,21 @@ impl DefaultConsolidator {
                         consolidated_at: None,
                     };
                     txn.insert_facts(&[obs]).await?;
+                    timings.db_write += write_started.elapsed();
                     report.observations_created += 1;
                 }
             }
 
             // 3d. Mark batch facts as consolidated
             let batch_ids: Vec<FactId> = batch.iter().map(|f| f.id).collect();
+            let mark_started = Instant::now();
             txn.mark_consolidated(&batch_ids, Utc::now()).await?;
+            timings.mark_consolidated += mark_started.elapsed();
 
             // Commit the batch transaction
+            let commit_started = Instant::now();
             txn.commit().await?;
+            timings.commit += commit_started.elapsed();
             debug!(
                 batch = batch_idx + 1,
                 created = report.observations_created,
@@ -457,6 +515,7 @@ impl DefaultConsolidator {
             updated = report.observations_updated,
             "consolidate_complete"
         );
+        timings.apply_to(&mut report.breakdown);
         tracing::Span::current().record("created", report.observations_created);
         tracing::Span::current().record("updated", report.observations_updated);
 
@@ -552,6 +611,22 @@ mod tests {
             }) as Arc<dyn RecallPipeline>,
             ConsolidationConfig::default(),
         )
+    }
+
+    #[test]
+    fn timing_totals_preserve_submillisecond_work_before_rounding() {
+        let mut timings = ConsolidationTimingTotals::default();
+        let mut breakdown = ConsolidationBreakdown::default();
+
+        timings.prompt_build += Duration::from_micros(600);
+        timings.prompt_build += Duration::from_micros(700);
+        timings.begin_txn += Duration::from_micros(400);
+        timings.begin_txn += Duration::from_micros(300);
+
+        timings.apply_to(&mut breakdown);
+
+        assert_eq!(breakdown.prompt_build_ms, 1);
+        assert_eq!(breakdown.begin_txn_ms, 0);
     }
 
     #[tokio::test]

@@ -10,7 +10,7 @@ use tracing::warn;
 use elephant::error::Result;
 use elephant::metrics::{LlmStage, StageUsage};
 use elephant::types::id::BankId;
-use elephant::types::{RetainBreakdown, RetainInput};
+use elephant::types::{ConsolidationBreakdown, RetainBreakdown, RetainInput};
 use elephant_bench::BenchRuntime;
 
 use super::dataset::{LongMemEvalInstance, Turn};
@@ -122,6 +122,8 @@ pub struct IngestResult {
     pub stats: IngestStats,
     /// Fine-grained retain instrumentation aggregated across ingested units.
     pub retain_breakdown: RetainBreakdown,
+    /// Fine-grained consolidation instrumentation aggregated across ingested units.
+    pub consolidation_breakdown: ConsolidationBreakdown,
     /// Wall-clock timing.
     pub timing: IngestTiming,
 }
@@ -264,6 +266,7 @@ pub async fn ingest_instance(
     let total_start = Instant::now();
     let mut stats = IngestStats::default();
     let mut retain_breakdown = RetainBreakdown::default();
+    let mut consolidation_breakdown = ConsolidationBreakdown::default();
 
     // 1. Create or reuse bank
     let bank_id = if let Some(id) = existing_bank_id {
@@ -404,6 +407,7 @@ pub async fn ingest_instance(
                 Ok(cr) => {
                     stats.observations_created += cr.observations_created;
                     stats.observations_updated += cr.observations_updated;
+                    consolidation_breakdown.accumulate(&cr.breakdown);
                 }
                 Err(e) => {
                     warn!(
@@ -465,6 +469,7 @@ pub async fn ingest_instance(
             Ok(Ok(cr)) => {
                 stats.observations_created += cr.observations_created;
                 stats.observations_updated += cr.observations_updated;
+                consolidation_breakdown.accumulate(&cr.breakdown);
                 eprintln!(
                     "  {} consolidation done | {} created, {} updated | {:.1}s",
                     instance.question_id,
@@ -500,6 +505,7 @@ pub async fn ingest_instance(
         stage_metrics: BTreeMap::new(),
         stats,
         retain_breakdown,
+        consolidation_breakdown,
         timing: IngestTiming {
             ingest_time_s,
             consolidation_time_s,
@@ -769,6 +775,7 @@ mod tests {
                 observations_updated: 2,
             },
             retain_breakdown: RetainBreakdown::default(),
+            consolidation_breakdown: ConsolidationBreakdown::default(),
             timing: IngestTiming {
                 ingest_time_s: 10.5,
                 consolidation_time_s: 3.2,

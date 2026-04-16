@@ -17,11 +17,11 @@ pub use graph::{GraphLink, LinkType};
 pub use id::{BankId, EntityId, FactId, SourceId, TurnId};
 pub use network::{ExtractedNetworkType, NetworkType};
 pub use pipeline::{
-    AssembledContext, BankPromptContext, Chunk, ChunkConfig, ConsolidationReport, ExtractedFact,
-    ExtractionInput, FactFilter, OpinionMergeReport, RecallQuery, RecallResult, ReflectDoneTrace,
-    ReflectQuery, ReflectResult, ReflectStopReason, ReflectTraceStep, ResolvedEntity,
-    RetainBreakdown, RetainExtractBreakdown, RetainGraphBreakdown, RetainInput, RetainOutput,
-    RetrievedFact, RetrievedSource,
+    AssembledContext, BankPromptContext, Chunk, ChunkConfig, ConsolidationBreakdown,
+    ConsolidationReport, ExtractedFact, ExtractionInput, FactFilter, OpinionMergeReport,
+    RecallQuery, RecallResult, ReflectDoneTrace, ReflectQuery, ReflectResult, ReflectStopReason,
+    ReflectTraceStep, ResolvedEntity, RetainBreakdown, RetainExtractBreakdown,
+    RetainGraphBreakdown, RetainInput, RetainOutput, RetrievedFact, RetrievedSource,
 };
 pub use source::{FactSource, FactSourceLookup, Source};
 pub use temporal::TemporalRange;

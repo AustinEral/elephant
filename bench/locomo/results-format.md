@@ -39,7 +39,7 @@ If you want to publish a benchmark externally, export a separate public bundle w
   "mean_evidence_recall": 0.6641,
 
   "manifest": {
-    "protocol_version": "2026-03-10-config-v1",
+    "protocol_version": "2026-04-15-locomo-contract-v3",
     "profile": "full",
     "mode": "qa",
     "dataset_path": "data/locomo10.json",
@@ -113,6 +113,22 @@ If you want to publish a benchmark externally, export a separate public bundle w
     "cumulative_latency_ms": 543210
   },
 
+  "consolidation_breakdown": {
+    "load_unconsolidated_ms": 12,
+    "unconsolidated_fact_count": 910,
+    "batch_count": 114,
+    "recall_ms": 418900,
+    "related_observation_count": 1440,
+    "prompt_build_ms": 22,
+    "llm_consolidate_ms": 91120,
+    "action_count": 245,
+    "begin_txn_ms": 9,
+    "action_embed_ms": 3011,
+    "db_write_ms": 17,
+    "mark_consolidated_ms": 2,
+    "commit_ms": 188
+  },
+
   "bank_ids": {
     "conv-26": "01KK623GTJJB2WW3RKHSDSCDT6"
   },
@@ -159,6 +175,21 @@ If you want to publish a benchmark externally, export a separate public bundle w
           "errors": 0,
           "cumulative_latency_ms": 2110
         }
+      },
+      "consolidation_breakdown": {
+        "load_unconsolidated_ms": 12,
+        "unconsolidated_fact_count": 910,
+        "batch_count": 114,
+        "recall_ms": 418900,
+        "related_observation_count": 1440,
+        "prompt_build_ms": 22,
+        "llm_consolidate_ms": 91120,
+        "action_count": 245,
+        "begin_txn_ms": 9,
+        "action_embed_ms": 3011,
+        "db_write_ms": 17,
+        "mark_consolidated_ms": 2,
+        "commit_ms": 188
       }
     }
   },
@@ -167,6 +198,8 @@ If you want to publish a benchmark externally, export a separate public bundle w
 ```
 
 The summary file may omit `results` entirely or serialize it as an empty array. The `view` tool loads question sidecars automatically when `artifacts.questions_path` is present.
+
+`consolidation_breakdown` is part of the `v3` artifact contract. It records measured consolidation wall-clock slices for both the full run and each conversation summary.
 
 `manifest.source_artifact` is used for `qa` runs that point at one existing artifact. `manifest.source_artifacts` is used for `merge` runs that combine multiple compatible subset artifacts into one canonical result.
 

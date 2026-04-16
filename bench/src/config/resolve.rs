@@ -1812,7 +1812,7 @@ mod tests {
         r#"
 schema_version = 1
 benchmark = "locomo"
-protocol_version = "2026-04-08-locomo-contract-v2"
+protocol_version = "2026-04-15-locomo-contract-v3"
 ingest = "session"
 consolidation = "end"
 
@@ -2048,7 +2048,7 @@ retention = "in_memory"
             r#"
 schema_version = 1
 benchmark = "locomo"
-protocol_version = "2026-04-08-locomo-contract-v2"
+protocol_version = "2026-04-15-locomo-contract-v3"
 unexpected = true
 
 [runtime.llm]
@@ -2091,7 +2091,7 @@ model = "gpt-5.4"
             r#"
 schema_version = 1
 benchmark = "locomo"
-protocol_version = "2026-04-08-locomo-contract-v2"
+protocol_version = "2026-04-15-locomo-contract-v3"
 
 [dataset]
 identifier = "locomo10"
@@ -2163,7 +2163,7 @@ vertex_project = "bench-judge-project"
             r#"
 schema_version = 1
 benchmark = "locomo"
-protocol_version = "2026-04-08-locomo-contract-v2"
+protocol_version = "2026-04-15-locomo-contract-v3"
 
 [dataset]
 identifier = "locomo10"
@@ -2408,7 +2408,7 @@ base_url = "https://judge-proxy.example.com"
             r#"
 schema_version = 1
 benchmark = "longmemeval"
-protocol_version = "2026-04-08-longmemeval-contract-v2"
+protocol_version = "2026-04-15-longmemeval-contract-v3"
 ingest_format = "round"
 consolidation = "end"
 
@@ -2479,7 +2479,7 @@ dataset_path = "{}"
             r#"
 schema_version = 1
 benchmark = "longmemeval"
-protocol_version = "2026-04-08-longmemeval-contract-v2"
+protocol_version = "2026-04-15-longmemeval-contract-v3"
 ingest_format = "round"
 consolidation = "end"
 
@@ -2573,7 +2573,7 @@ dataset_path = "{}"
             r#"
 schema_version = 1
 benchmark = "longmemeval"
-protocol_version = "2026-04-08-longmemeval-contract-v2"
+protocol_version = "2026-04-15-longmemeval-contract-v3"
 ingest_format = "round"
 consolidation = "end"
 
@@ -2665,7 +2665,7 @@ dataset_path = "{}"
             r#"
 schema_version = 1
 benchmark = "longmemeval"
-protocol_version = "2026-04-08-longmemeval-contract-v2"
+protocol_version = "2026-04-15-longmemeval-contract-v3"
 ingest_format = "round"
 consolidation = "end"
 

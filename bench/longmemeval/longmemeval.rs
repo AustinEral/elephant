@@ -28,7 +28,7 @@ use ingest::{ConsolidationMode, IngestConfig, IngestFormat};
 
 use elephant::consolidation::ConsolidationProgress;
 use elephant::metrics::{LlmStage, MetricsCollector, StageUsage, with_scoped_collector};
-use elephant::types::{ReflectQuery, RetainBreakdown};
+use elephant::types::{ConsolidationBreakdown, ReflectQuery, RetainBreakdown};
 use elephant_bench::{
     BenchJudgeConfig, BenchRuntime, BenchRuntimeMetadata, BenchRuntimePromptHashes,
     BenchRuntimeTuning, resolve_longmemeval_bench_config,
@@ -1004,7 +1004,11 @@ struct BenchmarkOutput {
     instance_status: HashMap<String, InstanceStatus>,
     #[serde(default)]
     instance_timings: HashMap<String, InstancePhaseTimings>,
+    instance_consolidation_breakdowns: HashMap<String, ConsolidationBreakdown>,
+    #[serde(default)]
     instance_retain_breakdowns: HashMap<String, RetainBreakdown>,
+    consolidation_breakdown: ConsolidationBreakdown,
+    #[serde(default)]
     retain_breakdown: RetainBreakdown,
     #[serde(default)]
     stage_metrics: BTreeMap<LlmStage, StageUsage>,
@@ -1452,6 +1456,16 @@ fn accumulate_retain_breakdowns(
     total
 }
 
+fn accumulate_consolidation_breakdowns(
+    breakdowns: impl IntoIterator<Item = ConsolidationBreakdown>,
+) -> ConsolidationBreakdown {
+    let mut total = ConsolidationBreakdown::default();
+    for breakdown in breakdowns {
+        total.accumulate(&breakdown);
+    }
+    total
+}
+
 // --- Shared state for incremental writes ---
 
 struct SharedState {
@@ -1459,6 +1473,7 @@ struct SharedState {
     banks: HashMap<String, String>,
     instance_status: HashMap<String, InstanceStatus>,
     instance_timings: HashMap<String, InstancePhaseTimings>,
+    instance_consolidation_breakdowns: HashMap<String, ConsolidationBreakdown>,
     instance_retain_breakdowns: HashMap<String, RetainBreakdown>,
     output_path: PathBuf,
     questions_path: PathBuf,
@@ -1484,12 +1499,15 @@ impl SharedState {
         result: QuestionResult,
         debug: QuestionDebugRecord,
         timings: InstancePhaseTimings,
+        consolidation_breakdown: ConsolidationBreakdown,
         retain_breakdown: RetainBreakdown,
     ) {
         append_jsonl(&self.questions_path, &result);
         append_jsonl(&self.debug_path, &debug);
         self.instance_timings
             .insert(result.question_id.clone(), timings);
+        self.instance_consolidation_breakdowns
+            .insert(result.question_id.clone(), consolidation_breakdown);
         self.instance_retain_breakdowns
             .insert(result.question_id.clone(), retain_breakdown);
         self.results.push(result);
@@ -1507,10 +1525,13 @@ impl SharedState {
         &mut self,
         question_id: &str,
         timings: InstancePhaseTimings,
+        consolidation_breakdown: ConsolidationBreakdown,
         retain_breakdown: RetainBreakdown,
     ) {
         self.instance_timings
             .insert(question_id.to_string(), timings);
+        self.instance_consolidation_breakdowns
+            .insert(question_id.to_string(), consolidation_breakdown);
         self.instance_retain_breakdowns
             .insert(question_id.to_string(), retain_breakdown);
         self.flush();
@@ -1539,7 +1560,11 @@ impl SharedState {
             banks: self.banks.clone(),
             instance_status: self.instance_status.clone(),
             instance_timings: self.instance_timings.clone(),
+            instance_consolidation_breakdowns: self.instance_consolidation_breakdowns.clone(),
             instance_retain_breakdowns: self.instance_retain_breakdowns.clone(),
+            consolidation_breakdown: accumulate_consolidation_breakdowns(
+                self.instance_consolidation_breakdowns.values().cloned(),
+            ),
             retain_breakdown: accumulate_retain_breakdowns(
                 self.instance_retain_breakdowns.values().cloned(),
             ),
@@ -2133,6 +2158,8 @@ fn merge_artifacts(
     // Merge instance_status from all bundles
     let mut merged_instance_status: HashMap<String, InstanceStatus> = HashMap::new();
     let mut merged_instance_timings: HashMap<String, InstancePhaseTimings> = HashMap::new();
+    let mut merged_instance_consolidation_breakdowns: HashMap<String, ConsolidationBreakdown> =
+        HashMap::new();
     let mut merged_instance_retain_breakdowns: HashMap<String, RetainBreakdown> = HashMap::new();
     for bundle in &bundles {
         for (qid, status) in &bundle.output.instance_status {
@@ -2144,6 +2171,11 @@ fn merge_artifacts(
             merged_instance_timings
                 .entry(qid.clone())
                 .or_insert_with(|| timings.clone());
+        }
+        for (qid, breakdown) in &bundle.output.instance_consolidation_breakdowns {
+            merged_instance_consolidation_breakdowns
+                .entry(qid.clone())
+                .or_insert_with(|| breakdown.clone());
         }
         for (qid, breakdown) in &bundle.output.instance_retain_breakdowns {
             merged_instance_retain_breakdowns
@@ -2169,7 +2201,11 @@ fn merge_artifacts(
         banks,
         instance_status: merged_instance_status,
         instance_timings: merged_instance_timings,
+        instance_consolidation_breakdowns: merged_instance_consolidation_breakdowns.clone(),
         instance_retain_breakdowns: merged_instance_retain_breakdowns.clone(),
+        consolidation_breakdown: accumulate_consolidation_breakdowns(
+            merged_instance_consolidation_breakdowns.into_values(),
+        ),
         retain_breakdown: accumulate_retain_breakdowns(
             merged_instance_retain_breakdowns.into_values(),
         ),
@@ -2518,6 +2554,8 @@ async fn main() {
     let mut completed_debug: Vec<QuestionDebugRecord> = Vec::new();
     let mut resume_instance_status: HashMap<String, InstanceStatus> = HashMap::new();
     let mut resume_instance_timings: HashMap<String, InstancePhaseTimings> = HashMap::new();
+    let mut resume_instance_consolidation_breakdowns: HashMap<String, ConsolidationBreakdown> =
+        HashMap::new();
     let mut resume_instance_retain_breakdowns: HashMap<String, RetainBreakdown> = HashMap::new();
     let is_resume = should_resume_run(&config);
 
@@ -2533,6 +2571,7 @@ async fn main() {
             }
             resume_instance_status = existing.instance_status;
             resume_instance_timings = existing.instance_timings;
+            resume_instance_consolidation_breakdowns = existing.instance_consolidation_breakdowns;
             resume_instance_retain_breakdowns = existing.instance_retain_breakdowns;
         }
         // Load completed question results from sidecar (needed for skip classification)
@@ -2613,6 +2652,7 @@ async fn main() {
             .filter(|r| skip_ids.contains(&r.question_id))
             .collect();
         resume_instance_timings.retain(|qid, _| skip_ids.contains(qid));
+        resume_instance_consolidation_breakdowns.retain(|qid, _| skip_ids.contains(qid));
         resume_instance_retain_breakdowns.retain(|qid, _| skip_ids.contains(qid));
 
         // Rewrite sidecars with only kept records
@@ -2711,6 +2751,7 @@ async fn main() {
         banks: existing_banks,
         instance_status: resume_instance_status.clone(),
         instance_timings: resume_instance_timings.clone(),
+        instance_consolidation_breakdowns: resume_instance_consolidation_breakdowns.clone(),
         instance_retain_breakdowns: resume_instance_retain_breakdowns.clone(),
         output_path: output_path.clone(),
         questions_path: questions_path.clone(),
@@ -2737,6 +2778,9 @@ async fn main() {
     let session_limit = config.session_limit;
 
     let resume_statuses = Arc::new(resume_instance_status);
+    let resume_instance_consolidation_breakdowns =
+        Arc::new(resume_instance_consolidation_breakdowns);
+    let resume_instance_retain_breakdowns = Arc::new(resume_instance_retain_breakdowns);
 
     let mut handles = JoinSet::new();
     for instance in instances {
@@ -2747,6 +2791,9 @@ async fn main() {
         let shared = shared.clone();
         let completed = completed.clone();
         let resume_statuses = resume_statuses.clone();
+        let resume_instance_consolidation_breakdowns =
+            resume_instance_consolidation_breakdowns.clone();
+        let resume_instance_retain_breakdowns = resume_instance_retain_breakdowns.clone();
 
         handles.spawn(async move {
             let _permit = sem
@@ -2759,7 +2806,14 @@ async fn main() {
             let prior_status = resume_statuses.get(&qid).cloned();
             let mut ingest_elapsed = 0.0;
             let mut consolidation_elapsed = 0.0;
-            let mut retain_breakdown = RetainBreakdown::default();
+            let mut consolidation_breakdown = resume_instance_consolidation_breakdowns
+                .get(&qid)
+                .cloned()
+                .unwrap_or_default();
+            let mut retain_breakdown = resume_instance_retain_breakdowns
+                .get(&qid)
+                .cloned()
+                .unwrap_or_default();
 
             // --- Step 1: Determine bank_id ---
             let bank_id_str: String;
@@ -2835,6 +2889,7 @@ async fn main() {
                                 total_time_s: instance_start.elapsed().as_secs_f64(),
                                 ..Default::default()
                             },
+                            ConsolidationBreakdown::default(),
                             RetainBreakdown::default(),
                         );
                         let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
@@ -2878,6 +2933,7 @@ async fn main() {
                 match result {
                     Ok(ingest_result) => {
                         ingest_elapsed = ingest_result.timing.ingest_time_s;
+                        consolidation_breakdown = ingest_result.consolidation_breakdown;
                         retain_breakdown = ingest_result.retain_breakdown;
                     }
                     Err(e) => {
@@ -2911,6 +2967,7 @@ async fn main() {
                                 total_time_s: instance_start.elapsed().as_secs_f64(),
                                 ..Default::default()
                             },
+                            ConsolidationBreakdown::default(),
                             RetainBreakdown::default(),
                         );
                         let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
@@ -2944,6 +3001,7 @@ async fn main() {
                             total_time_s: ingest_elapsed,
                             ..Default::default()
                         },
+                        consolidation_breakdown.clone(),
                         retain_breakdown.clone(),
                     );
                 }
@@ -2972,6 +3030,7 @@ async fn main() {
                 consolidation_elapsed = consolidation_start.elapsed().as_secs_f64();
                 match result {
                     Ok(cr) => {
+                        consolidation_breakdown.accumulate(&cr.breakdown);
                         eprintln!(
                             "  {qid} consolidation done in {:.1}s | {} created, {} updated",
                             consolidation_elapsed, cr.observations_created, cr.observations_updated,
@@ -2995,6 +3054,7 @@ async fn main() {
                                     total_time_s: ingest_elapsed + consolidation_elapsed,
                                     ..Default::default()
                                 },
+                                consolidation_breakdown.clone(),
                                 retain_breakdown.clone(),
                             );
                         }
@@ -3019,6 +3079,7 @@ async fn main() {
                                 total_time_s: ingest_elapsed + consolidation_elapsed,
                                 ..Default::default()
                             },
+                            consolidation_breakdown.clone(),
                             retain_breakdown.clone(),
                         );
                     }
@@ -3044,6 +3105,7 @@ async fn main() {
                             total_time_s: ingest_elapsed + consolidation_elapsed,
                             ..Default::default()
                         },
+                        consolidation_breakdown.clone(),
                         retain_breakdown.clone(),
                     );
                 }
@@ -3091,6 +3153,7 @@ async fn main() {
                             qa_time_s: 0.0,
                             total_time_s: ingest_elapsed + consolidation_elapsed,
                         },
+                        consolidation_breakdown.clone(),
                         retain_breakdown.clone(),
                     );
                 }
@@ -3236,6 +3299,7 @@ async fn main() {
                         qa_time_s: qa_elapsed,
                         total_time_s: ingest_elapsed + consolidation_elapsed + qa_elapsed,
                     },
+                    consolidation_breakdown,
                     retain_breakdown,
                 );
             }
@@ -3464,7 +3528,9 @@ mod tests {
             banks: HashMap::new(),
             instance_status: HashMap::new(),
             instance_timings: HashMap::new(),
+            instance_consolidation_breakdowns: HashMap::new(),
             instance_retain_breakdowns: HashMap::new(),
+            consolidation_breakdown: ConsolidationBreakdown::default(),
             retain_breakdown: RetainBreakdown::default(),
             manifest: BenchmarkManifest {
                 profile: "smoke".into(),
@@ -3662,7 +3728,9 @@ mod tests {
             banks: HashMap::new(),
             instance_status: HashMap::new(),
             instance_timings: HashMap::new(),
+            instance_consolidation_breakdowns: HashMap::new(),
             instance_retain_breakdowns: HashMap::new(),
+            consolidation_breakdown: ConsolidationBreakdown::default(),
             retain_breakdown: RetainBreakdown::default(),
             manifest: BenchmarkManifest {
                 profile: "smoke".into(),
@@ -3930,7 +3998,9 @@ mod tests {
             banks,
             instance_status: HashMap::new(),
             instance_timings: HashMap::new(),
+            instance_consolidation_breakdowns: HashMap::new(),
             instance_retain_breakdowns: HashMap::new(),
+            consolidation_breakdown: ConsolidationBreakdown::default(),
             retain_breakdown: RetainBreakdown::default(),
             manifest: BenchmarkManifest::default(),
             artifacts: BenchmarkArtifacts::default(),
@@ -3962,7 +4032,7 @@ mod tests {
     #[test]
     fn benchmark_manifest_serde_roundtrip() {
         let m = BenchmarkManifest {
-            protocol_version: "2026-04-08-longmemeval-contract-v2".into(),
+            protocol_version: "2026-04-15-longmemeval-contract-v3".into(),
             profile: "smoke".into(),
             mode: "run".into(),
             config_path: None,
@@ -3985,7 +4055,7 @@ mod tests {
         };
         let json = serde_json::to_string(&m).unwrap();
         let back: BenchmarkManifest = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.protocol_version, "2026-04-08-longmemeval-contract-v2");
+        assert_eq!(back.protocol_version, "2026-04-15-longmemeval-contract-v3");
         assert_eq!(back.profile, "smoke");
         assert_eq!(back.session_limit, Some(5));
         assert_eq!(back.contract_hash, Some("contract123".into()));
@@ -4129,7 +4199,9 @@ mod tests {
             banks: HashMap::new(),
             instance_status,
             instance_timings: HashMap::new(),
+            instance_consolidation_breakdowns: HashMap::new(),
             instance_retain_breakdowns: HashMap::new(),
+            consolidation_breakdown: ConsolidationBreakdown::default(),
             retain_breakdown: RetainBreakdown::default(),
             manifest: BenchmarkManifest::default(),
             artifacts: BenchmarkArtifacts::default(),
@@ -4146,7 +4218,7 @@ mod tests {
     }
 
     #[test]
-    fn benchmark_output_without_instance_status_deserializes_when_v2_breakdowns_present() {
+    fn benchmark_output_without_instance_status_deserializes_when_breakdowns_present() {
         let json = r#"{
             "benchmark": "longmemeval",
             "timestamp": "2026-03-16T00:00:00Z",
@@ -4160,7 +4232,23 @@ mod tests {
             "accuracy": 0.0,
             "per_category": {},
             "banks": {},
+            "instance_consolidation_breakdowns": {},
             "instance_retain_breakdowns": {},
+            "consolidation_breakdown": {
+                "load_unconsolidated_ms": 0,
+                "unconsolidated_fact_count": 0,
+                "batch_count": 0,
+                "recall_ms": 0,
+                "related_observation_count": 0,
+                "prompt_build_ms": 0,
+                "llm_consolidate_ms": 0,
+                "action_count": 0,
+                "begin_txn_ms": 0,
+                "action_embed_ms": 0,
+                "db_write_ms": 0,
+                "mark_consolidated_ms": 0,
+                "commit_ms": 0
+            },
             "retain_breakdown": {
                 "extract": {
                     "chunking_ms": 0,
@@ -4283,7 +4371,9 @@ mod tests {
             banks: HashMap::new(),
             instance_status: HashMap::new(),
             instance_timings: HashMap::new(),
+            instance_consolidation_breakdowns: HashMap::new(),
             instance_retain_breakdowns: HashMap::new(),
+            consolidation_breakdown: ConsolidationBreakdown::default(),
             retain_breakdown: RetainBreakdown::default(),
             manifest: BenchmarkManifest {
                 profile: "smoke".into(),
@@ -4330,7 +4420,9 @@ mod tests {
             banks: HashMap::new(),
             instance_status: HashMap::new(),
             instance_timings: HashMap::new(),
+            instance_consolidation_breakdowns: HashMap::new(),
             instance_retain_breakdowns: HashMap::new(),
+            consolidation_breakdown: ConsolidationBreakdown::default(),
             retain_breakdown: RetainBreakdown::default(),
             manifest: BenchmarkManifest {
                 profile: "smoke".into(),
@@ -4764,10 +4856,12 @@ mod tests {
             banks,
             instance_status: HashMap::new(),
             instance_timings: HashMap::new(),
+            instance_consolidation_breakdowns: HashMap::new(),
             instance_retain_breakdowns: HashMap::new(),
+            consolidation_breakdown: ConsolidationBreakdown::default(),
             retain_breakdown: RetainBreakdown::default(),
             manifest: BenchmarkManifest {
-                protocol_version: "2026-04-08-longmemeval-contract-v2".into(),
+                protocol_version: "2026-04-15-longmemeval-contract-v3".into(),
                 profile: "smoke".into(),
                 mode: "run".into(),
                 config_path: None,
@@ -4841,7 +4935,9 @@ mod tests {
             banks,
             instance_status: HashMap::new(),
             instance_timings: HashMap::new(),
+            instance_consolidation_breakdowns: HashMap::new(),
             instance_retain_breakdowns: HashMap::new(),
+            consolidation_breakdown: ConsolidationBreakdown::default(),
             retain_breakdown: RetainBreakdown::default(),
             manifest: BenchmarkManifest {
                 protocol_version: resolved.protocol_version().into(),
