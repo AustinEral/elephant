@@ -1,0 +1,62 @@
+schema_version = 1
+benchmark = "longmemeval"
+protocol_version = "2026-04-15-longmemeval-contract-v3"
+ingest_format = "round"
+consolidation = "end"
+
+[dataset]
+identifier = "longmemeval-s"
+expected_fingerprint = "1be32e546a434b8b"
+
+[slice]
+instances = ["e47becba"]
+session_limit = 1
+
+[runtime.llm]
+provider = "openai"
+retain_model = "qwen/qwen3.6-plus"
+reflect_model = "qwen/qwen3.6-plus"
+
+[runtime.embedding]
+provider = "local"
+model = "bge-small-en-v1.5"
+
+[runtime.reranker]
+provider = "local"
+model = "ms-marco-MiniLM-L-6-v2"
+
+[runtime.tuning]
+reflect_budget_tokens = 4096
+dedup_threshold = 0.95
+retain_chunk_max_tokens = 2048
+retain_chunk_overlap_tokens = 64
+
+[runtime.tuning.extraction]
+structured_output_max_attempts = 3
+
+[runtime.tuning.graph]
+semantic_threshold = 0.7
+temporal_max_days = 30
+enable_causal = true
+max_causal_checks = 10
+
+[runtime.tuning.consolidation]
+batch_size = 8
+max_tokens = 4096
+recall_budget = 512
+structured_output_max_attempts = 3
+
+[runtime.tuning.reflect]
+max_iterations = 8
+source_limit = 3
+enable_source_lookup = true
+
+[runtime.tuning.retrieval]
+retriever_limit = 40
+max_facts = 50
+
+[judge]
+provider = "openai"
+model = "qwen/qwen3.6-plus"
+max_tokens = 200
+max_attempts = 3

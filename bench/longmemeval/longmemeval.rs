@@ -113,6 +113,7 @@ enum RunProfile {
     FullS,
     FullSIngest,
     FullM,
+    QwenSmoke,
 }
 
 impl RunProfile {
@@ -123,6 +124,7 @@ impl RunProfile {
             Self::FullS => "full-s",
             Self::FullSIngest => "full-s-ingest",
             Self::FullM => "full-m",
+            Self::QwenSmoke => "qwen-smoke",
         }
     }
 
@@ -146,8 +148,9 @@ impl FromStr for RunProfile {
             "full-s" => Ok(Self::FullS),
             "full-s-ingest" => Ok(Self::FullSIngest),
             "full-m" => Ok(Self::FullM),
+            "qwen-smoke" => Ok(Self::QwenSmoke),
             other => Err(format!(
-                "invalid --profile value: {other} (expected one of: smoke, probe, full-s, full-s-ingest, full-m)"
+                "invalid --profile value: {other} (expected one of: smoke, probe, full-s, full-s-ingest, full-m, qwen-smoke)"
             )),
         }
     }
@@ -923,7 +926,7 @@ fn print_help() {
         "  --profile <NAME>                Named profile for `run`/`ingest` [default: full-s]"
     );
     eprintln!(
-        "                                  Profiles: smoke, probe, full-s, full-s-ingest, full-m"
+        "                                  Profiles: smoke, probe, full-s, full-s-ingest, full-m, qwen-smoke"
     );
     eprintln!(
         "  --config <PATH>                 TOML execution overlay for `run`/`ingest`/`qa`/`config-resolve`"
