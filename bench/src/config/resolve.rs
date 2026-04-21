@@ -1123,7 +1123,6 @@ fn validate_runtime_contract(runtime: &RuntimeContract) -> Result<()> {
             validate_nonblank("runtime.reranker.api_url", api_url)?;
         }
     }
-
     Ok(())
 }
 

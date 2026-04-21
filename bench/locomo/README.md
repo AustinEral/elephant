@@ -203,7 +203,7 @@ Use `publish` after that to stage a public bundle with `summary.json` plus gzipp
 | `verify <artifact>...` | Validate artifact structure and shard compatibility without running the benchmark |
 | `doctor <artifact>...` | Check publication readiness and canonical-slice coverage from artifact provenance |
 | `publish <artifact>` | Export a publishable bundle with `index.json`, `summary.json`, and `questions.jsonl.gz` |
-| `--profile <name>` | Load a versioned benchmark profile (`full`, `smoke`, `qwen-smoke`, `legacy-raw`) |
+| `--profile <name>` | Load a versioned benchmark profile (`full`, `smoke`, `legacy-raw`) |
 | `--config <path>` | Apply a TOML execution overlay on top of the selected profile |
 | `--conversation <id>` | Execution-only shard selector within the profile slice |
 | `--secrets-env-file <path>` | Load benchmark API keys from a separate benchmark secrets env file |

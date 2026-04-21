@@ -963,7 +963,6 @@ enum RunProfile {
     Full,
     Smoke,
     LegacyRaw,
-    QwenSmoke,
 }
 
 impl RunProfile {
@@ -972,7 +971,6 @@ impl RunProfile {
             Self::Full => "full",
             Self::Smoke => "smoke",
             Self::LegacyRaw => "legacy-raw",
-            Self::QwenSmoke => "qwen-smoke",
         }
     }
 
@@ -989,9 +987,8 @@ impl FromStr for RunProfile {
             "full" => Ok(Self::Full),
             "smoke" => Ok(Self::Smoke),
             "legacy-raw" => Ok(Self::LegacyRaw),
-            "qwen-smoke" => Ok(Self::QwenSmoke),
             other => Err(format!(
-                "invalid --profile value: {other} (expected one of: full, smoke, legacy-raw, qwen-smoke)"
+                "invalid --profile value: {other} (expected one of: full, smoke, legacy-raw)"
             )),
         }
     }
@@ -3028,7 +3025,7 @@ fn print_help() {
     eprintln!();
     eprintln!("Options:");
     eprintln!("  --profile <NAME>                Named profile for `run`/`ingest` [default: full]");
-    eprintln!("                                  Profiles: full, smoke, qwen-smoke, legacy-raw");
+    eprintln!("                                  Profiles: full, smoke, legacy-raw");
     eprintln!(
         "  --config <PATH>                 TOML execution overlay for `run`/`ingest`/`qa`/`config-resolve`"
     );
