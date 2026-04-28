@@ -293,7 +293,7 @@ impl LlmClient for AnthropicClient {
         .await?;
 
         let parsed: AnthropicResponse = serde_json::from_str(&resp_text).map_err(|e| {
-            crate::error::Error::Llm(format!("failed to parse Anthropic response: {e}"))
+            crate::error::Error::ServerError(format!("failed to parse Anthropic response: {e}"))
         })?;
 
         Ok(parsed.into_completion_response())

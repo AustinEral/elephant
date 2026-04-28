@@ -1511,6 +1511,7 @@ fn build_judge_config_from_parts(
         judge.temperature,
         judge.max_tokens,
         judge.max_attempts,
+        judge.reasoning_effort,
     ))
 }
 

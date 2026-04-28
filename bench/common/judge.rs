@@ -6,7 +6,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use crate::common::failure;
-use elephant::llm::{self, CompletionRequest, LlmClient, Message};
+use elephant::llm::{self, CompletionRequest, LlmClient, Message, ReasoningEffort};
 use elephant::metrics::MetricsCollector;
 use elephant_bench::BenchJudgeConfig;
 
@@ -55,6 +55,7 @@ pub async fn llm_judge(
         JUDGE_TEMPERATURE,
         JUDGE_MAX_TOKENS,
         JUDGE_MAX_ATTEMPTS,
+        None,
         rendered_prompt,
     )
     .await
@@ -70,6 +71,7 @@ pub async fn llm_judge_with_config(
         judge_config.temperature(),
         judge_config.max_tokens(),
         judge_config.max_attempts(),
+        judge_config.reasoning_effort(),
         rendered_prompt,
     )
     .await
@@ -80,11 +82,13 @@ async fn llm_judge_with_policy(
     temperature: Option<f32>,
     max_tokens: usize,
     max_attempts: usize,
+    reasoning_effort: Option<ReasoningEffort>,
     rendered_prompt: &str,
 ) -> Result<(bool, String), JudgeError> {
     let mut request = CompletionRequest::builder()
         .message(Message::user(rendered_prompt))
-        .max_tokens(max_tokens);
+        .max_tokens(max_tokens)
+        .reasoning_effort_opt(reasoning_effort);
     if let Some(temperature) = temperature {
         request = request.temperature(temperature);
     }

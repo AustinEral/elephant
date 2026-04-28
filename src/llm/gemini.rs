@@ -692,7 +692,7 @@ impl LlmClient for GeminiClient {
         .await?;
 
         let parsed: GeminiGenerateContentResponse = serde_json::from_str(&resp_text)
-            .map_err(|e| Error::Llm(format!("failed to parse Gemini response: {e}")))?;
+            .map_err(|e| Error::ServerError(format!("failed to parse Gemini response: {e}")))?;
 
         parsed.into_completion_response()
     }

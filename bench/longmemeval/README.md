@@ -121,7 +121,7 @@ cargo run -p elephant-bench --release --bin longmemeval-view -- \
 | `qa <artifact>` | Score against existing banks from ingest artifact |
 | `verify <artifact...>` | Validate artifact structure and shard compatibility without running the benchmark |
 | `doctor <artifact...>` | Check publication readiness and canonical-slice coverage from artifact provenance |
-| `--profile <name>` | `smoke` (1 fixed instance, first session only), `probe` (first session only for a chosen instance), `full-s` (S dataset), `full-m` (M dataset) |
+| `--profile <name>` | `smoke` (1 fixed instance, first session only), `probe` (first session only for a chosen instance), `kimi-smoke` (Kimi K2.6 via OpenRouter), `full-s` (S dataset), `full-m` (M dataset) |
 | `--config <path>` | TOML execution overlay on top of profile |
 | `--instance <id>` | Execution-only shard selector within the profile slice |
 | `--instance-limit <n>` | Execution-only shard window within the profile slice |

@@ -4,7 +4,9 @@ use std::fmt;
 use std::sync::Arc;
 
 use elephant::llm::retry::{RetryPolicy, RetryingLlmClient};
-use elephant::llm::{ClientConfig, DeterminismRequirement, LlmClient, build_client};
+use elephant::llm::{
+    ClientConfig, DeterminismRequirement, LlmClient, ReasoningEffort, build_client,
+};
 use elephant::metrics::{LlmStage, MeteredLlmClient, MetricsCollector};
 
 /// Validated benchmark-only startup configuration.
@@ -34,6 +36,7 @@ pub struct BenchJudgeConfig {
     temperature: Option<f32>,
     max_tokens: usize,
     max_attempts: usize,
+    reasoning_effort: Option<ReasoningEffort>,
 }
 
 impl fmt::Debug for BenchJudgeConfig {
@@ -51,12 +54,14 @@ impl BenchJudgeConfig {
         temperature: Option<f32>,
         max_tokens: usize,
         max_attempts: usize,
+        reasoning_effort: Option<ReasoningEffort>,
     ) -> Self {
         Self {
             client,
             temperature,
             max_tokens,
             max_attempts,
+            reasoning_effort,
         }
     }
 
@@ -78,6 +83,11 @@ impl BenchJudgeConfig {
     /// Return the maximum number of judge attempts.
     pub fn max_attempts(&self) -> usize {
         self.max_attempts
+    }
+
+    /// Return the optional reasoning effort for the judge.
+    pub fn reasoning_effort(&self) -> Option<ReasoningEffort> {
+        self.reasoning_effort
     }
 
     /// Build a metered, retrying judge client from the validated configuration.
@@ -112,7 +122,7 @@ mod tests {
     #[test]
     fn judge_config_new_uses_validated_client() {
         let client = ClientConfig::OpenAi(OpenAiConfig::new("sk-test", "gpt-4o-mini").unwrap());
-        let config = BenchJudgeConfig::new(client, None, 200, 3);
+        let config = BenchJudgeConfig::new(client, None, 200, 3, None);
         assert_eq!(config.label(), "openai/gpt-4o-mini");
     }
 
@@ -120,7 +130,7 @@ mod tests {
     fn judge_config_debug_redacts_client_secrets() {
         let client =
             ClientConfig::OpenAi(OpenAiConfig::new("judge-secret", "gpt-4o-mini").unwrap());
-        let config = BenchJudgeConfig::new(client, None, 200, 3);
+        let config = BenchJudgeConfig::new(client, None, 200, 3, None);
         let debug = format!("{config:?}");
         assert!(debug.contains("openai/gpt-4o-mini"));
         assert!(!debug.contains("judge-secret"));

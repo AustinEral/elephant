@@ -333,6 +333,8 @@ pub(crate) struct JudgeContract {
     pub(crate) max_tokens: usize,
     #[serde(default = "default_judge_max_attempts")]
     pub(crate) max_attempts: usize,
+    #[serde(default)]
+    pub(crate) reasoning_effort: Option<ReasoningEffort>,
 }
 
 fn default_judge_max_tokens() -> usize {

@@ -67,13 +67,6 @@ struct OpenAiResponsesRequest {
 }
 
 impl OpenAiResponsesRequest {
-    fn supports_reasoning(model: &str) -> bool {
-        model.starts_with("gpt-5")
-            || model.starts_with("o1")
-            || model.starts_with("o3")
-            || model.starts_with("o4")
-    }
-
     fn from_completion_request(
         request: &CompletionRequest,
         model: String,
@@ -91,7 +84,6 @@ impl OpenAiResponsesRequest {
                 .collect()
         });
         let parallel_tool_calls = tools.as_ref().map(|_| true);
-        let supports_reasoning = Self::supports_reasoning(&model);
         let temperature = resolve_temperature_for_target(
             super::Provider::OpenAi,
             &model,
@@ -101,7 +93,6 @@ impl OpenAiResponsesRequest {
         .effective();
         let reasoning = request
             .reasoning_effort()
-            .filter(|_| supports_reasoning)
             .map(OpenAiResponsesReasoning::from);
 
         Self {
@@ -570,7 +561,7 @@ impl LlmClient for OpenAiClient {
         .await?;
 
         let parsed: OpenAiResponsesResponse = serde_json::from_str(&resp_text)
-            .map_err(|e| Error::Llm(format!("failed to parse OpenAI response: {e}")))?;
+            .map_err(|e| Error::ServerError(format!("failed to parse OpenAI response: {e}")))?;
 
         let response = CompletionResponse::from(parsed);
         if response.content.is_empty()
