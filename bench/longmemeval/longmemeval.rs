@@ -3246,7 +3246,13 @@ async fn main() {
                     &instance.answer_string(),
                     &hypothesis,
                 );
-                match common::judge::llm_judge_with_config(judge.as_ref().unwrap().as_ref(), &judge_config, &rendered).await {
+                match common::judge::llm_judge_with_config(
+                    judge.as_ref().unwrap().as_ref(),
+                    &judge_config,
+                    &rendered,
+                )
+                .await
+                {
                     Ok((correct, reasoning)) => (correct, reasoning, "ok".into(), None),
                     Err(e) => {
                         let err_msg = e.to_string();

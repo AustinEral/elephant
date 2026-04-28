@@ -146,6 +146,26 @@ Unsupported explicit temperature overrides fail fast during runtime construction
 
 Gemini and Vertex use provider-native behavior when cache usage is reported; no extra runtime env is required there.
 
+## Provider Routing (OpenRouter)
+
+When `LLM_BASE_URL` points at an OpenRouter-compatible endpoint, these settings
+control how requests are routed across upstream providers. OpenAI provider only.
+
+- `LLM_PROVIDER_ROUTING_REQUIRE_PARAMETERS`
+  When `true`, only route to providers that support all parameters in the request
+  (e.g. `reasoning_effort`, `response_format`, `tool_choice`).
+- `LLM_PROVIDER_ROUTING_ORDER`
+  Comma-separated list of provider slugs to use
+  (e.g. `deepinfra,moonshotai`). When set, fallbacks to other providers are
+  disabled by default -- only the listed providers will be used.
+- `LLM_PROVIDER_ROUTING_ALLOW_FALLBACKS`
+  When `true`, allow OpenRouter to fall back to unlisted providers if all
+  providers in `ORDER` fail. Only meaningful when `ORDER` is set; defaults to
+  `false` when `ORDER` is present.
+
+For benchmarks, the same fields are available as TOML in execution overlays
+under `[runtime_target.provider_routing]` and `[judge_target.provider_routing]`.
+
 ## Logging
 
 - `RUST_LOG`

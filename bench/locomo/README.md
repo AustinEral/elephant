@@ -61,7 +61,7 @@ The standard local execution defaults are:
 - local embeddings: `models/bge-small-en-v1.5`
 - local reranker: `models/ms-marco-MiniLM-L-6-v2`
 
-Use `--config` only when you need to change execution/provenance settings such as dataset path, output path, concurrency, the benchmark database URL, a custom `ort_dylib_path`, or local provider routing like `base_url` / Vertex project-location selection.
+Use `--config` only when you need to change execution/provenance settings such as dataset path, output path, concurrency, the benchmark database URL, a custom `ort_dylib_path`, or local provider routing like `base_url` / Vertex project-location selection / OpenRouter provider preferences.
 
 For benchmark hygiene, use an isolated Postgres instance instead of your normal development database. Docker is the easiest option:
 
@@ -146,6 +146,18 @@ cargo run --release --bin locomo-bench -- \
   --config bench/locomo/configs/question-jobs-5.toml \
   --secrets-env-file bench/secrets.env \
   --tag conv-26-q5
+
+# OpenRouter overlay with provider routing
+# bench/configs/openrouter.toml sets base_url and provider_routing
+# (require_parameters, order, allow_fallbacks)
+cargo run --release --bin locomo-bench -- \
+  run \
+  --profile kimi-full \
+  --config bench/configs/openrouter.toml \
+  --secrets-env-file bench/secrets.env \
+  --conversation conv-26 \
+  --question-jobs 15 \
+  --tag kimi-conv26
 
 # Merge disjoint subset artifacts into one canonical result
 cargo run --release --bin locomo-bench -- \

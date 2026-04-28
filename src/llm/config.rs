@@ -81,6 +81,96 @@ pub enum OpenAiPromptCacheRetention {
     Hours24,
 }
 
+/// OpenRouter provider routing preferences.
+///
+/// Controls how OpenRouter routes requests across upstream providers.
+/// These fields are serialized into the `provider` object in the request body
+/// and are silently ignored by non-OpenRouter endpoints.
+///
+/// When `order` is set, `allow_fallbacks` defaults to `false` so that requests
+/// are never silently routed to an unselected provider. Set `allow_fallbacks`
+/// explicitly to `true` to override this.
+///
+/// See <https://openrouter.ai/docs/guides/routing/provider-selection>.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+pub struct ProviderRouting {
+    /// Only route to providers that support all parameters in the request.
+    require_parameters: Option<bool>,
+    /// Explicit provider order (e.g. `["deepinfra", "moonshotai"]`).
+    order: Option<Vec<String>>,
+    /// Whether to allow fallback providers when the primary is unavailable.
+    /// Defaults to `false` when `order` is set.
+    allow_fallbacks: Option<bool>,
+}
+
+impl Serialize for ProviderRouting {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let effective_allow_fallbacks = match (self.allow_fallbacks, &self.order) {
+            (Some(v), _) => Some(v),
+            (None, Some(_)) => Some(false),
+            (None, None) => None,
+        };
+        let field_count = self.require_parameters.is_some() as usize
+            + self.order.is_some() as usize
+            + effective_allow_fallbacks.is_some() as usize;
+        let mut map = serializer.serialize_map(Some(field_count))?;
+        if let Some(v) = self.require_parameters {
+            map.serialize_entry("require_parameters", &v)?;
+        }
+        if let Some(ref v) = self.order {
+            map.serialize_entry("order", v)?;
+        }
+        if let Some(v) = effective_allow_fallbacks {
+            map.serialize_entry("allow_fallbacks", &v)?;
+        }
+        map.end()
+    }
+}
+
+impl ProviderRouting {
+    /// Create an empty provider routing configuration.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Require that upstream providers support all parameters in the request.
+    pub fn with_require_parameters(mut self, require: bool) -> Self {
+        self.require_parameters = Some(require);
+        self
+    }
+
+    /// Set an explicit provider order.
+    pub fn with_order(mut self, order: Vec<String>) -> Self {
+        self.order = Some(order);
+        self
+    }
+
+    /// Control whether fallback providers are allowed.
+    pub fn with_allow_fallbacks(mut self, allow: bool) -> Self {
+        self.allow_fallbacks = Some(allow);
+        self
+    }
+
+    /// Return whether `require_parameters` is set.
+    pub fn require_parameters(&self) -> Option<bool> {
+        self.require_parameters
+    }
+
+    /// Return the explicit provider order, if set.
+    pub fn order(&self) -> Option<&[String]> {
+        self.order.as_deref()
+    }
+
+    /// Return whether fallbacks are allowed, if set.
+    pub fn allow_fallbacks(&self) -> Option<bool> {
+        self.allow_fallbacks
+    }
+}
+
 /// Anthropic prompt caching settings.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AnthropicPromptCacheConfig {
@@ -280,6 +370,7 @@ pub struct OpenAiConfig {
     base_url: Option<String>,
     timeout_secs: u64,
     prompt_cache: Option<OpenAiPromptCacheConfig>,
+    provider_routing: Option<ProviderRouting>,
 }
 
 /// Gemini-specific client configuration.
@@ -311,6 +402,7 @@ impl fmt::Debug for OpenAiConfig {
             .field("base_url", &self.base_url)
             .field("timeout_secs", &self.timeout_secs)
             .field("prompt_cache", &self.prompt_cache)
+            .field("provider_routing", &self.provider_routing)
             .finish()
     }
 }
@@ -477,6 +569,7 @@ impl OpenAiConfig {
             base_url: None,
             timeout_secs: DEFAULT_TIMEOUT_SECS,
             prompt_cache: None,
+            provider_routing: None,
         })
     }
 
@@ -495,6 +588,12 @@ impl OpenAiConfig {
     /// Enable OpenAI prompt caching.
     pub fn with_prompt_cache(mut self, prompt_cache: OpenAiPromptCacheConfig) -> Self {
         self.prompt_cache = Some(prompt_cache);
+        self
+    }
+
+    /// Set OpenRouter provider routing preferences.
+    pub fn with_provider_routing(mut self, routing: ProviderRouting) -> Self {
+        self.provider_routing = Some(routing);
         self
     }
 
@@ -521,6 +620,11 @@ impl OpenAiConfig {
     /// Return the prompt-cache configuration, if enabled.
     pub fn prompt_cache(&self) -> Option<&OpenAiPromptCacheConfig> {
         self.prompt_cache.as_ref()
+    }
+
+    /// Return the provider routing preferences, if set.
+    pub fn provider_routing(&self) -> Option<&ProviderRouting> {
+        self.provider_routing.as_ref()
     }
 }
 

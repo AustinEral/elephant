@@ -9,7 +9,8 @@ use elephant::consolidation::{ConsolidationConfig, opinion_merger};
 use elephant::embedding::EmbeddingConfig;
 use elephant::llm::{
     AnthropicConfig, AnthropicPromptCacheConfig, ClientConfig, DEFAULT_TIMEOUT_SECS, GeminiConfig,
-    LlmConfig, OpenAiConfig, OpenAiPromptCacheConfig, ReasoningEffortConfig, VertexConfig,
+    LlmConfig, OpenAiConfig, OpenAiPromptCacheConfig, ProviderRouting, ReasoningEffortConfig,
+    VertexConfig,
 };
 use elephant::metrics::MetricsCollector;
 use elephant::recall::reranker::RerankerConfig;
@@ -1505,6 +1506,7 @@ fn build_judge_config_from_parts(
         judge_target.vertex_project.as_deref(),
         judge_target.vertex_location.as_deref(),
         &judge_target.prompt_cache,
+        judge_target.provider_routing.as_ref(),
     )?;
     Ok(BenchJudgeConfig::new(
         client,
@@ -1529,6 +1531,7 @@ fn build_runtime_llm_config(
         runtime_target.vertex_project.as_deref(),
         runtime_target.vertex_location.as_deref(),
         &runtime_target.prompt_cache,
+        runtime_target.provider_routing.as_ref(),
     )?;
     let reflect = build_client_config(
         runtime.llm.provider,
@@ -1539,6 +1542,7 @@ fn build_runtime_llm_config(
         runtime_target.vertex_project.as_deref(),
         runtime_target.vertex_location.as_deref(),
         &runtime_target.prompt_cache,
+        runtime_target.provider_routing.as_ref(),
     )?;
     Ok(LlmConfig::new(retain, reflect))
 }
@@ -1618,6 +1622,7 @@ fn build_client_config(
     vertex_project: Option<&str>,
     vertex_location: Option<&str>,
     prompt_cache: &PromptCacheExecution,
+    provider_routing: Option<&ProviderRouting>,
 ) -> Result<ClientConfig> {
     let api_key = api_key.ok_or_else(|| {
         ConfigError::configuration(format!(
@@ -1641,6 +1646,11 @@ fn build_client_config(
             if vertex_project.is_some() || vertex_location.is_some() {
                 return Err(ConfigError::configuration(
                     "vertex_project and vertex_location are only supported for provider=vertex",
+                ));
+            }
+            if provider_routing.is_some() {
+                return Err(ConfigError::configuration(
+                    "provider_routing is only supported for provider=openai",
                 ));
             }
             let mut config = AnthropicConfig::new(api_key, model).map_err(ConfigError::from)?;
@@ -1691,6 +1701,9 @@ fn build_client_config(
                     config = config.with_prompt_cache(OpenAiPromptCacheConfig::new());
                 }
             }
+            if let Some(routing) = provider_routing {
+                config = config.with_provider_routing(routing.clone());
+            }
             Ok(ClientConfig::OpenAi(config))
         }
         ProviderKind::Gemini => {
@@ -1702,6 +1715,11 @@ fn build_client_config(
             if vertex_project.is_some() || vertex_location.is_some() {
                 return Err(ConfigError::configuration(
                     "vertex_project and vertex_location are only supported for provider=vertex",
+                ));
+            }
+            if provider_routing.is_some() {
+                return Err(ConfigError::configuration(
+                    "provider_routing is only supported for provider=openai",
                 ));
             }
             let mut config = GeminiConfig::new(api_key, model).map_err(ConfigError::from)?;
@@ -1717,6 +1735,11 @@ fn build_client_config(
             if prompt_cache.enabled {
                 return Err(ConfigError::configuration(
                     "prompt_cache is not supported for provider=vertex in benchmark execution config",
+                ));
+            }
+            if provider_routing.is_some() {
+                return Err(ConfigError::configuration(
+                    "provider_routing is only supported for provider=openai",
                 ));
             }
             let project = vertex_project.ok_or_else(|| {
@@ -1992,6 +2015,7 @@ retention = "in_memory"
             None,
             None,
             &prompt_cache,
+            None,
         )
         .unwrap();
 
@@ -2026,6 +2050,7 @@ retention = "in_memory"
             None,
             None,
             &prompt_cache,
+            None,
         )
         .unwrap();
 

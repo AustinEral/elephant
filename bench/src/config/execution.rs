@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use elephant::llm::{AnthropicPromptCacheTtl, OpenAiPromptCacheRetention};
+use elephant::llm::{AnthropicPromptCacheTtl, OpenAiPromptCacheRetention, ProviderRouting};
 
 fn default_output_dir() -> PathBuf {
     PathBuf::from("bench/locomo/results/local")
@@ -128,6 +128,8 @@ pub(crate) struct ClientTargetOverlayFile {
     pub(crate) vertex_location: Option<String>,
     #[serde(default)]
     pub(crate) prompt_cache: Option<PromptCacheOverlayFile>,
+    #[serde(default)]
+    pub(crate) provider_routing: Option<ProviderRouting>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -136,6 +138,7 @@ pub(crate) struct ClientTargetExecution {
     pub(crate) vertex_project: Option<String>,
     pub(crate) vertex_location: Option<String>,
     pub(crate) prompt_cache: PromptCacheExecution,
+    pub(crate) provider_routing: Option<ProviderRouting>,
 }
 
 impl ClientTargetExecution {
@@ -146,6 +149,7 @@ impl ClientTargetExecution {
             vertex_project: overlay.vertex_project,
             vertex_location: overlay.vertex_location,
             prompt_cache: PromptCacheExecution::from_overlay(overlay.prompt_cache),
+            provider_routing: overlay.provider_routing,
         }
     }
 
@@ -154,6 +158,7 @@ impl ClientTargetExecution {
             && self.vertex_project.is_none()
             && self.vertex_location.is_none()
             && self.prompt_cache.is_empty()
+            && self.provider_routing.is_none()
     }
 }
 

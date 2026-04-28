@@ -5,7 +5,7 @@ use std::env;
 use crate::llm::{
     AnthropicConfig, AnthropicPromptCacheConfig, AnthropicPromptCacheTtl, ClientConfig,
     DEFAULT_TIMEOUT_SECS, GeminiConfig, OpenAiConfig, OpenAiPromptCacheConfig,
-    OpenAiPromptCacheRetention, Provider, VertexConfig,
+    OpenAiPromptCacheRetention, Provider, ProviderRouting, VertexConfig,
 };
 
 use super::env as config_env;
@@ -21,6 +21,7 @@ pub(crate) struct SharedClientEnvConfig {
     timeout_secs: u64,
     openai_prompt_cache: Option<OpenAiPromptCacheConfig>,
     anthropic_prompt_cache: Option<AnthropicPromptCacheConfig>,
+    provider_routing: Option<ProviderRouting>,
 }
 
 impl SharedClientEnvConfig {
@@ -45,6 +46,11 @@ impl SharedClientEnvConfig {
             },
             anthropic_prompt_cache: if provider == Provider::Anthropic {
                 parse_anthropic_prompt_cache()?
+            } else {
+                None
+            },
+            provider_routing: if provider == Provider::OpenAi {
+                parse_provider_routing()?
             } else {
                 None
             },
@@ -100,6 +106,9 @@ pub(crate) fn build_client_config(
             }
             if let Some(prompt_cache) = shared.openai_prompt_cache.clone() {
                 config = config.with_prompt_cache(prompt_cache);
+            }
+            if let Some(routing) = shared.provider_routing.clone() {
+                config = config.with_provider_routing(routing);
             }
             ClientConfig::OpenAi(config)
         }
@@ -232,6 +241,82 @@ fn parse_anthropic_prompt_cache() -> Result<Option<AnthropicPromptCacheConfig>> 
     let mut config = AnthropicPromptCacheConfig::new();
     if let Some(ttl) = ttl {
         config = config.with_ttl(ttl);
+    }
+    Ok(Some(config))
+}
+
+fn parse_provider_routing() -> Result<Option<ProviderRouting>> {
+    let require_params = match env::var("LLM_PROVIDER_ROUTING_REQUIRE_PARAMETERS") {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" => Some(true),
+            "false" | "0" | "no" => Some(false),
+            other => {
+                return Err(ConfigError::configuration(format!(
+                    "LLM_PROVIDER_ROUTING_REQUIRE_PARAMETERS must be true or false, got: {other}"
+                )));
+            }
+        },
+        Err(env::VarError::NotPresent) => None,
+        Err(err) => {
+            return Err(ConfigError::configuration(format!(
+                "LLM_PROVIDER_ROUTING_REQUIRE_PARAMETERS: {err}"
+            )));
+        }
+    };
+
+    let order = match env::var("LLM_PROVIDER_ROUTING_ORDER") {
+        Ok(value) => {
+            let providers: Vec<String> = value
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if providers.is_empty() {
+                return Err(ConfigError::configuration(
+                    "LLM_PROVIDER_ROUTING_ORDER must contain at least one provider slug",
+                ));
+            }
+            Some(providers)
+        }
+        Err(env::VarError::NotPresent) => None,
+        Err(err) => {
+            return Err(ConfigError::configuration(format!(
+                "LLM_PROVIDER_ROUTING_ORDER: {err}"
+            )));
+        }
+    };
+
+    let allow_fallbacks = match env::var("LLM_PROVIDER_ROUTING_ALLOW_FALLBACKS") {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" => Some(true),
+            "false" | "0" | "no" => Some(false),
+            other => {
+                return Err(ConfigError::configuration(format!(
+                    "LLM_PROVIDER_ROUTING_ALLOW_FALLBACKS must be true or false, got: {other}"
+                )));
+            }
+        },
+        Err(env::VarError::NotPresent) => None,
+        Err(err) => {
+            return Err(ConfigError::configuration(format!(
+                "LLM_PROVIDER_ROUTING_ALLOW_FALLBACKS: {err}"
+            )));
+        }
+    };
+
+    if require_params.is_none() && order.is_none() && allow_fallbacks.is_none() {
+        return Ok(None);
+    }
+
+    let mut config = ProviderRouting::new();
+    if let Some(require) = require_params {
+        config = config.with_require_parameters(require);
+    }
+    if let Some(order) = order {
+        config = config.with_order(order);
+    }
+    if let Some(allow) = allow_fallbacks {
+        config = config.with_allow_fallbacks(allow);
     }
     Ok(Some(config))
 }

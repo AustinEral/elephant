@@ -8,8 +8,9 @@ use serde_json::{Map, Value, json};
 use crate::error::{Error, Result};
 use crate::llm::{
     CompletionRequest, CompletionResponse, LlmClient, Message, OpenAiConfig,
-    OpenAiPromptCacheConfig, OpenAiPromptCacheRetention, PromptCacheUsage, ReasoningEffort,
-    ToolCall, ToolChoice, ToolDefinition, ToolResult, resolve_temperature_for_target,
+    OpenAiPromptCacheConfig, OpenAiPromptCacheRetention, PromptCacheUsage, ProviderRouting,
+    ReasoningEffort, ToolCall, ToolChoice, ToolDefinition, ToolResult,
+    resolve_temperature_for_target,
 };
 
 const API_URL: &str = "https://api.openai.com/v1";
@@ -21,6 +22,7 @@ pub struct OpenAiClient {
     default_model: String,
     base_url: String,
     prompt_cache: Option<OpenAiPromptCacheConfig>,
+    provider_routing: Option<ProviderRouting>,
 }
 
 impl OpenAiClient {
@@ -37,6 +39,7 @@ impl OpenAiClient {
             default_model: config.model().to_string(),
             base_url: config.base_url().unwrap_or(API_URL).to_string(),
             prompt_cache: config.prompt_cache().cloned(),
+            provider_routing: config.provider_routing().cloned(),
         })
     }
 }
@@ -64,6 +67,8 @@ struct OpenAiResponsesRequest {
     prompt_cache_retention: Option<OpenAiPromptCacheRetention>,
     #[serde(skip_serializing_if = "Option::is_none")]
     parallel_tool_calls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<ProviderRouting>,
 }
 
 impl OpenAiResponsesRequest {
@@ -71,6 +76,7 @@ impl OpenAiResponsesRequest {
         request: &CompletionRequest,
         model: String,
         prompt_cache: Option<&OpenAiPromptCacheConfig>,
+        provider_routing: Option<&ProviderRouting>,
     ) -> Self {
         let mut input = Vec::new();
         for message in request.messages() {
@@ -110,6 +116,7 @@ impl OpenAiResponsesRequest {
             prompt_cache_key: prompt_cache.and_then(|config| config.key().map(str::to_string)),
             prompt_cache_retention: prompt_cache.and_then(|config| config.retention()),
             parallel_tool_calls,
+            provider: provider_routing.cloned(),
         }
     }
 }
@@ -537,6 +544,7 @@ impl LlmClient for OpenAiClient {
             &request,
             model.clone(),
             self.prompt_cache.as_ref(),
+            self.provider_routing.as_ref(),
         );
         let url = format!("{}/responses", self.base_url);
 
@@ -625,6 +633,7 @@ mod tests {
                     .with_key("elephant:reflect")
                     .with_retention(OpenAiPromptCacheRetention::InMemory),
             ),
+            None,
         );
 
         let value = serde_json::to_value(&body).unwrap();
@@ -663,7 +672,8 @@ mod tests {
             .reasoning_effort(ReasoningEffort::Low)
             .build();
 
-        let body = OpenAiResponsesRequest::from_completion_request(&request, "gpt-5".into(), None);
+        let body =
+            OpenAiResponsesRequest::from_completion_request(&request, "gpt-5".into(), None, None);
         let value = serde_json::to_value(&body).unwrap();
         assert!(value.get("temperature").is_none());
         assert_eq!(value["reasoning"]["effort"], "low");
@@ -677,8 +687,12 @@ mod tests {
             .temperature(0.0)
             .build();
 
-        let body =
-            OpenAiResponsesRequest::from_completion_request(&request, "gpt-5.4-mini".into(), None);
+        let body = OpenAiResponsesRequest::from_completion_request(
+            &request,
+            "gpt-5.4-mini".into(),
+            None,
+            None,
+        );
         let value = serde_json::to_value(&body).unwrap();
         assert!(value.get("temperature").is_none());
     }
@@ -785,8 +799,12 @@ mod tests {
             )])
             .build();
 
-        let body =
-            OpenAiResponsesRequest::from_completion_request(&request, "gpt-5.4-mini".into(), None);
+        let body = OpenAiResponsesRequest::from_completion_request(
+            &request,
+            "gpt-5.4-mini".into(),
+            None,
+            None,
+        );
         let value = serde_json::to_value(&body).unwrap();
         let parameters = &value["tools"][0]["parameters"];
         let mut required = parameters["required"]
@@ -800,5 +818,36 @@ mod tests {
         assert_eq!(parameters["additionalProperties"], false);
         assert_eq!(required, vec!["limit", "query"]);
         assert!(schema_allows_null(&parameters["properties"]["limit"]));
+    }
+
+    #[test]
+    fn provider_routing_order_disables_fallbacks_by_default() {
+        let routing =
+            ProviderRouting::new().with_order(vec!["deepinfra".into(), "moonshotai".into()]);
+        let value = serde_json::to_value(&routing).unwrap();
+        assert_eq!(
+            value["order"],
+            json!(["deepinfra", "moonshotai"])
+        );
+        assert_eq!(value["allow_fallbacks"], json!(false));
+    }
+
+    #[test]
+    fn provider_routing_order_with_explicit_fallbacks_true() {
+        let routing = ProviderRouting::new()
+            .with_order(vec!["deepinfra".into()])
+            .with_allow_fallbacks(true);
+        let value = serde_json::to_value(&routing).unwrap();
+        assert_eq!(value["order"], json!(["deepinfra"]));
+        assert_eq!(value["allow_fallbacks"], json!(true));
+    }
+
+    #[test]
+    fn provider_routing_require_parameters_only() {
+        let routing = ProviderRouting::new().with_require_parameters(true);
+        let value = serde_json::to_value(&routing).unwrap();
+        assert_eq!(value["require_parameters"], json!(true));
+        assert!(value.get("order").is_none());
+        assert!(value.get("allow_fallbacks").is_none());
     }
 }

@@ -21,7 +21,7 @@ pub use capabilities::{
 pub use config::{
     AnthropicConfig, AnthropicPromptCacheConfig, AnthropicPromptCacheTtl, ClientConfig,
     DEFAULT_TIMEOUT_SECS, GeminiConfig, LlmConfig, OpenAiConfig, OpenAiPromptCacheConfig,
-    OpenAiPromptCacheRetention, Provider, VertexConfig,
+    OpenAiPromptCacheRetention, Provider, ProviderRouting, VertexConfig,
 };
 pub use types::{
     CompletionRequest, CompletionRequestBuilder, CompletionResponse, Message, MessageRole,
