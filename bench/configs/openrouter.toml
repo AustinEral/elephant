@@ -3,11 +3,9 @@ base_url = "https://openrouter.ai/api/v1"
 
 [runtime_target.provider_routing]
 order = ["moonshotai"]
-allow_fallbacks = true
 
 [judge_target]
 base_url = "https://openrouter.ai/api/v1"
 
 [judge_target.provider_routing]
 order = ["moonshotai"]
-allow_fallbacks = true
